@@ -177,3 +177,33 @@ def test_send_email_propagates_http_error_unchanged() -> None:
 
     with pytest.raises(HttpError):
         client.send_email(to="evan@eross.com", subject="x", body_text="y")
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+@pytest.mark.parametrize(
+    "sender_filters",
+    [
+        [],
+        [{"match_type": "sender_email", "match_value": ""}],
+        [{"match_type": "not_a_known_type", "match_value": "jobs@example.com"}],
+    ],
+)
+def test_listing_never_searches_the_whole_inbox(sender_filters: list[dict]) -> None:
+    """Without a usable source filter the query would be only "in:inbox ...", which
+    matches every message. The privacy policy promises the app reads only the
+    job-alert senders a user chose, so the client must not call Gmail at all."""
+    client, service = _client_with_mocked_service()
+
+    assert client.list_unread_messages(7, sender_filters) == []
+    service.users.return_value.messages.return_value.list.assert_not_called()
+
+
+def test_listing_searches_only_the_configured_senders() -> None:
+    client, service = _client_with_mocked_service()
+    list_call = service.users.return_value.messages.return_value.list
+    list_call.return_value.execute.return_value = {"messages": [{"id": "m1", "threadId": "t1"}]}
+
+    messages = client.list_unread_messages(7, [{"match_type": "sender_email", "match_value": "jobs@example.com"}])
+
+    assert messages == [{"id": "m1", "threadId": "t1"}]
+    assert 'from:"jobs@example.com"' in list_call.call_args.kwargs["q"]

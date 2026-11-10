@@ -130,6 +130,14 @@ class GmailClient:
         Returns list of {id, threadId} dicts.
         """
         sender_query = build_gmail_source_query(sender_filters)
+        # ai: claude-opus-5-5 | 2026-11-10 -- no usable source (none given, or none
+        # with a known match type and a value) would leave only "in:inbox ...": every
+        # message in the window, each then fetched in full. The privacy policy says
+        # the app reads only the job-alert senders a user chose, so that is enforced
+        # here, where Gmail is called, not only by today's callers.
+        if not sender_query:
+            logger.warning("Gmail scan skipped: no usable email source filter")
+            return []
 
         unread_clause = "is:unread " if unread_only else ""
         query = f"in:inbox {unread_clause}newer_than:{lookback_days}d {sender_query}".strip()

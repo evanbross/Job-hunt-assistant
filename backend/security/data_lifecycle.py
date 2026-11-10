@@ -34,7 +34,9 @@ import config
 from backend.celery_app import celery_app
 from backend.db import get_connection
 from backend.db.app_role import assert_exempt_from_rls
+from backend.db.repositories.google_tokens import PostgresGoogleTokenRepository
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
+from backend.email.google_token_store import GoogleTokenStore, revoke_google_access
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +66,15 @@ def sweep_scheduled_deletions(conn: Any) -> int:
     cutoff = datetime.now(UTC) - timedelta(days=config.ACCOUNT_DELETION_GRACE_DAYS)
     accounts_repo = PostgresUserAccountRepository(conn)
     due = accounts_repo.get_accounts_past_deletion_grace_period(cutoff)
+    # ai: claude-opus-5-5 | 2026-11-10 -- revoke each account's Google access first:
+    # the cascade below deletes only our copy of the token, which would leave the
+    # app listed in the user's Google account. Best effort: an unreachable Google
+    # must not keep the account's data alive past its grace period.
+    token_store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
+    for account in due:
+        token = token_store.revocable_token(account["id"])
+        if token and not revoke_google_access(token):
+            logger.warning("Could not revoke Google access for account %s before deleting it", account["id"])
     for account in due:
         # Logged here, not to audit_log: that table's own row for this account is
         # about to cascade-delete along with everything else, so it would never be

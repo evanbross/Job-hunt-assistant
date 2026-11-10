@@ -43,7 +43,7 @@ import config
 from backend.crypto import SettingsEncryptionKeyMissingError
 from backend.email.gmail_scopes import gmail_scopes, missing_gmail_scopes
 from backend.email.google_oauth_pending import PendingGoogleAuth, get_pending_auths
-from backend.email.google_token_store import GoogleTokenStore
+from backend.email.google_token_store import GoogleTokenStore, revoke_google_access
 from backend.security.audit_log import (
     GOOGLE_CONNECTED,
     GOOGLE_DISCONNECTED,
@@ -253,10 +253,20 @@ def auth_google_callback() -> ResponseReturnValue:
 
 @auth_bp.route("/auth/disconnect", methods=["POST"])
 def auth_disconnect() -> ResponseReturnValue:
-    """Remove the caller's own stored Google token so they can re-authenticate."""
+    """Revoke the app's Google access for the caller and remove the stored token.
+
+    `revoked` is False only when Google couldn't be reached: the token is still
+    deleted here, and the page tells the user to remove access in their Google
+    account themselves.
+    """
+    # ai: claude-opus-5-5 | 2026-11-10 -- revoke with Google, not just forget the
+    # token locally. The connection is released before the network call.
     user_id = current_user_id()
     with get_repos() as repos:
+        token = GoogleTokenStore(repos["google_tokens"]).revocable_token(user_id)
+    revoked = revoke_google_access(token) if token else True
+    with get_repos() as repos:
         GoogleTokenStore(repos["google_tokens"]).delete(user_id)
-        record_event(repos, user_id, GOOGLE_DISCONNECTED)
+        record_event(repos, user_id, GOOGLE_DISCONNECTED, {"revoked_at_google": revoked})
         repos["conn"].commit()
-    return jsonify({"status": "disconnected"})
+    return jsonify({"status": "disconnected", "revoked": revoked})

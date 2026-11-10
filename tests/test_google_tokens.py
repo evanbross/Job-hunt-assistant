@@ -16,6 +16,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 from flask import Flask, session
@@ -23,6 +24,7 @@ from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 
 import backend.crypto as crypto
+import backend.email.google_token_store as google_token_store
 import config
 import routes.auth as auth_routes
 from backend.db import (
@@ -40,7 +42,11 @@ from backend.email.gmail_scopes import (
     gmail_scopes,
 )
 from backend.email.google_oauth_pending import MemoryPendingAuthStore, PendingGoogleAuth
-from backend.email.google_token_store import GoogleTokenStore
+from backend.email.google_token_store import (
+    GOOGLE_REVOKE_URL,
+    GoogleTokenStore,
+    revoke_google_access,
+)
 from backend.settings_registry import SYSTEM_SETTING_KEYS, schema_for_scope
 from backend.settings_service import get_setting, is_setting_configured
 from backend.utils.utils import get_repos
@@ -67,6 +73,32 @@ def encryption_key(monkeypatch: pytest.MonkeyPatch) -> str:
     monkeypatch.setenv("SETTINGS_ENCRYPTION_KEY", key)
     monkeypatch.setattr(crypto, "_fernet", None)
     return key
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+class _FakeGoogleRevoke:
+    """Stands in for Google's revoke endpoint: records each token sent, answers
+    with `status`, or raises `error` like an unreachable network."""
+
+    def __init__(self) -> None:
+        self.tokens: list[str] = []
+        self.status = 200
+        self.error: Exception | None = None
+
+    def post(self, url: str, data: dict[str, str], timeout: float) -> httpx.Response:
+        assert url == GOOGLE_REVOKE_URL
+        if self.error is not None:
+            raise self.error
+        self.tokens.append(data["token"])
+        return httpx.Response(self.status)
+
+
+@pytest.fixture(autouse=True)
+def google_revoke(monkeypatch: pytest.MonkeyPatch) -> _FakeGoogleRevoke:
+    """No test in this file may reach the real Google: disconnect now revokes."""
+    fake = _FakeGoogleRevoke()
+    monkeypatch.setattr(google_token_store.httpx, "post", fake.post)
+    return fake
 
 
 def make_credentials(
@@ -297,6 +329,59 @@ def _configure_google_client(pg_dsn: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def test_disconnect_revokes_the_grant_at_google_then_forgets_the_token(
+    pg_dsn: str, auth_client: Any, google_revoke: _FakeGoogleRevoke
+) -> None:
+    """Deleting only our copy left the app listed in the user's Google account, with
+    a token that still worked. The refresh token is what ends the whole grant."""
+    client, ids, _session_user = auth_client
+    conn = get_connection(pg_dsn)
+    try:
+        set_current_user(conn.cursor(), ids["a"])
+        GoogleTokenStore(PostgresGoogleTokenRepository(conn)).save(ids["a"], make_credentials("a-refresh"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    resp = client.post("/api/auth/disconnect")
+
+    assert resp.get_json() == {"status": "disconnected", "revoked": True}
+    assert google_revoke.tokens == ["a-refresh"]
+    assert client.get("/api/auth/status").get_json()["authenticated"] is False
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def test_disconnect_still_forgets_the_token_when_google_is_unreachable(
+    pg_dsn: str, auth_client: Any, google_revoke: _FakeGoogleRevoke
+) -> None:
+    client, ids, _session_user = auth_client
+    conn = get_connection(pg_dsn)
+    try:
+        set_current_user(conn.cursor(), ids["a"])
+        GoogleTokenStore(PostgresGoogleTokenRepository(conn)).save(ids["a"], make_credentials("a-refresh"))
+        conn.commit()
+    finally:
+        conn.close()
+    google_revoke.error = httpx.ConnectError("no route to host")
+
+    resp = client.post("/api/auth/disconnect")
+
+    assert resp.get_json() == {"status": "disconnected", "revoked": False}
+    assert client.get("/api/auth/status").get_json()["authenticated"] is False
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+@pytest.mark.parametrize(("status", "revoked"), [(200, True), (400, True), (503, False)])
+def test_revoke_treats_an_already_invalid_token_as_revoked(
+    google_revoke: _FakeGoogleRevoke, status: int, revoked: bool
+) -> None:
+    """Google answers 400 for a token that is already invalid (e.g. the user removed
+    the app in their Google account): access is gone either way."""
+    google_revoke.status = status
+    assert revoke_google_access("tok") is revoked
 
 
 def test_status_and_disconnect_only_concern_the_logged_in_user(

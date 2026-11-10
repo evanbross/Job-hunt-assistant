@@ -16,13 +16,20 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import httpx
 import psycopg2.extras
 import pytest
+from cryptography.fernet import Fernet
+from google.oauth2.credentials import Credentials
 
+import backend.crypto as crypto
+import backend.email.google_token_store as google_token_store
 import config
 from backend.db import get_connection
+from backend.db.repositories.google_tokens import PostgresGoogleTokenRepository
 from backend.db.repositories.user_accounts import PostgresUserAccountRepository
 from backend.db.row_level_security import set_current_user
+from backend.email.google_token_store import GoogleTokenStore
 from backend.security.data_lifecycle import (
     prune_retention_tables,
     run_data_lifecycle_sweep,
@@ -72,6 +79,48 @@ def test_an_account_past_its_grace_period_is_deleted(pg_dsn: str) -> None:
         deleted = sweep_scheduled_deletions(conn)
         conn.commit()
         assert deleted == 1
+        assert PostgresUserAccountRepository(conn).get(user_id) is None
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+def _connect_google(conn, user_id: int, refresh_token: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    monkeypatch.setattr(crypto, "_fernet", None)
+    credentials = Credentials(token="access", refresh_token=refresh_token, client_id="c", client_secret="s")
+    GoogleTokenStore(PostgresGoogleTokenRepository(conn)).save(user_id, credentials)
+    conn.commit()
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+@pytest.mark.parametrize("google_reachable", [True, False])
+def test_a_deleted_account_has_its_google_access_revoked_first(
+    pg_dsn: str, monkeypatch: pytest.MonkeyPatch, google_reachable: bool
+) -> None:
+    """The cascade deletes only our copy of the token; Google must be told too. An
+    unreachable Google must not keep the account's data past its grace period."""
+    revoked: list[str] = []
+
+    def _fake_post(url: str, data: dict[str, str], timeout: float) -> httpx.Response:
+        if not google_reachable:
+            raise httpx.ConnectError("no route to host")
+        revoked.append(data["token"])
+        return httpx.Response(200)
+
+    monkeypatch.setattr(google_token_store.httpx, "post", _fake_post)
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        _connect_google(conn, user_id, "doomed-refresh", monkeypatch)
+        _set_deletion_requested_at(
+            pg_dsn, user_id, datetime.now(UTC) - timedelta(days=config.ACCOUNT_DELETION_GRACE_DAYS + 1)
+        )
+
+        assert sweep_scheduled_deletions(conn) == 1
+        conn.commit()
+
+        assert revoked == (["doomed-refresh"] if google_reachable else [])
         assert PostgresUserAccountRepository(conn).get(user_id) is None
     finally:
         conn.close()
