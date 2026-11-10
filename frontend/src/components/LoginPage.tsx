@@ -34,6 +34,7 @@ import type { CSSProperties } from "react";
 import { apiFetch } from "../utils/apiClient.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
+import { PRIVACY_PATH } from "./public/publicSite.ts";
 
 const styles = {
   wrap: {
@@ -262,6 +263,10 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
               <span style={styles.toggleLink} onClick={() => switchMode("create")}>Create one</span>
             </>
           )}
+        </div>
+        {/* ai: claude-opus-5-5 | 2026-11-10 */}
+        <div style={{ ...styles.toggle, marginTop: "18px", fontSize: "12px" }}>
+          <a href={PRIVACY_PATH} style={{ color: "var(--text-muted, #777)" }}>Privacy policy</a>
         </div>
       </div>
     </div>

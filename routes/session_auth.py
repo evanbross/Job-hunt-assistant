@@ -55,6 +55,7 @@ from flask.typing import ResponseReturnValue
 from pydantic import BaseModel, ValidationError, field_validator
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import config
 from backend.app_mode import app_mode
 from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
@@ -474,7 +475,9 @@ def logout() -> ResponseReturnValue:
 @session_auth_bp.route("/session", methods=["GET"])
 def session_status() -> ResponseReturnValue:
     if not session.get("authenticated"):
-        return jsonify({"authenticated": False})
+        # ai: claude-opus-5-5 | 2026-11-10 -- the page shows a logged-out visitor the
+        # public homepage when hosted and goes straight to login on the desktop.
+        return jsonify({"authenticated": False, "app_mode": app_mode()})
     with get_repos() as repos:
         account = repos["user_accounts"].get(session.get("user_id"))
     return jsonify(
@@ -515,6 +518,9 @@ def get_account() -> ResponseReturnValue:
             # ai: claude-opus-5-5 | 2026-11-07 -- "desktop" | "hosted": lets Settings hide
             # sections that only configure the user's own machine (e.g. Import Listener).
             "app_mode": app_mode(),
+            # ai: claude-opus-5-5 | 2026-11-10 -- Settings > Account says when a
+            # requested deletion becomes permanent; config owns the number.
+            "deletion_grace_days": config.ACCOUNT_DELETION_GRACE_DAYS,
         }
     )
 

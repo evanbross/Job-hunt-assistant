@@ -29,6 +29,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import LoginPage from "./components/LoginPage.tsx";
+import { HOME_PATH, LOGIN_PATH, PRIVACY_PATH } from "./components/public/publicSite.ts";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.ts";
 import { useServerEvent } from "./hooks/useServerEvents.ts";
 import JobQueue from "./components/JobQueue/index.tsx";
@@ -56,6 +57,9 @@ const CompleteSetupPage = lazy(() => import("./components/CompleteSetupPage.tsx"
 const VerifyAccountPage = lazy(() => import("./components/VerifyAccountPage.tsx"));
 const VerifyEmailChangePage = lazy(() => import("./components/VerifyEmailChangePage.tsx"));
 const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.tsx"));
+// ai: claude-opus-5-5 | 2026-11-10 -- public pages (components/public/)
+const HomePage = lazy(() => import("./components/public/HomePage.tsx"));
+const PrivacyPolicyPage = lazy(() => import("./components/public/PrivacyPolicyPage.tsx"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.tsx"));
 const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
@@ -235,6 +239,9 @@ export default function App() {
     }
     return "queue";
   });
+  // ai: claude-opus-5-5 | 2026-11-10 -- from the logged-out session check: hosted shows
+  // visitors the public homepage at "/", the desktop goes straight to sign-in.
+  const [appMode, setAppMode] = useState<SessionStatusResponse["app_mode"]>(undefined);
   const [appAuthenticated, setAppAuthenticated] = useState<boolean | null>(null); // null | true | false — app login gate, distinct from Google authStatus below
   const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.tsx
   const [authStatus, setAuthStatus] = useState<boolean | null>(null); // null | true | false
@@ -352,6 +359,7 @@ export default function App() {
         if (cancelled) return;
         setAppAuthenticated(!!data.authenticated);
         setMustCompleteSetup(!!data.must_complete_setup);
+        setAppMode(data.app_mode); // ai: claude-opus-5-5 | 2026-11-10
       } catch {
         if (!cancelled) setAppAuthenticated(false);
       }
@@ -513,6 +521,16 @@ export default function App() {
         window.alert(`Disconnect failed (HTTP ${res.status}).`);
         return;
       }
+      // ai: claude-opus-5-5 | 2026-11-10 -- routes/auth.py's auth_disconnect still
+      // forgets the token when Google can't be reached; the user then has to
+      // remove the app's access themselves.
+      const data: { revoked?: boolean } = await res.json().catch(() => ({}));
+      if (data.revoked === false) {
+        window.alert(
+          "Disconnected here, but Google couldn't be reached to revoke access. " +
+            "To finish, remove Job Hunt Assistant at https://myaccount.google.com/permissions",
+        );
+      }
       await fetchAuthStatus();
     } catch (e) {
       window.alert("Failed to disconnect: " + (e instanceof Error ? e.message : String(e)));
@@ -524,6 +542,14 @@ export default function App() {
   // yet; an email-change link arrives while already logged in), so this
   // check must run before the login-gate early returns below.
   const pathname = window.location.pathname;
+  // ai: claude-opus-5-5 | 2026-11-10 -- public whether or not anyone is signed in.
+  if (pathname === PRIVACY_PATH) {
+    return (
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
+        <PrivacyPolicyPage />
+      </Suspense>
+    );
+  }
   if (pathname === "/verify-account") {
     const token = new URLSearchParams(window.location.search).get("token");
     return (
@@ -551,9 +577,19 @@ export default function App() {
 
   if (appAuthenticated === null) return <LoadingSpinner label="Loading…" fullPage />; // session check in flight — ai: claude-opus-5-5 | 2026-10-23, was a blank page
   if (appAuthenticated === false) {
+    // ai: claude-opus-5-5 | 2026-11-10
+    if (appMode === "hosted" && pathname === HOME_PATH) {
+      return (
+        <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
+          <HomePage />
+        </Suspense>
+      );
+    }
     return (
       <LoginPage
         onLoginSuccess={() => {
+          // ai: claude-opus-5-5 | 2026-11-10 -- signed in from /login: show the app at "/".
+          if (window.location.pathname === LOGIN_PATH) window.history.replaceState({}, "", HOME_PATH);
           setAppAuthenticated(true);
           fetch("/api/session", { credentials: "include" })
             .then((res) => res.json())

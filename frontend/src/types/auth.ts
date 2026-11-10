@@ -45,6 +45,8 @@ export interface AccountInfo {
   // ai: claude-opus-5-5 | 2026-11-07
   /** backend/app_mode.py: "hosted" hides settings that only configure the user's own machine. */
   app_mode: "desktop" | "hosted";
+  /** Days between a deletion request and permanent deletion (config.ACCOUNT_DELETION_GRACE_DAYS). */
+  deletion_grace_days: number; // ai: claude-opus-5-5 | 2026-11-10
 }
 
 /** GET /api/auth/status response (routes/auth.py's auth_status). */
@@ -65,6 +67,8 @@ export interface AuthGoogleStartResponse {
 /** GET /api/session response (routes/session_auth.py's session_status). */
 export interface SessionStatusResponse {
   authenticated: boolean;
+  /** Sent only when logged out (routes/session_auth.py): picks homepage vs. login. */
+  app_mode?: "desktop" | "hosted"; // ai: claude-opus-5-5 | 2026-11-10
   must_complete_setup?: boolean;
   deletion_requested_at?: string | null;
 }

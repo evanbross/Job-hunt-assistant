@@ -34,13 +34,14 @@ import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import { fetchSettingsSchema } from "../utils/settingsSchema.ts";
 import AccountsPanel from "./AccountsPanel.tsx"; // ai: claude-opus-5-5 | 2026-11-09
 import ApplicationProfilePanel from "./ApplicationProfilePanel.tsx";
+import AccountDataSection from "./AccountDataSection.tsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.tsx";
 import RegistrationInvitesPanel from "./RegistrationInvitesPanel.tsx";
 import Modal from "./common/Modal.tsx";
 import ResumeUpload from "./ResumeUpload.tsx";
 import { SchemaField, SchemaFieldGroup } from "./SchemaFields.tsx";
 import type { SettingsConfigDraft } from "./SchemaFields.tsx";
-import { helpTextStyle, labelStyle } from "./settingsStyles.ts";
+import { formBox, helpTextStyle, labelStyle, sectionSubheadingStyle } from "./settingsStyles.ts";
 import SetupWizardPanel from "./SetupWizardPanel.tsx";
 import type { ApiErrorBody } from "../types/common.ts";
 import type { AccountInfo, AuthStatusResponse } from "../types/auth.ts";
@@ -500,6 +501,14 @@ function AccountSection() {
           </div>
         </form>
       </div>
+
+      {/* ai: claude-opus-5-5 | 2026-11-10 */}
+      <AccountDataSection
+        account={account}
+        onDeletionChange={(deletionRequestedAt) =>
+          setAccount((prev) => (prev ? { ...prev, deletion_requested_at: deletionRequestedAt } : prev))
+        }
+      />
     </div>
   );
 }
@@ -2948,13 +2957,6 @@ const navDividerLabel: CSSProperties = {
   color: "var(--text-muted)",
 };
 
-const sectionSubheadingStyle: CSSProperties = {
-  color: "var(--text)",
-  fontSize: "13px",
-  fontWeight: 700,
-  margin: "0 0 10px 0",
-};
-
 const settingRowStyle: CSSProperties = {
   alignItems: "center",
   display: "flex",
@@ -2988,14 +2990,6 @@ const listenerEndpointStyle: CSSProperties = {
   fontSize: "13px",
   marginTop: "6px",
   overflowWrap: "anywhere",
-};
-
-const formBox: CSSProperties = {
-  background: "var(--surface2)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "14px",
-  marginBottom: "16px",
 };
 
 const formGrid: CSSProperties = {

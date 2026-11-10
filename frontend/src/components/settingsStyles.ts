@@ -82,3 +82,19 @@ export const listThStyle: CSSProperties = {
 };
 
 export const listTdStyle: CSSProperties = { padding: "8px", borderBottom: "1px solid var(--border)", verticalAlign: "top" };
+
+// ai: claude-opus-5-5 | 2026-11-10 -- moved from SettingsPanel.tsx so AccountDataSection.tsx shares them.
+export const sectionSubheadingStyle: CSSProperties = {
+  color: "var(--text)",
+  fontSize: "13px",
+  fontWeight: 700,
+  margin: "0 0 10px 0",
+};
+
+export const formBox: CSSProperties = {
+  background: "var(--surface2)",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius)",
+  padding: "14px",
+  marginBottom: "16px",
+};

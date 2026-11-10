@@ -26,6 +26,7 @@ const ACCOUNT: AccountInfo = {
   password_pending_default: false,
   deletion_requested_at: null,
   app_mode: "hosted",
+  deletion_grace_days: 30,
 };
 
 const SCHEMA: SettingsSchema = {

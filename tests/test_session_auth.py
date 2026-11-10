@@ -132,7 +132,7 @@ def _register_and_activate(client, sent_emails, *, email: str = _TEST_EMAIL, pas
 def test_session_status_before_login(client) -> None:
     resp = client.get("/api/session")
     assert resp.status_code == 200
-    assert resp.get_json() == {"authenticated": False}
+    assert resp.get_json() == {"authenticated": False, "app_mode": "desktop"}
 
 
 def test_protected_route_rejects_unauthenticated_request(client) -> None:
@@ -178,7 +178,7 @@ def test_start_registration_claims_the_pre_seeded_placeholder(client, sent_email
         assert repos["user_accounts"].get_by_email("unclaimed@localhost") is None
 
     # no session yet -- registration hasn't been completed
-    assert client.get("/api/session").get_json() == {"authenticated": False}
+    assert client.get("/api/session").get_json()["authenticated"] is False
 
     assert len(sent_emails) == 1
     assert sent_emails[0]["to"] == _TEST_EMAIL
@@ -421,6 +421,7 @@ def test_get_account_returns_name_and_email(client) -> None:
         "password_pending_default": False,
         "deletion_requested_at": None,
         "app_mode": "desktop",  # ai: claude-opus-5-5 | 2026-11-07
+        "deletion_grace_days": config.ACCOUNT_DELETION_GRACE_DAYS,  # ai: claude-opus-5-5 | 2026-11-10
     }
 
 

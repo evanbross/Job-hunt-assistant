@@ -661,6 +661,18 @@ DB doesn't seed it, or the first stranger to sign up owns the seed data.
   Chrome Web Store anyway. The privacy policy must cover Gmail data (Limited Use),
   resumes, AI-provider data flow (users' content goes to Anthropic/OpenAI under *their*
   keys), retention, and deletion.
+  - **Done 2026-11-10: homepage and privacy policy**, in the app
+    (`frontend/src/components/public/`): hosted, a logged-out visitor at `/` gets the
+    homepage; `/privacy` is public everywhere; the login page links to it. Contact
+    `privacy@zombietech.biz` (alias still to be created in Forward Email). Facts the pages
+    state live in `publicSite.ts`. Making the policy true took four fixes: the Gmail
+    client refuses to search without a real sender filter (it could list the whole
+    inbox); disconnect and final account deletion revoke the Google grant, not just the
+    stored token; Settings > Account gained *Download my data* and *Delete my account*
+    (the routes had no UI); every production container's logs rotate (5 x 10 MB).
+    When choosing the server, update the policy's hosting line, and its "stored in the
+    United States" if the server isn't there. Sentry is listed: drop it if never enabled.
+  - Next: Terms of Service.
 - **Scraping exposure.** Hosted, server-side scraping of LinkedIn and other boards is
   a different legal and ToS posture than a personal desktop tool. The extension model
   (user's own browser, user's own session) is the safer default for hosted users.
