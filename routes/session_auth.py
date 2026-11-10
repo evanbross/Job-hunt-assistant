@@ -82,6 +82,7 @@ from backend.security.audit_log import (
     PASSWORD_CHANGED,
     PASSWORD_RESET_COMPLETED,
     PASSWORD_RESET_REQUESTED,
+    TERMS_ACCEPTED,
     record_event,
 )
 from backend.security.data_export import export_user_data
@@ -92,6 +93,11 @@ from backend.security.rate_limiter import (
     hash_identifier,
 )
 from backend.security.registration_invites import consume_invite, may_start_registration
+from backend.security.terms_of_service import (
+    TERMS_VERSION,
+    terms_acceptance_required,
+    terms_required,
+)
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -124,6 +130,10 @@ ACCOUNT_DELETION_USER = Policy("account-deletion-user", 5, _WINDOW_15_MIN)
 _NOT_INVITED_MESSAGE = (
     "Registration is by invitation only. Ask the administrator to invite this email address."
 )
+
+# ai: claude-opus-5-5 | 2026-11-10
+_TERMS_REQUIRED_MESSAGE = "You must agree to the Terms of Service to create an account."
+_TERMS_CHANGED_MESSAGE = "The Terms of Service have changed. Reload the page to read the current version."
 
 # ai: claude-opus-5-5 | 2026-11-09
 _DISABLED_MESSAGE = "This account has been disabled. Contact the administrator."
@@ -168,6 +178,15 @@ class CreateAccountRequest(_NotBlankModel):
 class CompleteRegistrationRequest(_NotBlankModel):
     token: str
     password: str
+    # ai: claude-opus-5-5 | 2026-11-10 -- the registration form's Terms checkbox;
+    # required on a hosted deployment (backend/security/terms_of_service.py)
+    accept_terms: bool = False
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+class AcceptTermsRequest(_NotBlankModel):
+    # The version the page showed, so the record names what was actually read.
+    version: str
 
 
 class RequestEmailChangeRequest(_NotBlankModel):
@@ -292,6 +311,10 @@ def complete_registration() -> ResponseReturnValue:
             jsonify({"error": f"Password must be at least {_MIN_PASSWORD_LENGTH} characters"}),
             400,
         )
+    # ai: claude-opus-5-5 | 2026-11-10
+    terms_apply = terms_required()
+    if terms_apply and not body.accept_terms:
+        return jsonify({"error": _TERMS_REQUIRED_MESSAGE, "code": "terms_required"}), 400
 
     with get_repos() as repos:
         account = repos["user_accounts"].complete_registration(
@@ -303,6 +326,9 @@ def complete_registration() -> ResponseReturnValue:
             repos["conn"].rollback()
             return jsonify({"error": _NOT_INVITED_MESSAGE}), 403
         if account is not None:
+            # ai: claude-opus-5-5 | 2026-11-10 -- same transaction as the password
+            if terms_apply:
+                repos["user_accounts"].record_terms_acceptance(account["id"], TERMS_VERSION)
             repos["conn"].commit()
 
     if account is None:
@@ -311,6 +337,8 @@ def complete_registration() -> ResponseReturnValue:
 
     with get_repos(account["id"]) as event_repos:
         record_event(event_repos, account["id"], ACCOUNT_REGISTERED)
+        if terms_apply:  # ai: claude-opus-5-5 | 2026-11-10
+            record_event(event_repos, account["id"], TERMS_ACCEPTED, {"version": TERMS_VERSION})
         event_repos["conn"].commit()
     _start_session(account["id"])
     return jsonify({"authenticated": True})
@@ -489,8 +517,32 @@ def session_status() -> ResponseReturnValue:
             "must_complete_setup": bool(account and account.get("must_complete_setup")),
             # Already an ISO string (see get_account()'s identical field below).
             "deletion_requested_at": account.get("deletion_requested_at") if account else None,
+            # ai: claude-opus-5-5 | 2026-11-10 -- the app shows the Terms to accept
+            # before anything else (backend/security/terms_of_service.py).
+            "terms_acceptance_required": bool(account and terms_acceptance_required(account)),
+            "app_mode": app_mode(),
         }
     )
+
+
+# ai: claude-opus-5-5 | 2026-11-10
+@session_auth_bp.route("/account/accept-terms", methods=["POST"])
+def accept_terms() -> ResponseReturnValue:
+    """Record that the logged-in account accepted the Terms of Service version the page
+    showed it. A stale version (the terms changed while the page was open) is refused,
+    so the record never names terms the user did not see."""
+    user_id = current_user_id()
+    try:
+        body = AcceptTermsRequest.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "The Terms of Service version is required"}), 400
+    if body.version != TERMS_VERSION:
+        return jsonify({"error": _TERMS_CHANGED_MESSAGE, "code": "terms_changed"}), 409
+    with get_repos() as repos:
+        repos["user_accounts"].record_terms_acceptance(user_id, TERMS_VERSION)
+        record_event(repos, user_id, TERMS_ACCEPTED, {"version": TERMS_VERSION})
+        repos["conn"].commit()
+    return jsonify({"status": "accepted", "version": TERMS_VERSION})
 
 
 @session_auth_bp.route("/account", methods=["GET"])

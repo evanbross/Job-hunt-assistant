@@ -672,7 +672,21 @@ DB doesn't seed it, or the first stranger to sign up owns the seed data.
     (the routes had no UI); every production container's logs rotate (5 x 10 MB).
     When choosing the server, update the policy's hosting line, and its "stored in the
     United States" if the server isn't there. Sentry is listed: drop it if never enabled.
-  - Next: Terms of Service.
+  - **Done 2026-11-10: Terms of Service**, public at `/terms`
+    (`frontend/src/components/public/TermsOfServicePage.tsx`), linked from every public
+    page and the login page. Delaware law, disputes in Delaware courts (no arbitration),
+    age 16+, free for now with 30 days' notice before any charge, liability capped at the
+    greater of 12 months' fees or US$100. Acceptance is recorded: on a hosted deployment
+    sign-up requires the checkbox, and `user_accounts.terms_accepted_version` /
+    `terms_accepted_at` plus a `terms_accepted` audit event store which version and when.
+    An account that has not accepted the current version (every account made before
+    today, or after the terms change) sees the terms instead of the app until it accepts
+    (`POST /api/account/accept-terms`). Admins and the desktop app are exempt. To change
+    the terms: edit the page and bump `TERMS_VERSION` in both `publicSite.ts` and
+    `backend/security/terms_of_service.py` (a test fails if they differ); the page
+    promises an email 30 days before a material change takes effect.
+  - Legal review: both documents were drafted without a lawyer. Have one read them
+    before opening to strangers, or before charging.
 - **Scraping exposure.** Hosted, server-side scraping of LinkedIn and other boards is
   a different legal and ToS posture than a personal desktop tool. The extension model
   (user's own browser, user's own session) is the safer default for hosted users.

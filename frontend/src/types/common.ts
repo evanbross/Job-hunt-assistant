@@ -34,6 +34,8 @@
 /** Generic error body returned by most routes on a non-2xx response. */
 export interface ApiErrorBody {
   error?: string;
+  /** A machine-readable reason some routes add, e.g. "terms_required", "account_disabled". */
+  code?: string; // ai: claude-opus-5-5 | 2026-11-10
 }
 
 /** GET /api/system/health response (routes/system.py's health_check). */

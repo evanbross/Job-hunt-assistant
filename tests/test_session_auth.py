@@ -239,6 +239,8 @@ def test_complete_registration_with_valid_token_grants_session(client, sent_emai
         "authenticated": True,
         "must_complete_setup": False,
         "deletion_requested_at": None,
+        "terms_acceptance_required": False,
+        "app_mode": "desktop",
     }
 
 
@@ -571,6 +573,8 @@ def test_reset_password_with_valid_token_grants_session_and_replaces_password(
         "authenticated": True,
         "must_complete_setup": False,
         "deletion_requested_at": None,
+        "terms_acceptance_required": False,
+        "app_mode": "desktop",
     }
 
     client.post("/api/logout")

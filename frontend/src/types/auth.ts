@@ -67,10 +67,13 @@ export interface AuthGoogleStartResponse {
 /** GET /api/session response (routes/session_auth.py's session_status). */
 export interface SessionStatusResponse {
   authenticated: boolean;
-  /** Sent only when logged out (routes/session_auth.py): picks homepage vs. login. */
-  app_mode?: "desktop" | "hosted"; // ai: claude-opus-5-5 | 2026-11-10
+  // ai: claude-opus-5-5 | 2026-11-10
+  /** Picks homepage vs. login when logged out, and whether sign-up includes the terms. */
+  app_mode?: "desktop" | "hosted";
   must_complete_setup?: boolean;
   deletion_requested_at?: string | null;
+  /** The account must accept the current Terms of Service before using the app. */
+  terms_acceptance_required?: boolean;
 }
 
 // ai: claude-opus-5-5 | 2026-11-07

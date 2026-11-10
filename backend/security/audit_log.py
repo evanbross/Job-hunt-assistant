@@ -54,6 +54,8 @@ REGISTRATION_INVITE_REVOKED: Final = "registration_invite_revoked"
 ACCOUNT_DISABLED: Final = "account_disabled"
 ACCOUNT_ENABLED: Final = "account_enabled"
 REGISTRATION_LINK_RESENT: Final = "registration_link_resent"
+# ai: claude-opus-5-5 | 2026-11-10 -- detail holds the version accepted
+TERMS_ACCEPTED: Final = "terms_accepted"
 
 EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -77,6 +79,7 @@ EVENTS: Final[frozenset[str]] = frozenset(
         ACCOUNT_DISABLED,
         ACCOUNT_ENABLED,
         REGISTRATION_LINK_RESENT,
+        TERMS_ACCEPTED,
     }
 )
 

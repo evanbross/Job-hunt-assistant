@@ -34,7 +34,7 @@ import type { CSSProperties } from "react";
 import { apiFetch } from "../utils/apiClient.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
-import { PRIVACY_PATH } from "./public/publicSite.ts";
+import { PRIVACY_PATH, TERMS_PATH } from "./public/publicSite.ts";
 
 const styles = {
   wrap: {
@@ -267,6 +267,8 @@ export default function LoginPage({ onLoginSuccess }: LoginPageProps) {
         {/* ai: claude-opus-5-5 | 2026-11-10 */}
         <div style={{ ...styles.toggle, marginTop: "18px", fontSize: "12px" }}>
           <a href={PRIVACY_PATH} style={{ color: "var(--text-muted, #777)" }}>Privacy policy</a>
+          {" · "}
+          <a href={TERMS_PATH} style={{ color: "var(--text-muted, #777)" }}>Terms of Service</a>
         </div>
       </div>
     </div>

@@ -377,6 +377,16 @@ class PostgresUserAccountRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-opus-5-5 | 2026-11-10
+    def record_terms_acceptance(self, user_id: int, version: str) -> None:
+        """Record that the account accepted Terms of Service *version* just now."""
+        self._execute(
+            "UPDATE user_accounts"
+            " SET terms_accepted_version = %s, terms_accepted_at = NOW(), updated_at = NOW()"
+            " WHERE id = %s",
+            [version, user_id],
+        )
+
     def record_login(self, user_id: int) -> None:
         self._execute("UPDATE user_accounts SET last_login_at = NOW() WHERE id = %s", [user_id])
 

@@ -965,6 +965,11 @@ def migrate_schema(conn: Any) -> None:
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ")
     cur.execute("ALTER TABLE user_accounts ALTER COLUMN created_at SET DEFAULT NOW()")
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ")
+    # ai: claude-opus-5-5 | 2026-11-10 -- the Terms of Service version the account last
+    # accepted, and when (backend/security/terms_of_service.py). NULL = never accepted:
+    # every account made before the terms existed, and every desktop-app account.
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS terms_accepted_version TEXT")
+    cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ")
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables

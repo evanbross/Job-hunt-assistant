@@ -135,6 +135,8 @@ def test_session_reports_must_complete_setup_true_for_default_admin(client) -> N
         "authenticated": True,
         "must_complete_setup": True,
         "deletion_requested_at": None,
+        "terms_acceptance_required": False,
+        "app_mode": "desktop",
     }
 
 
@@ -275,6 +277,8 @@ def test_completing_password_then_email_clears_gate(client, sent_emails) -> None
         "authenticated": True,
         "must_complete_setup": False,
         "deletion_requested_at": None,
+        "terms_acceptance_required": False,
+        "app_mode": "desktop",
     }
     assert client.get("/api/jobs/queue?view=queue").status_code == 200
 
@@ -299,6 +303,8 @@ def test_completing_email_then_password_clears_gate(client, sent_emails) -> None
         "authenticated": True,
         "must_complete_setup": False,
         "deletion_requested_at": None,
+        "terms_acceptance_required": False,
+        "app_mode": "desktop",
     }
     assert client.get("/api/jobs/queue?view=queue").status_code == 200
 

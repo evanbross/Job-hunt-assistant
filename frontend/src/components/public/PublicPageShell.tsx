@@ -10,7 +10,15 @@
 // ai: claude-opus-5-5 | 2026-11-10
 // Header and footer shared by the pages anyone can open without signing in.
 import type { CSSProperties, ReactNode } from "react";
-import { APP_NAME, COMPANY_NAME, HOME_PATH, LOGIN_PATH, PRIVACY_CONTACT_EMAIL, PRIVACY_PATH } from "./publicSite.ts";
+import {
+  APP_NAME,
+  COMPANY_NAME,
+  HOME_PATH,
+  LOGIN_PATH,
+  PRIVACY_CONTACT_EMAIL,
+  PRIVACY_PATH,
+  TERMS_PATH,
+} from "./publicSite.ts";
 
 const styles: Record<string, CSSProperties> = {
   page: { minHeight: "100vh", display: "flex", flexDirection: "column", background: "var(--bg)", color: "var(--text)" },
@@ -66,6 +74,7 @@ export function PublicFooter() {
     <footer style={styles.footer}>
       <span>© {new Date().getFullYear()} {COMPANY_NAME}</span>
       <a href={PRIVACY_PATH} style={styles.footerLink}>Privacy policy</a>
+      <a href={TERMS_PATH} style={styles.footerLink}>Terms of Service</a>
       <a href={`mailto:${PRIVACY_CONTACT_EMAIL}`} style={styles.footerLink}>{PRIVACY_CONTACT_EMAIL}</a>
     </footer>
   );

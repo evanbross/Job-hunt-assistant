@@ -37,6 +37,7 @@ import type { CSSProperties } from "react";
 import { apiFetch } from "../utils/apiClient.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import type { ApiErrorBody } from "../types/common.ts";
+import { PRIVACY_PATH, TERMS_PATH } from "./public/publicSite.ts";
 
 const styles = {
   wrap: {
@@ -86,16 +87,31 @@ const styles = {
     fontSize: "13px",
     marginBottom: "14px",
   } as CSSProperties,
+  agree: {
+    display: "flex",
+    gap: "8px",
+    alignItems: "flex-start",
+    fontSize: "13px",
+    lineHeight: 1.45,
+    marginBottom: "16px",
+    color: "var(--text, #333)",
+  } as CSSProperties,
 };
 
 interface VerifyAccountPageProps {
   token?: string | null;
   onLoginSuccess: () => void;
+  /** A hosted deployment: the account can't be created without accepting the terms. */
+  termsRequired: boolean; // ai: claude-opus-5-5 | 2026-11-10
 }
 
-export default function VerifyAccountPage({ token, onLoginSuccess }: VerifyAccountPageProps) {
+export default function VerifyAccountPage({ token, onLoginSuccess, termsRequired }: VerifyAccountPageProps) {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  // ai: claude-opus-5-5 | 2026-11-10 -- also turned on if the server says the terms
+  // apply after all (the session check that sets termsRequired failed).
+  const [showTerms, setShowTerms] = useState(termsRequired);
+  const [acceptTerms, setAcceptTerms] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -126,10 +142,11 @@ export default function VerifyAccountPage({ token, onLoginSuccess }: VerifyAccou
       const res = await apiFetch("/api/account/complete-registration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, password }),
+        body: JSON.stringify({ token, password, accept_terms: showTerms && acceptTerms }),
       });
       const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
+        if (data.code === "terms_required") setShowTerms(true); // ai: claude-opus-5-5 | 2026-11-10
         setError(data.error || `Request failed (HTTP ${res.status})`);
         return;
       }
@@ -173,6 +190,21 @@ export default function VerifyAccountPage({ token, onLoginSuccess }: VerifyAccou
               required
             />
           </div>
+          {/* ai: claude-opus-5-5 | 2026-11-10 */}
+          {showTerms && (
+            <label style={styles.agree}>
+              <input
+                type="checkbox"
+                checked={acceptTerms}
+                onChange={(e) => setAcceptTerms(e.target.checked)}
+                required
+              />
+              <span>
+                I agree to the <a href={TERMS_PATH} target="_blank" rel="noreferrer">Terms of Service</a> and
+                have read the <a href={PRIVACY_PATH} target="_blank" rel="noreferrer">Privacy Policy</a>.
+              </span>
+            </label>
+          )}
           <button type="submit" className="btn-primary" style={{ width: "100%" }} disabled={submitting}>
             {submitting ? "Setting password…" : "Set password and sign in"}
           </button>

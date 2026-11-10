@@ -29,7 +29,7 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
 import type { CSSProperties } from "react";
 import LoginPage from "./components/LoginPage.tsx";
-import { HOME_PATH, LOGIN_PATH, PRIVACY_PATH } from "./components/public/publicSite.ts";
+import { HOME_PATH, LOGIN_PATH, PRIVACY_PATH, TERMS_PATH } from "./components/public/publicSite.ts";
 import { apiFetch, UNAUTHENTICATED_EVENT } from "./utils/apiClient.ts";
 import { useServerEvent } from "./hooks/useServerEvents.ts";
 import JobQueue from "./components/JobQueue/index.tsx";
@@ -60,6 +60,8 @@ const ResetPasswordPage = lazy(() => import("./components/ResetPasswordPage.tsx"
 // ai: claude-opus-5-5 | 2026-11-10 -- public pages (components/public/)
 const HomePage = lazy(() => import("./components/public/HomePage.tsx"));
 const PrivacyPolicyPage = lazy(() => import("./components/public/PrivacyPolicyPage.tsx"));
+const TermsOfServicePage = lazy(() => import("./components/public/TermsOfServicePage.tsx"));
+const AcceptTermsPage = lazy(() => import("./components/public/AcceptTermsPage.tsx"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.tsx"));
 const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
@@ -244,6 +246,7 @@ export default function App() {
   const [appMode, setAppMode] = useState<SessionStatusResponse["app_mode"]>(undefined);
   const [appAuthenticated, setAppAuthenticated] = useState<boolean | null>(null); // null | true | false — app login gate, distinct from Google authStatus below
   const [mustCompleteSetup, setMustCompleteSetup] = useState(false); // ai: claude-sonnet-5 | 2026-08-27 — default-admin bootstrap gate, see CompleteSetupPage.tsx
+  const [termsAcceptanceRequired, setTermsAcceptanceRequired] = useState(false); // ai: claude-opus-5-5 | 2026-11-10 — see AcceptTermsPage.tsx
   const [authStatus, setAuthStatus] = useState<boolean | null>(null); // null | true | false
   const [emailFocusId, setEmailFocusId] = useState<string | null>(null);
   const [focusedJobCard, setFocusedJobCard] = useState<FocusedJobCard | null>(null);
@@ -350,6 +353,22 @@ export default function App() {
   // ai: claude-sonnet-5 | 2026-08-20 — app-login gate: check once on mount,
   // and drop back to the login screen if any apiFetch() call gets a 401
   // (e.g. the session cookie expired mid-use).
+  // ai: claude-opus-5-5 | 2026-11-10 -- one place that reads /api/session's gates, for
+  // the first check and for every way of signing in.
+  const applySession = useCallback((data: SessionStatusResponse) => {
+    setAppAuthenticated(!!data.authenticated);
+    setMustCompleteSetup(!!data.must_complete_setup);
+    setTermsAcceptanceRequired(!!data.terms_acceptance_required);
+    setAppMode(data.app_mode);
+  }, []);
+  const handleLoginSuccess = useCallback(() => {
+    setAppAuthenticated(true);
+    fetch("/api/session", { credentials: "include" })
+      .then((res) => res.json())
+      .then(applySession)
+      .catch(() => {});
+  }, [applySession]);
+
   useEffect(() => {
     let cancelled = false;
     const checkSession = async () => {
@@ -357,9 +376,7 @@ export default function App() {
         const res = await fetch("/api/session", { credentials: "include" });
         const data: SessionStatusResponse = await res.json();
         if (cancelled) return;
-        setAppAuthenticated(!!data.authenticated);
-        setMustCompleteSetup(!!data.must_complete_setup);
-        setAppMode(data.app_mode); // ai: claude-opus-5-5 | 2026-11-10
+        applySession(data); // ai: claude-opus-5-5 | 2026-11-10
       } catch {
         if (!cancelled) setAppAuthenticated(false);
       }
@@ -372,7 +389,7 @@ export default function App() {
       cancelled = true;
       window.removeEventListener(UNAUTHENTICATED_EVENT, onUnauthenticated);
     };
-  }, []);
+  }, [applySession]);
 
   const handleLogout = async () => {
     if (!confirmDiscardUnsaved()) return; // ai: claude-opus-5-5 | 2026-10-26
@@ -550,11 +567,25 @@ export default function App() {
       </Suspense>
     );
   }
+  if (pathname === TERMS_PATH) {
+    return (
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
+        <TermsOfServicePage />
+      </Suspense>
+    );
+  }
   if (pathname === "/verify-account") {
+    // ai: claude-opus-5-5 | 2026-11-10 -- waits for the session check, which says
+    // whether this deployment's sign-up includes accepting the terms.
+    if (appAuthenticated === null) return <LoadingSpinner label="Loading…" fullPage />;
     const token = new URLSearchParams(window.location.search).get("token");
     return (
       <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
-        <VerifyAccountPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
+        <VerifyAccountPage
+          token={token}
+          onLoginSuccess={handleLoginSuccess}
+          termsRequired={appMode === "hosted"}
+        />
       </Suspense>
     );
   }
@@ -570,7 +601,7 @@ export default function App() {
     const token = new URLSearchParams(window.location.search).get("token");
     return (
       <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
-        <ResetPasswordPage token={token} onLoginSuccess={() => setAppAuthenticated(true)} />
+        <ResetPasswordPage token={token} onLoginSuccess={handleLoginSuccess} />
       </Suspense>
     );
   }
@@ -590,11 +621,7 @@ export default function App() {
         onLoginSuccess={() => {
           // ai: claude-opus-5-5 | 2026-11-10 -- signed in from /login: show the app at "/".
           if (window.location.pathname === LOGIN_PATH) window.history.replaceState({}, "", HOME_PATH);
-          setAppAuthenticated(true);
-          fetch("/api/session", { credentials: "include" })
-            .then((res) => res.json())
-            .then((data: SessionStatusResponse) => setMustCompleteSetup(!!data.must_complete_setup))
-            .catch(() => {});
+          handleLoginSuccess();
         }}
       />
     );
@@ -603,6 +630,14 @@ export default function App() {
     return (
       <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
         <CompleteSetupPage onComplete={() => setMustCompleteSetup(false)} />
+      </Suspense>
+    );
+  }
+  // ai: claude-opus-5-5 | 2026-11-10
+  if (termsAcceptanceRequired) {
+    return (
+      <Suspense fallback={<LoadingSpinner label="Loading…" fullPage />}>
+        <AcceptTermsPage onAccepted={() => setTermsAcceptanceRequired(false)} onLogout={handleLogout} />
       </Suspense>
     );
   }
