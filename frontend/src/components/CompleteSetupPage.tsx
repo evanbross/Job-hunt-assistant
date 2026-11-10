@@ -128,6 +128,7 @@ export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps
   const [smtpSchema, setSmtpSchema] = useState<SettingsSchema>({ user: [], system: [] });
   const [smtpSaving, setSmtpSaving] = useState(false);
   const [smtpSaved, setSmtpSaved] = useState(false);
+  const [smtpLoadError, setSmtpLoadError] = useState(""); // ai: claude-opus-5-5 | 2026-11-10
 
   // The parent passes a fresh arrow function every render; a ref keeps loadAccount stable so
   // the mount effect below fires once instead of on every parent render.
@@ -158,6 +159,31 @@ export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps
   const emailDone = !!account && account.email !== DEFAULT_ADMIN_EMAIL;
   const passwordDone = !!account && !account.password_pending_default;
 
+  // ai: claude-opus-5-5 | 2026-11-10 — every way of opening the SMTP section goes
+  // through here. A failed send used to set showSmtp directly, which skipped the
+  // fetch and left the section on "Loading…" forever (found in the hosted rehearsal).
+  const loadSmtp = async () => {
+    setShowSmtp(true);
+    setSmtpLoadError("");
+    if (smtpCfg) return;
+    try {
+      const [schemaRes, cfgRes] = await Promise.all([
+        fetchSettingsSchema(),
+        apiFetch("/api/settings/system"),
+      ]);
+      if (!cfgRes.ok || schemaRes.system.length === 0) {
+        setSmtpLoadError(
+          cfgRes.ok ? "Could not load the SMTP settings form" : `Could not load the SMTP settings (HTTP ${cfgRes.status})`,
+        );
+        return;
+      }
+      setSmtpSchema(schemaRes);
+      setSmtpCfg(await cfgRes.json());
+    } catch (err) {
+      setSmtpLoadError(describeFetchError(err));
+    }
+  };
+
   const submitEmail = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setEmailError("");
@@ -171,7 +197,7 @@ export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps
       const data: ApiErrorBody = await res.json().catch(() => ({}));
       if (!res.ok) {
         setEmailError(data.error || `Request failed (HTTP ${res.status})`);
-        if (res.status === 502) setShowSmtp(true);
+        if (res.status === 502) await loadSmtp(); // ai: claude-opus-5-5 | 2026-11-10
         return;
       }
       setEmailSent(true);
@@ -210,17 +236,6 @@ export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps
     } finally {
       setChangingPassword(false);
     }
-  };
-
-  const loadSmtp = async () => {
-    setShowSmtp(true);
-    if (smtpCfg) return;
-    const [schemaRes, cfgRes] = await Promise.all([
-      fetchSettingsSchema(),
-      apiFetch("/api/settings/system"),
-    ]);
-    setSmtpSchema(schemaRes);
-    if (cfgRes.ok) setSmtpCfg(await cfgRes.json());
   };
 
   const saveSmtp = async () => {
@@ -371,8 +386,17 @@ export default function CompleteSetupPage({ onComplete }: CompleteSetupPageProps
         {showSmtp && (
           <div style={styles.step}>
             <div style={styles.stepTitle}>SMTP relay</div>
+            {/* ai: claude-opus-5-5 | 2026-11-10 */}
             {!smtpCfg ? (
-              <div style={helpTextStyle}>Loading…</div>
+              smtpLoadError ? (
+                <div style={styles.error}>
+                  {smtpLoadError}
+                  {" — "}
+                  <span style={styles.smtpToggle} onClick={loadSmtp}>Retry</span>
+                </div>
+              ) : (
+                <div style={helpTextStyle}>Loading…</div>
+              )
             ) : (
               <>
                 <SchemaFieldGroup fields={smtpSchema.system} group="SMTP" cfg={smtpCfg} setCfg={setSmtpCfg} />
