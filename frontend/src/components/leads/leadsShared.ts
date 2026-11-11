@@ -10,7 +10,7 @@
 // ai: claude-opus-5-5 | 2026-11-11
 // Helpers shared by the Leads tab's components.
 import type { ApplicationStageStatus } from "../../types/applications.ts";
-import type { LeadSummary } from "../../types/leads.ts";
+import type { CallNotesProposal, LeadSummary } from "../../types/leads.ts";
 import { apiFetch } from "../../utils/apiClient.ts";
 import { responseErrorText } from "../../utils/contactsUtils.ts";
 
@@ -62,4 +62,28 @@ export function newContactBody(draft: NewContactDraft): Record<string, string> {
     if (value) body[key] = value;
   }
   return body;
+}
+
+// ai: claude-opus-5-5 | 2026-11-11 -- phase 2: call-notes import
+/** The lines a proposal would add to a lead's summary, labelled. */
+export function proposalSummaryItems(proposal: CallNotesProposal): string[] {
+  const items = [...proposal.summary_bullets];
+  if (proposal.compensation) items.push(`Compensation: ${proposal.compensation}`);
+  if (proposal.location) items.push(`Location: ${proposal.location}`);
+  if (proposal.interview_steps.length) items.push(`Interview steps: ${proposal.interview_steps.join("; ")}`);
+  if (proposal.next_steps.length) items.push(`Next steps: ${proposal.next_steps.join("; ")}`);
+  if (proposal.recruiter_requests.length) items.push(`They asked for: ${proposal.recruiter_requests.join("; ")}`);
+  return items;
+}
+
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/** The lead summary with a dated "From call notes" section appended (the server sanitizes it again). */
+export function appendedSummaryHtml(current: string | null, proposal: CallNotesProposal, dateLabel: string): string {
+  const items = proposalSummaryItems(proposal)
+    .map((item) => `<li>${escapeHtml(item)}</li>`)
+    .join("");
+  return `${current || ""}<h3>From call notes, ${escapeHtml(dateLabel)}</h3><ul>${items}</ul>`;
 }

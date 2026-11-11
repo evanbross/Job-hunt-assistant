@@ -13,12 +13,14 @@ schema: request -> validation -> LeadService -> repositories -> Postgres."""
 
 from __future__ import annotations
 
+import io
 from typing import Any
 
 import pytest
 from flask import Flask
 
 import config
+from backend.ai_provider import AIProviderError
 from backend.db import (
     PostgresApplicationStageRepository,
     PostgresUserAccountRepository,
@@ -26,6 +28,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.row_level_security import set_current_user
+from backend.leads.call_notes import CallNotesProposal
 from routes.applications import applications_bp
 from routes.contacts import contacts_bp
 from routes.leads import leads_bp
@@ -324,3 +327,74 @@ def test_a_row_added_on_the_applications_sheet_is_a_manual_origin_job(client_and
     assert client.post("/api/applications", json={"company": "Hand Added Co", "job_title": "Engineer"}).status_code == 201
     [row] = client.get("/api/applications").get_json()["rows"]
     assert (row["origin"], row["via"]) == ("manual", None)
+
+
+# ai: claude-opus-5-5 | 2026-11-11 -- phase 2: call-notes import. The AI call is
+# faked at routes.leads.extract_call_notes; the DB writes are real.
+def test_call_notes_are_kept_verbatim_and_the_proposal_is_only_returned(
+    client_and_user: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = client_and_user
+    job_id = _create_lead(client, first_interaction=None)
+    seen: dict[str, Any] = {}
+
+    def fake_extract(user_id: int, notes: str, lead_context: dict[str, Any], today: Any) -> CallNotesProposal:
+        seen.update(notes=notes, context=lead_context)
+        return CallNotesProposal(job_title="Principal Engineer", next_follow_up="2026-11-20", summary_bullets=["Rate 95/hr"])
+
+    monkeypatch.setattr("routes.leads.extract_call_notes", fake_extract)
+    response = client.post(f"/api/leads/{job_id}/call-notes", json={"text": "Rate <95>/hr\nPrincipal level"})
+
+    assert response.status_code == 201, response.get_json()
+    body = response.get_json()
+    assert body["ai_error"] is None
+    assert body["proposal"]["job_title"] == "Principal Engineer"
+    assert seen["notes"] == "Rate <95>/hr\nPrincipal level"
+    assert seen["context"] == {"hiring company": "Client Co", "role": "Staff Engineer", "current stage": "recruiter_reached_out"}
+    # Saved as a transcript entry, escaped; the lead itself is untouched.
+    detail = client.get(f"/api/leads/{job_id}").get_json()
+    [entry] = detail["interactions"]
+    assert (entry["kind"], entry["source"]) == ("transcript", "notetaker")
+    assert entry["body_html"] == "<p>Rate &lt;95&gt;/hr<br>Principal level</p>"
+    assert (detail["lead"]["job_title"], detail["lead"]["next_follow_up"]) == ("Staff Engineer", None)
+
+
+def test_call_notes_upload_and_an_ai_failure_still_keep_the_notes(
+    client_and_user: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, _ = client_and_user
+    job_id = _create_lead(client, first_interaction=None)
+
+    def failing_extract(*args: Any) -> CallNotesProposal:
+        raise AIProviderError("Rate limited")
+
+    monkeypatch.setattr("routes.leads.extract_call_notes", failing_extract)
+    response = client.post(
+        f"/api/leads/{job_id}/call-notes",
+        data={"file": (io.BytesIO(b"Recruiter: send your resume"), "notes.txt"), "channel": "phone"},
+        content_type="multipart/form-data",
+    )
+    assert response.status_code == 201
+    assert response.get_json()["proposal"] is None
+    assert response.get_json()["ai_error"] == "Rate limited"
+    [entry] = client.get(f"/api/leads/{job_id}").get_json()["interactions"]
+    assert (entry["channel"], entry["body_html"]) == ("phone", "<p>Recruiter: send your resume</p>")
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "status"),
+    [
+        ({"json": {"text": "   "}}, 400),
+        ({"json": {"text": "x", "channel": "fax"}}, 400),
+        ({"data": {"file": (io.BytesIO(b"%PDF"), "notes.pdf")}, "content_type": "multipart/form-data"}, 400),
+    ],
+    ids=["blank", "bad-channel", "pdf"],
+)
+def test_call_notes_rejects_bad_input_without_saving(
+    client_and_user: tuple[Any, int], kwargs: dict[str, Any], status: int
+) -> None:
+    client, _ = client_and_user
+    job_id = _create_lead(client, first_interaction=None)
+    assert client.post(f"/api/leads/{job_id}/call-notes", **kwargs).status_code == status
+    assert client.get(f"/api/leads/{job_id}").get_json()["interactions"] == []
+    assert client.post("/api/leads/999999/call-notes", json={"text": "x"}).status_code == 404

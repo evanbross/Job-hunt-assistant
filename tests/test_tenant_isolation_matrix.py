@@ -127,6 +127,8 @@ CASES: list[Case] = [
     _c("GET", "/api/leads/<int:job_id>", job_id="lead"),
     _c("PATCH", "/api/leads/<int:job_id>", {"next_follow_up": "2026-12-01"}, job_id="lead"),
     _c("POST", "/api/leads/<int:job_id>/contacts", {"contact_id": _Id("contact")}, job_id="lead"),
+    # ai: claude-opus-5-5 | 2026-11-11 -- calls the AI provider for the owner
+    _c_no_control("POST", "/api/leads/<int:job_id>/call-notes", {"text": "Call notes"}, job_id="lead"),
     _c("DELETE", "/api/leads/<int:job_id>/contacts/<int:contact_id>", job_id="lead", contact_id="contact"),
     _c("GET", "/api/jobs/<int:job_id>", job_id="job"),
     _c("PATCH", "/api/jobs/<int:job_id>", {"company": "x"}, job_id="job"),

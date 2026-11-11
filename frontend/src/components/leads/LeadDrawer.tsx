@@ -11,7 +11,7 @@
 // One lead in full (GET /api/leads/<id>): its details and follow-up date, its stage
 // (with a note in the user's own words), the people on it, the call/message/note
 // timeline, a rich-text running summary, and the job description.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
 import Modal from "../common/Modal.tsx";
 import RichTextEditor from "../common/RichTextEditor.tsx";
 import RichTextView from "../common/RichTextView.tsx";
@@ -25,6 +25,9 @@ import { formatLocalDate, formatLocalDateTime } from "../../utils/dateTimeUtils.
 import { ContactPicker, NewContactFields } from "./ContactFields.tsx";
 import InteractionModal from "./InteractionModal.tsx";
 import { emptyNewContact, getJson, localToday, newContactBody, stageLabel } from "./leadsShared.ts";
+
+// ai: claude-opus-5-5 | 2026-11-11 -- phase 2
+const CallNotesModal = lazy(() => import("./CallNotesModal.tsx"));
 
 interface LeadDrawerProps {
   jobId: number;
@@ -65,6 +68,7 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
   const [personRole, setPersonRole] = useState<ContactRole>("agency_recruiter");
   const [interactionModal, setInteractionModal] = useState<{ existing: Interaction | null } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [importingNotes, setImportingNotes] = useState(false); // ai: claude-opus-5-5 | 2026-11-11
   const [loadedContacts, setLoadedContacts] = useState<Contact[]>([]);
 
   const load = useCallback(async () => {
@@ -424,9 +428,14 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
       <section className="lead-drawer-section">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h4>Timeline</h4>
-          <button type="button" className="btn-primary" onClick={() => setInteractionModal({ existing: null })}>
-            Log call / message / note
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button type="button" className="btn-secondary" onClick={() => setImportingNotes(true)}>
+              Import call notes
+            </button>
+            <button type="button" className="btn-primary" onClick={() => setInteractionModal({ existing: null })}>
+              Log call / message / note
+            </button>
+          </div>
         </div>
         <ul className="lead-timeline">
           {timeline.length === 0 && <li className="lead-sub">Nothing logged yet.</li>}
@@ -472,6 +481,19 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
         </button>
       </section>
 
+      {importingNotes && (
+        <Suspense fallback={null}>
+          <CallNotesModal
+            lead={lead}
+            people={detail.people.map((p) => ({ id: p.id, name: p.full_name }))}
+            onChanged={() => {
+              void load();
+              onChanged();
+            }}
+            onClose={() => setImportingNotes(false)}
+          />
+        </Suspense>
+      )}
       {interactionModal && (
         <InteractionModal
           jobId={jobId}

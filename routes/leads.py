@@ -33,7 +33,15 @@ from pydantic import (
 )
 
 import config
+from backend.ai_provider import AIProviderError
 from backend.db import DuplicateJobUrlError
+from backend.leads.call_notes import (
+    CallNotesFormatError,
+    extract_call_notes,
+    normalize_notes_text,
+    notes_to_html,
+    read_call_notes_upload,
+)
 from backend.leads.lead_service import (
     DEFAULT_LEAD_STAGE,
     ContactNotFoundError,
@@ -46,7 +54,12 @@ from backend.settings_service import get_setting_int
 from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
 from backend.utils.rich_text import MAX_RICH_TEXT_LENGTH, sanitize_rich_text
 from backend.utils.stage_status_normalization import normalize_stage_status
-from backend.utils.utils import current_user_id, get_repos, invalid_request_response
+from backend.utils.utils import (
+    current_user_id,
+    get_repos,
+    invalid_request_response,
+    safe_error_message,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -437,3 +450,79 @@ def delete_interaction(interaction_id: int) -> ResponseReturnValue:
             return jsonify({"error": "Interaction not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+class CallNotesImport(BaseModel):
+    """Pasted notes come as `text`; an uploaded file replaces it (multipart form,
+    same field names). contact_id names who the call was with, if anyone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str | None = None
+    contact_id: int | None = None
+    occurred_at: UtcTimestamp | None = None
+    channel: InteractionChannel = "video"
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+@leads_bp.route("/leads/<int:job_id>/call-notes", methods=["POST"])
+def import_call_notes(job_id: int) -> ResponseReturnValue:
+    """Import a call transcript or note-taker summary into a lead. The notes are
+    saved verbatim first (a transcript entry on the timeline); then the AI provider
+    proposes updates -- role, company, comp, next steps, a follow-up date -- which
+    are only returned, never applied. A failed AI call still keeps the notes."""
+    upload = request.files.get("file")
+    raw_body = request.form.to_dict() if upload is not None or request.form else (request.get_json(silent=True) or {})
+    try:
+        body = CallNotesImport.model_validate(raw_body)
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    try:
+        if upload is not None:
+            notes = read_call_notes_upload(upload.filename or "", upload.stream.read())
+        else:
+            notes = normalize_notes_text(body.text or "")
+    except CallNotesFormatError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    user_id = current_user_id()
+    now_iso = _now_iso()
+    with get_repos() as repos:
+        lead = repos["leads"].get_lead(user_id, job_id)
+        if lead is None:
+            return jsonify({"error": "Lead not found"}), 404
+        interaction = repos["interactions"].add(
+            user_id,
+            {
+                "job_id": job_id,
+                "contact_id": body.contact_id,
+                "occurred_at": body.occurred_at or now_iso,
+                "channel": body.channel,
+                "direction": "inbound",
+                "kind": "transcript",
+                "summary": "Imported call notes",
+                "body_html": sanitize_rich_text(notes_to_html(notes)),
+                "source": "notetaker",
+            },
+            now_iso,
+        )
+        if interaction is None:
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+        stages = repos["stages"].get_by_job_id(user_id, job_id)
+    lead_context = {
+        "hiring company": lead["company"],
+        "role": lead["job_title"],
+        "current stage": stages[-1]["status"] if stages else None,
+    }
+    # The connection is released: the provider call can take tens of seconds.
+    try:
+        proposal = extract_call_notes(user_id, notes, lead_context, datetime.now(UTC).date())
+    except (AIProviderError, ValueError) as exc:
+        logger.warning("Call-notes extraction failed for job %s: %s", job_id, exc)
+        return jsonify(
+            {"interaction": interaction, "proposal": None,
+             "ai_error": safe_error_message(exc, "The AI couldn't read those notes.")}
+        ), 201
+    return jsonify({"interaction": interaction, "proposal": proposal.model_dump(), "ai_error": None}), 201

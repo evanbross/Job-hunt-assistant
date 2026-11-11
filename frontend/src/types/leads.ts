@@ -149,6 +149,28 @@ export interface ContactActivity {
   interactions: Interaction[];
 }
 
+// ai: claude-opus-5-5 | 2026-11-11 -- phase 2: call-notes import
+/** What the AI read out of imported call notes (backend/leads/call_notes.py's CallNotesProposal). */
+export interface CallNotesProposal {
+  job_title: string | null;
+  hiring_company: string | null;
+  compensation: string | null;
+  location: string | null;
+  interview_steps: string[];
+  next_steps: string[];
+  recruiter_requests: string[];
+  summary_bullets: string[];
+  one_line_summary: string | null;
+  next_follow_up: string | null;
+}
+
+/** POST /api/leads/<id>/call-notes. proposal is null when the AI call failed (ai_error says why). */
+export interface CallNotesImportResponse {
+  interaction: Interaction;
+  proposal: CallNotesProposal | null;
+  ai_error: string | null;
+}
+
 export const CHANNEL_LABELS: Record<InteractionChannel, string> = {
   phone: "Phone",
   video: "Video call",
