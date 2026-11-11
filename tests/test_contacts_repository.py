@@ -16,8 +16,8 @@ import pytest
 
 from backend.db import (
     PostgresContactEmploymentHistoryRepository,
-    PostgresContactOutreachRepository,
     PostgresContactRepository,
+    PostgresInteractionRepository,
     PostgresUserAccountRepository,
     get_connection,
     migrate_database,
@@ -58,6 +58,24 @@ def _new_user(conn: object, email: str = "owner@example.com") -> int:
     return account["id"]
 
 
+# ai: claude-opus-5-5 | 2026-11-11 -- outreach is now an outbound message in
+# interactions (contact_outreach was folded into it).
+def _log_outreach(
+    conn: object, user_id: int, contact_id: int, sent_at: str, channel: str
+) -> dict[str, object] | None:
+    return PostgresInteractionRepository(conn).add(
+        user_id,
+        {
+            "contact_id": contact_id,
+            "occurred_at": sent_at,
+            "channel": channel,
+            "direction": "outbound",
+            "kind": "message",
+        },
+        sent_at,
+    )
+
+
 def test_sync_import_adds_updates_and_reports_counts(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
@@ -86,7 +104,6 @@ def test_sync_import_preserves_user_flags_and_keeps_acted_on_contacts(pg_dsn: st
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        outreach_repo = PostgresContactOutreachRepository(conn)
         repo.sync_import(
             user_id,
             [
@@ -99,7 +116,7 @@ def test_sync_import_preserves_user_flags_and_keeps_acted_on_contacts(pg_dsn: st
         by_name = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
         assert repo.update(user_id, by_name["Jane Doe"], {"interested": True})
         assert repo.update(user_id, by_name["Recruiter Rita"], {"recruiter_type": "unrated"})
-        assert outreach_repo.add(user_id, by_name["Emailed Ed"], "2026-09-01T12:00:00+00:00", "email") is not None
+        assert _log_outreach(conn, user_id, by_name["Emailed Ed"], "2026-09-01T12:00:00+00:00", "email") is not None
         conn.commit()
 
         # Re-import with none of the four people in the file except Jane.
@@ -222,16 +239,23 @@ def test_list_with_outreach_aggregates_outreach_log(pg_dsn: str) -> None:
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        outreach_repo = PostgresContactOutreachRepository(conn)
+        interactions = PostgresInteractionRepository(conn)
         repo.sync_import(
             user_id,
             [_import_row(), _import_row(full_name="Bob Quiet", profile_url="https://linkedin.com/in/bob")],
         )
         jane_id = next(c["id"] for c in repo.get_all(user_id) if c["full_name"] == "Jane Doe")
-        first = outreach_repo.add(user_id, jane_id, "2026-09-01T12:00:00+00:00", "email")
-        outreach_repo.add(user_id, jane_id, "2026-09-10T12:00:00+00:00", "linkedin")
+        first = _log_outreach(conn, user_id, jane_id, "2026-09-01T12:00:00+00:00", "email")
+        _log_outreach(conn, user_id, jane_id, "2026-09-10T12:00:00+00:00", "linkedin")
+        # A call isn't outreach: it counts toward last_outbound_at but not the outreach list.
+        interactions.add(
+            user_id,
+            {"contact_id": jane_id, "occurred_at": "2026-09-12T12:00:00+00:00", "channel": "phone",
+             "direction": "outbound", "kind": "call"},
+            "2026-09-12T12:00:00+00:00",
+        )
         assert first is not None
-        assert outreach_repo.set_response(user_id, first["id"], "2026-09-03T08:00:00+00:00")
+        assert interactions.update(user_id, first["id"], {"response_received_at": "2026-09-03T08:00:00+00:00"})
         conn.commit()
 
         listed = {c["full_name"]: c for c in repo.list_with_outreach(user_id)}
@@ -245,50 +269,51 @@ def test_list_with_outreach_aggregates_outreach_log(pg_dsn: str) -> None:
         assert listed["Jane Doe"]["outreach"][1]["response_received_at"] is None
         assert [e["channel"] for e in listed["Jane Doe"]["outreach"]] == ["email", "linkedin"]
         assert listed["Bob Quiet"]["outreach"] == []
+        assert listed["Jane Doe"]["last_outbound_at"] == "2026-09-12T12:00:00+00:00"
+        assert listed["Bob Quiet"]["last_outbound_at"] is None
     finally:
         conn.close()
 
 
-def test_contact_outreach_repo_is_scoped_to_owning_user(pg_dsn: str) -> None:
+def test_outreach_log_is_scoped_to_owning_user(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         owner_id = _new_user(conn)
         other_id = _new_user(conn, "other@example.com")
         repo = PostgresContactRepository(conn)
-        outreach_repo = PostgresContactOutreachRepository(conn)
+        interactions = PostgresInteractionRepository(conn)
         set_current_user(conn.cursor(), owner_id)
         repo.sync_import(owner_id, [_import_row()])
         contact_id = repo.get_all(owner_id)[0]["id"]
 
         set_current_user(conn.cursor(), other_id)
-        assert outreach_repo.add(other_id, contact_id, "2026-09-01", "email") is None
+        assert _log_outreach(conn, other_id, contact_id, "2026-09-01", "email") is None
 
         set_current_user(conn.cursor(), owner_id)
-        created = outreach_repo.add(owner_id, contact_id, "2026-09-01", "email")
+        created = _log_outreach(conn, owner_id, contact_id, "2026-09-01", "email")
         assert created is not None
         set_current_user(conn.cursor(), other_id)
-        assert outreach_repo.set_response(other_id, created["id"], "2026-09-02") is False
-        assert outreach_repo.delete(other_id, created["id"]) is False
+        assert interactions.update(other_id, created["id"], {"response_received_at": "2026-09-02"}) is None
+        assert interactions.delete(other_id, created["id"]) is False
         set_current_user(conn.cursor(), owner_id)
-        assert outreach_repo.delete(owner_id, created["id"]) is True
+        assert interactions.delete(owner_id, created["id"]) is True
         assert repo.list_with_outreach(owner_id)[0]["outreach"] == []
     finally:
         conn.close()
 
 
-def test_deleting_a_contact_cascades_to_its_outreach_log(pg_dsn: str) -> None:
+def test_deleting_a_contact_cascades_to_its_interactions(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        outreach_repo = PostgresContactOutreachRepository(conn)
         repo.sync_import(user_id, [_import_row()])
         contact_id = repo.get_all(user_id)[0]["id"]
-        created = outreach_repo.add(user_id, contact_id, "2026-09-01", "email")
+        created = _log_outreach(conn, user_id, contact_id, "2026-09-01", "email")
         assert created is not None
 
         conn.cursor().execute("DELETE FROM contacts WHERE id = %s", (contact_id,))
-        assert outreach_repo.set_response(user_id, created["id"], "2026-09-02") is False
+        assert PostgresInteractionRepository(conn).get_by_id(user_id, created["id"]) is None
     finally:
         conn.close()
 
@@ -580,39 +605,40 @@ def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -
         conn.close()
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-# An install from before the LinkedIn outreach queue still has contact_emails
-# (no channel column, old constraint/sequence/index names). migrate_database() must
-# rename it in place -- keeping the logged rows, backfilled as 'email' -- not
-# create an empty contact_outreach next to it.
-def test_migration_renames_legacy_contact_emails_and_backfills_channel(pg_dsn: str) -> None:
+# ai: claude-opus-5-5 | 2026-11-11 -- was a contact_emails -> contact_outreach
+# rename test. Both legacy outreach tables (contact_emails from before 2026-10-14,
+# with no channel column, and contact_outreach after it) are now moved into
+# interactions as outbound messages and dropped -- keeping every logged row,
+# including replies, rather than leaving a second log beside the new one.
+def test_migration_moves_legacy_outreach_tables_into_interactions(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        repo.sync_import(user_id, [_import_row()])
-        contact_id = repo.get_all(user_id)[0]["id"]
-        created = PostgresContactOutreachRepository(conn).add(
-            user_id, contact_id, "2026-09-01T12:00:00+00:00", "email"
+        repo.sync_import(
+            user_id, [_import_row(), _import_row(full_name="Old Olga", profile_url="https://linkedin.com/in/olga")]
         )
-        assert created is not None
-
+        ids = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
         cur = conn.cursor()
-        cur.execute("ALTER TABLE contact_outreach DROP CONSTRAINT contact_outreach_channel_check")
-        cur.execute("ALTER TABLE contact_outreach DROP COLUMN channel")
-        cur.execute("ALTER TABLE contact_outreach RENAME TO contact_emails")
-        # Every constraint, including PostgreSQL 18+'s named NOT NULL ones.
         cur.execute(
-            "SELECT conname FROM pg_constraint WHERE conrelid = 'contact_emails'::regclass"
+            "CREATE TABLE contact_outreach (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL,"
+            " contact_id INTEGER NOT NULL, sent_at TEXT NOT NULL, response_received_at TEXT,"
+            " channel TEXT NOT NULL DEFAULT 'email')"
         )
-        for name in [row["conname"] for row in cur.fetchall()]:
-            legacy_name = name.replace("contact_outreach_", "contact_emails_", 1)
-            cur.execute(f"ALTER TABLE contact_emails RENAME CONSTRAINT {name} TO {legacy_name}")
-        cur.execute("ALTER SEQUENCE contact_outreach_id_seq RENAME TO contact_emails_id_seq")
         cur.execute(
-            "ALTER INDEX idx_contact_outreach_contact_id RENAME TO idx_contact_emails_contact_id"
+            "CREATE TABLE contact_emails (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL,"
+            " contact_id INTEGER NOT NULL, sent_at TEXT NOT NULL, response_received_at TEXT)"
         )
-        cur.execute("ALTER INDEX idx_contact_outreach_user_id RENAME TO idx_contact_emails_user_id")
+        cur.execute(
+            "INSERT INTO contact_outreach (user_id, contact_id, sent_at, response_received_at, channel)"
+            " VALUES (%s, %s, '2026-10-20T12:00:00+00:00', '2026-10-21T09:00:00+00:00', 'linkedin')",
+            (user_id, ids["Jane Doe"]),
+        )
+        cur.execute(
+            "INSERT INTO contact_emails (user_id, contact_id, sent_at)"
+            " VALUES (%s, %s, '2026-09-01T12:00:00+00:00')",
+            (user_id, ids["Old Olga"]),
+        )
         conn.commit()
 
         migrate_database(pg_dsn, runtime_database_url(pg_dsn))
@@ -621,31 +647,29 @@ def test_migration_renames_legacy_contact_emails_and_backfills_channel(pg_dsn: s
             "SELECT table_name FROM information_schema.tables"
             " WHERE table_schema = 'public' AND table_name IN ('contact_emails', 'contact_outreach')"
         )
-        assert [row["table_name"] for row in cur.fetchall()] == ["contact_outreach"]
-        cur.execute("SELECT id, contact_id, channel FROM contact_outreach")
-        assert [dict(row) for row in cur.fetchall()] == [
-            {"id": created["id"], "contact_id": contact_id, "channel": "email"}
+        assert cur.fetchall() == []
+        listed = {c["full_name"]: c for c in repo.list_with_outreach(user_id)}
+        assert listed["Jane Doe"]["outreach"] == [
+            {
+                "id": listed["Jane Doe"]["outreach"][0]["id"],
+                "sent_at": "2026-10-20T12:00:00+00:00",
+                "response_received_at": "2026-10-21T09:00:00+00:00",
+                "channel": "linkedin",
+            }
         ]
-        cur.execute("SELECT conname FROM pg_constraint WHERE conrelid = 'contact_outreach'::regclass")
-        constraint_names = {row["conname"] for row in cur.fetchall()}
-        assert not {name for name in constraint_names if name.startswith("contact_emails_")}
-        assert {
-            "contact_outreach_channel_check",
-            "contact_outreach_contact_id_fkey",
-            "contact_outreach_pkey",
-            "contact_outreach_user_id_fkey",
-        } <= constraint_names
-        # The renamed sequence still drives new ids.
-        added = PostgresContactOutreachRepository(conn).add(
-            user_id, contact_id, "2026-09-02T12:00:00+00:00", "linkedin"
-        )
-        assert added is not None and added["id"] > created["id"]
+        assert [e["channel"] for e in listed["Old Olga"]["outreach"]] == ["email"]
+        # A second migrate finds nothing left to move. End this connection's read
+        # transaction first: migrate ALTERs every tenant table and would wait on it.
+        conn.commit()
+        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
+        cur.execute("SELECT COUNT(*) AS n FROM interactions WHERE user_id = %s", (user_id,))
+        assert cur.fetchone()["n"] == 2
     finally:
         conn.close()
 
 
-# ai: claude-opus-5-5 | 2026-10-14
-def test_outreach_channel_rejects_unknown_values(pg_dsn: str) -> None:
+# ai: claude-opus-5-5 | 2026-11-11 -- was the contact_outreach channel check
+def test_interaction_channel_rejects_unknown_values(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
@@ -653,9 +677,7 @@ def test_outreach_channel_rejects_unknown_values(pg_dsn: str) -> None:
         repo.sync_import(user_id, [_import_row()])
         contact_id = repo.get_all(user_id)[0]["id"]
         with pytest.raises(psycopg2.errors.CheckViolation):
-            PostgresContactOutreachRepository(conn).add(
-                user_id, contact_id, "2026-09-01T12:00:00+00:00", "carrier_pigeon"
-            )
+            _log_outreach(conn, user_id, contact_id, "2026-09-01T12:00:00+00:00", "carrier_pigeon")
     finally:
         conn.rollback()
         conn.close()

@@ -67,6 +67,7 @@ const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
 const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.tsx"));
 const ContactsPanel = lazy(() => import("./components/ContactsPanel.tsx"));
+const LeadsPanel = lazy(() => import("./components/LeadsPanel.tsx")); // ai: claude-opus-5-5 | 2026-11-11
 const PhraseBookPanel = lazy(() => import("./components/PhraseBookPanel.tsx"));
 const ToptalPitchModal = lazy(() => import("./components/common/ToptalPitchModal.tsx"));
 const VoiceQuery = lazy(() => import("./components/VoiceQuery/index.tsx"));
@@ -81,6 +82,7 @@ const LISTENER_IMPORT_DISMISSED_AT_KEY = "jha_listener_import_dismissed_at";
 const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
+  { key: "leads", label: "Leads" }, // ai: claude-opus-5-5 | 2026-11-11
   { key: "emails", label: "Email History" },
   { key: "contacts", label: "Contacts" },
   { key: "phrasebook", label: "Phrase Book" },
@@ -776,6 +778,7 @@ export default function App() {
             focusEmailId={emailFocusId}
           />
         )}
+        {activeTab === "leads" && <LeadsPanel />}
         {activeTab === "contacts" && <ContactsPanel onUnsavedChangesChange={setUnsavedChanges} />}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (

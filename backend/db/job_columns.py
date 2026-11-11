@@ -74,6 +74,11 @@ class JobColumns:
     # card badge or the detail-pane "AI-powered job assessment" module. Only
     # ever populated for LinkedIn captures; NULL for every other source.
     LINKEDIN_AI_INSIGHT = "linkedin_ai_insight"
+    # ai: claude-opus-5-5 | 2026-11-11 — recruiter lead tracking (see
+    # backend/db/schema.py's matching migrate_schema() block).
+    ORIGIN = "origin"
+    NEXT_FOLLOW_UP = "next_follow_up"
+    SUMMARY_HTML = "summary_html"
 
     @classmethod
     def all(cls) -> frozenset[str]:
@@ -119,7 +124,9 @@ class JobColumns:
     # unconditionally, so excluding is the safer direction: a column added to
     # JobColumns later defaults to included here, not silently dropped.
     _DISPLAY_LAZY_ONLY: frozenset[str] = frozenset(
-        {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
+        # ai: claude-opus-5-5 | 2026-11-11 — summary_html added: a lead's rich-text
+        # summary is only ever shown in its lead drawer.
+        {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason", "summary_html"}
     )
 
     @classmethod
@@ -159,4 +166,5 @@ class JobColumns:
             # of re-normalizing company text and re-resolving aliases
             # client-side.
             cls.COMPANY_NORMALIZED,
+            cls.ORIGIN,  # ai: claude-opus-5-5 | 2026-11-11 — the sheet's origin badge/filter
         )

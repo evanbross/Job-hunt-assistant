@@ -7,6 +7,13 @@ or reprioritized.
 
 ## Features
 
+- [ ] **Recruiter lead tracking, phases 2-4** — Phase 1 (Leads tab, call/message/note
+      log, people on a lead, rich-text notes) built 2026-11-11 on
+      `evan-recruiter-leads-phase1`. Remaining, in order: (2) paste/upload call notes
+      with confirm-first AI extraction, LinkedIn `messages.csv` import into a
+      "Suggested leads" inbox; (3) one-thread capture button in the extension, Gmail
+      "Recruiter" label import, follow-up reminders; (4) optional live LinkedIn inbox
+      sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
 - [x] **Generic-site pagination in the browser extension** — done 2026-09-29
       (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
       detected "Next page" control (`rel="next"`, then an aria-label match,

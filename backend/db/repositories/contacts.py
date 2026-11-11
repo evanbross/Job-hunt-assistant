@@ -60,8 +60,19 @@ class PostgresContactRepository(_BaseRepo):
     # never taken from client input directly (ContactUpdate has no such
     # field) -- routes/contacts.py's update_contact() adds it itself
     # ("manual") whenever recruiter_type is part of the same request.
+    # ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added (lead tracking).
     _EDITABLE_COLUMNS: frozenset[str] = frozenset(
-        {"interested", "recruiter_type", "email_address", "notes", "decided_by"}
+        {"interested", "recruiter_type", "email_address", "notes", "decided_by", "phone", "keep_informed"}
+    )
+    # ai: claude-opus-5-5 | 2026-11-11
+    # Identity columns (backend/contacts/contact_identity.py) -- editable only on a
+    # contact added by hand: on an imported one the next LinkedIn import would
+    # silently overwrite the edit.
+    _IDENTITY_COLUMNS: frozenset[str] = frozenset(
+        {
+            "dedup_key", "full_name", "company_raw", "company_normalized", "position",
+            "normalized_title", "profile_url",
+        }
     )
 
     def get_all(self, user_id: int) -> list[dict[str, Any]]:
@@ -92,23 +103,29 @@ class PostgresContactRepository(_BaseRepo):
         cur = self._execute(
             # ai: gpt-5 | 2026-10-03
             """
+            -- ai: claude-opus-5-5 | 2026-11-11 -- outreach now reads the outbound
+            -- messages in interactions (contact_outreach was folded into it);
+            -- last_outbound_at is the last time the user reached out by any
+            -- means, which is what "keep informed" is judged against.
             SELECT c.id, c.full_name, c.company_raw, c.company_normalized,
                    c.position, c.normalized_title,
                    c.profile_url, c.connected_on, c.email_address, c.interested,
                    c.recruiter_type, c.decided_by, c.notes, c.outreach_draft,
+                   c.phone, c.keep_informed, c.source,
                    COALESCE(
                        json_agg(
                            json_build_object(
                                'id', o.id,
-                               'sent_at', o.sent_at,
+                               'sent_at', o.occurred_at,
                                'response_received_at', o.response_received_at,
                                'channel', o.channel
-                           ) ORDER BY o.sent_at, o.id
-                       ) FILTER (WHERE o.id IS NOT NULL),
+                           ) ORDER BY o.occurred_at, o.id
+                       ) FILTER (WHERE o.id IS NOT NULL AND o.direction = 'outbound' AND o.kind = 'message'),
                        '[]'::json
-                   ) AS outreach
+                   ) AS outreach,
+                   MAX(o.occurred_at) FILTER (WHERE o.direction = 'outbound') AS last_outbound_at
             FROM contacts c
-            LEFT JOIN contact_outreach o ON o.contact_id = c.id AND o.user_id = c.user_id
+            LEFT JOIN interactions o ON o.contact_id = c.id AND o.user_id = c.user_id
             WHERE c.user_id = %s
             GROUP BY c.id
             ORDER BY lower(c.full_name), c.id
@@ -168,7 +185,14 @@ class PostgresContactRepository(_BaseRepo):
               AND c.recruiter_type IS NULL
               AND c.decided_by IS NULL
               AND c.notes IS NULL
-              AND NOT EXISTS (SELECT 1 FROM contact_outreach o WHERE o.contact_id = c.id)
+              -- ai: claude-opus-5-5 | 2026-11-11 -- never a contact added by hand,
+              -- one with a phone or "keep informed" set, or one with any logged
+              -- interaction or job link (was: NOT EXISTS contact_outreach).
+              AND c.source = 'linkedin_import'
+              AND c.phone IS NULL
+              AND NOT c.keep_informed
+              AND NOT EXISTS (SELECT 1 FROM interactions i WHERE i.contact_id = c.id)
+              AND NOT EXISTS (SELECT 1 FROM job_contacts jc WHERE jc.contact_id = c.id)
             """,
             (user_id, file_keys),
         )
@@ -205,6 +229,59 @@ class PostgresContactRepository(_BaseRepo):
             (recruiter_type, user_id, contact_ids),
         )
         return cur.rowcount
+
+    # ai: claude-opus-5-5 | 2026-11-11
+    def create_manual(
+        self, user_id: int, identity: dict[str, Any], details: dict[str, Any], created_at: str
+    ) -> tuple[int, bool]:
+        """Add a contact by hand (a recruiter who called or emailed, with no LinkedIn
+        connection row). *identity* holds the _IDENTITY_COLUMNS, *details* any of
+        _EDITABLE_COLUMNS. Returns (contact_id, created): when the person already
+        exists -- same dedup_key or profile URL, e.g. already imported from LinkedIn
+        -- nothing is written and the existing contact's id comes back with False."""
+        unknown = (set(identity) - self._IDENTITY_COLUMNS) | (set(details) - self._EDITABLE_COLUMNS)
+        if unknown:
+            raise ValueError(f"Attempt to insert unknown columns: {unknown}")
+        fields = {**identity, **details, "source": "manual", "imported_at": created_at}
+        columns = list(fields)
+        cur = self._execute(
+            f"INSERT INTO contacts (user_id, {', '.join(columns)})"
+            f" VALUES (%s, {', '.join(['%s'] * len(columns))})"
+            " ON CONFLICT DO NOTHING RETURNING id",
+            [user_id, *fields.values()],
+        )
+        row = cur.fetchone()
+        if row:
+            return int(row["id"]), True
+        existing = self._execute(
+            "SELECT id FROM contacts WHERE user_id = %s"
+            " AND (dedup_key = %s OR (profile_url IS NOT NULL AND profile_url = %s))"
+            " ORDER BY id LIMIT 1",
+            (user_id, identity["dedup_key"], identity.get("profile_url")),
+        ).fetchone()
+        if existing is None:
+            # ON CONFLICT DO NOTHING only skips on a unique conflict, and both
+            # unique keys are checked above -- reaching here means a new one exists.
+            raise RuntimeError("contact insert conflicted on an unexpected constraint")
+        return int(existing["id"]), False
+
+    # ai: claude-opus-5-5 | 2026-11-11
+    def update_identity(self, user_id: int, contact_id: int, identity: dict[str, Any]) -> bool:
+        """Correct a hand-added contact's name, company, title or profile URL.
+        Returns False when the contact doesn't exist, belongs to another user, or
+        came from a LinkedIn import (whose next import would overwrite the edit).
+        A psycopg2 UniqueViolation propagates when the edit makes it the same
+        person as another contact."""
+        unknown = set(identity) - self._IDENTITY_COLUMNS
+        if unknown or not identity:
+            raise ValueError(f"Invalid identity columns: {unknown or 'none'}")
+        assignments = ", ".join(f"{col} = %s" for col in identity)
+        cur = self._execute(
+            f"UPDATE contacts SET {assignments}"
+            " WHERE id = %s AND user_id = %s AND source = 'manual'",
+            [*identity.values(), contact_id, user_id],
+        )
+        return cur.rowcount > 0
 
     def count(self, user_id: int) -> int:
         cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))

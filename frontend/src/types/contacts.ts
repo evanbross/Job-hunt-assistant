@@ -26,12 +26,12 @@
  */
 
 // ai: claude-opus-5-5 | 2026-10-14
-// Matches backend/db/schema.py's contact_outreach_channel_check constraint
-// (and routes/contacts.py's OutreachChannel).
+// ai: claude-opus-5-5 | 2026-11-11 -- the outreach channels, a subset of the
+// interactions channel CHECK in backend/db/schema.py (routes/contacts.py's OutreachChannel).
 export type OutreachChannel = "email" | "linkedin";
 
 // ai: claude-sonnet-5 | 2026-10-07
-// Mirrors the `contacts`/`contact_outreach` tables (backend/db/schema.py) plus
+// Mirrors the `contacts` table and its outbound `interactions` messages (backend/db/schema.py) plus
 // the computed fields routes/contacts.py's list_contacts() adds
 // (outreach_score via backend/contacts/outreach_scoring.py's score_contact).
 // ai: claude-opus-5-5 | 2026-10-14 -- was ContactEmail (contact_emails); gained channel
@@ -61,6 +61,14 @@ export interface Contact {
   outreach_draft?: string | null;
   outreach: ContactOutreach[];
   outreach_score?: number;
+  // ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking
+  phone?: string | null;
+  /** Keep this person posted on how the search is going. */
+  keep_informed?: boolean;
+  /** "manual" when added by hand; only those can be renamed. */
+  source?: "linkedin_import" | "manual";
+  /** The last time the user reached out by any means (call, message, ...). */
+  last_outbound_at?: string | null;
 }
 
 // ai: claude-opus-5-5 | 2026-10-21 -- was OutreachTemplateResponse (one unnamed template)

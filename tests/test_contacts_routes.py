@@ -108,38 +108,25 @@ class FakeStageStatusesRepo:
         return [{"key": "rejected", "is_terminal": True}]
 
 
-# ai: claude-opus-5-5 | 2026-10-14 -- was FakeContactEmailsRepo
-class FakeContactOutreachRepo:
-    def __init__(
-        self, contact_ids: set[int] | None = None, outreach_ids: set[int] | None = None
-    ) -> None:
+# ai: claude-opus-5-5 | 2026-11-11 -- was FakeContactOutreachRepo: logged outreach
+# is now an outbound message in interactions (PostgresInteractionRepository).
+# `added` keeps the (contact_id, sent_at, channel) shape the outreach tests assert.
+class FakeInteractionsRepo:
+    def __init__(self, contact_ids: set[int] | None = None) -> None:
         self.contact_ids = contact_ids or set()
-        self.outreach_ids = outreach_ids or set()
         self.added: list[tuple[int, str, str]] = []
-        self.responses: dict[int, str | None] = {}
-        self.deleted: list[int] = []
 
-    def add(
-        self, user_id: int, contact_id: int, sent_at: str, channel: str
-    ) -> dict[str, Any] | None:
-        if contact_id not in self.contact_ids:
+    def add(self, user_id: int, fields: dict[str, Any], created_at: str) -> dict[str, Any] | None:
+        if fields.get("contact_id") not in self.contact_ids:
             return None
-        self.added.append((contact_id, sent_at, channel))
-        return {"id": 99, "sent_at": sent_at, "response_received_at": None, "channel": channel}
-
-    def set_response(
-        self, user_id: int, outreach_id: int, response_received_at: str | None
-    ) -> bool:
-        if outreach_id not in self.outreach_ids:
-            return False
-        self.responses[outreach_id] = response_received_at
-        return True
-
-    def delete(self, user_id: int, outreach_id: int) -> bool:
-        if outreach_id not in self.outreach_ids:
-            return False
-        self.deleted.append(outreach_id)
-        return True
+        assert (fields["direction"], fields["kind"]) == ("outbound", "message")
+        self.added.append((fields["contact_id"], fields["occurred_at"], fields["channel"]))
+        return {
+            "id": 99,
+            "occurred_at": fields["occurred_at"],
+            "response_received_at": None,
+            "channel": fields["channel"],
+        }
 
 
 # ai: claude-sonnet-5 | 2026-10-15
@@ -364,7 +351,7 @@ class FakeCandidateProfilesRepo:
 def _contacts_client(
     monkeypatch: pytest.MonkeyPatch,
     contacts: FakeContactsRepo | None = None,
-    outreach: FakeContactOutreachRepo | None = None,
+    outreach: FakeInteractionsRepo | None = None,
     employment_history: FakeContactEmploymentHistoryRepo | None = None,
     companies: FakeCompanyRepo | None = None,
     title_rules: FakeTitleRuleRepo | None = None,
@@ -375,7 +362,7 @@ def _contacts_client(
     repos = {
         "conn": FakeConnection(),
         "contacts": contacts or FakeContactsRepo(),
-        "contact_outreach": outreach or FakeContactOutreachRepo(),
+        "interactions": outreach or FakeInteractionsRepo(),
         "contact_employment_history": employment_history or FakeContactEmploymentHistoryRepo(),
         "settings": settings or FakeSettingsRepo(),
         "candidate_profiles": candidate_profiles or FakeCandidateProfilesRepo(None),
@@ -488,7 +475,7 @@ def test_update_contact_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_log_contact_outreach_uses_supplied_date(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, outreach=outreach)
 
     response = client.post("/api/contacts/1/outreach", json={"sent_at": "2026-09-20T15:30:00Z", "channel": "email"})
@@ -499,7 +486,7 @@ def test_log_contact_outreach_uses_supplied_date(monkeypatch: pytest.MonkeyPatch
 def test_log_contact_outreach_converts_offset_timestamp_to_utc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, outreach=outreach)
 
     response = client.post("/api/contacts/1/outreach", json={"sent_at": "2026-09-20T10:00:00-05:00", "channel": "email"})
@@ -508,7 +495,7 @@ def test_log_contact_outreach_converts_offset_timestamp_to_utc(
 
 
 def test_log_contact_outreach_defaults_to_today_utc(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, outreach=outreach)
 
     response = client.post("/api/contacts/1/outreach", json={"channel": "email"})
@@ -524,7 +511,7 @@ def test_log_contact_outreach_defaults_to_today_utc(monkeypatch: pytest.MonkeyPa
 def test_log_contact_outreach_rejects_bad_timestamp(
     monkeypatch: pytest.MonkeyPatch, bad_date: object
 ) -> None:
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, outreach=outreach)
 
     response = client.post("/api/contacts/1/outreach", json={"sent_at": bad_date, "channel": "email"})
@@ -675,43 +662,9 @@ def test_delete_contact_employment_history_unknown_id_returns_404(
     assert response.status_code == 404
 
 
-def test_set_and_clear_outreach_response(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(outreach_ids={7})
-    client = _contacts_client(monkeypatch, outreach=outreach)
-
-    set_response = client.patch(
-        "/api/contact-outreach/7", json={"response_received_at": "2026-09-22T09:15:00Z"}
-    )
-    assert set_response.status_code == 200
-    assert outreach.responses == {7: "2026-09-22T09:15:00+00:00"}
-
-    clear_response = client.patch("/api/contact-outreach/7", json={"response_received_at": None})
-    assert clear_response.status_code == 200
-    assert outreach.responses == {7: None}
-
-
-def test_outreach_response_body_must_state_the_field(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(outreach_ids={7})
-    client = _contacts_client(monkeypatch, outreach=outreach)
-
-    assert client.patch("/api/contact-outreach/7", json={}).status_code == 400
-    assert outreach.responses == {}
-
-
-def test_outreach_log_entry_unknown_id_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    client = _contacts_client(monkeypatch)
-
-    patch_response = client.patch("/api/contact-outreach/1", json={"response_received_at": None})
-    assert patch_response.status_code == 404
-    assert client.delete("/api/contact-outreach/1").status_code == 404
-
-
-def test_delete_contact_outreach(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(outreach_ids={7})
-    client = _contacts_client(monkeypatch, outreach=outreach)
-
-    assert client.delete("/api/contact-outreach/7").status_code == 200
-    assert outreach.deleted == [7]
+# ai: claude-opus-5-5 | 2026-11-11 -- the PATCH/DELETE /contact-outreach/<id>
+# tests that were here moved with those routes: replies and deletes are now
+# PATCH/DELETE /interactions/<id>, covered in tests/test_leads_routes.py.
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -1001,7 +954,7 @@ def test_apply_title_suggestions_rejects_invalid_body(
 
 # ai: claude-opus-5-5 | 2026-10-14
 def test_log_contact_outreach_requires_a_channel(monkeypatch: pytest.MonkeyPatch) -> None:
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, outreach=outreach)
 
     assert client.post("/api/contacts/1/outreach", json={}).status_code == 400
@@ -1014,7 +967,7 @@ def test_log_linkedin_outreach_records_channel_and_clears_draft(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     contacts = FakeContactsRepo([{"id": 1}])
-    outreach = FakeContactOutreachRepo(contact_ids={1})
+    outreach = FakeInteractionsRepo(contact_ids={1})
     client = _contacts_client(monkeypatch, contacts, outreach=outreach)
 
     response = client.post("/api/contacts/1/outreach", json={"channel": "linkedin"})

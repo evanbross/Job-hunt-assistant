@@ -27,11 +27,16 @@
 
 // ai: claude-sonnet-5 | 2026-10-07
 // ai: claude-sonnet-4-6 | 2026-06-17
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import JobCard from "./JobCard.tsx";
 import Modal from "./common/Modal.tsx";
 import ReqClosedDialog from "./common/ReqClosedDialog.tsx";
+import type { JobOrigin } from "../types/leads.ts";
+import { ORIGIN_LABELS } from "../types/leads.ts";
+
+// ai: claude-opus-5-5 | 2026-11-11 -- lazy: the drawer carries the rich-text editor.
+const LeadDrawer = lazy(() => import("./leads/LeadDrawer.tsx"));
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
 import { JOB_QUEUE_STATUS_LABELS } from "../utils/jobQueueUtils.ts";
@@ -76,11 +81,24 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
   pending_review:     { background: "var(--surface2)", color: "var(--text-muted)" },
   possible_duplicate: { background: "var(--yellow-light)", color: "var(--yellow)" },
   not_a_fit:          { background: "var(--red-light)", color: "var(--red)" },
+  // ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead and offer stages
+  recruiter_reached_out: { background: "var(--accent-light)", color: "var(--accent)" },
+  recruiter_screen:      { background: "var(--accent-light)", color: "var(--accent)" },
+  submitted_to_client:   { background: "var(--accent-light)", color: "var(--accent)" },
+  offer:                 { background: "var(--green-light)", color: "var(--green)" },
+  counter_offer:         { background: "var(--green-light)", color: "var(--green)" },
+  accepted_offer:        { background: "var(--green-light)", color: "var(--green)" },
+  withdrew:              { background: "var(--surface2)", color: "var(--text-muted)" },
+  declined_offer:        { background: "var(--surface2)", color: "var(--text-muted)" },
 };
 
 // Fallback option list shown before the DB loads (or if the table is empty).
 // ai: claude-opus-5-5 | 2026-10-27 -- matches backend/db/schema.py's _SEED_STAGE_STATUSES labels
+// ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead and offer stages added, in seed order
 const DEFAULT_STATUS_OPTIONS = [
+  "Recruiter Reached Out",
+  "Recruiter Screen",
+  "Submitted to Client",
   "Applied",
   "Waiting for Call",
   "Waiting for 2nd",
@@ -89,10 +107,15 @@ const DEFAULT_STATUS_OPTIONS = [
   "Interview 3",
   "Interview 4",
   "Code Eval",
+  "Offer",
+  "Counter-offer",
+  "Accepted Offer",
   "Rejected",
   "Job Filled",
   "Req Closed",
   "Ghosted",
+  "Withdrew",
+  "Declined Offer",
 ];
 
 const DEFAULT_COLUMN_WIDTHS: Record<string, number> = {
@@ -439,6 +462,10 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
   const [jobDialog, setJobDialog] = useState<JobDialogState | null>(null);
   // ai: claude-sonnet-4-6 | 2026-06-17
   const [statusFilters, setStatusFilters] = useState<Set<string>>(new Set());
+  // ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking: filter by where a job
+  // came from, and open any row's lead drawer (people, call log, notes).
+  const [originFilter, setOriginFilter] = useState<JobOrigin | "all">("all");
+  const [leadDrawerJobId, setLeadDrawerJobId] = useState<number | null>(null);
   // ai: claude-sonnet-5 | 2026-08-11
   const [defaultSnoozeDays, setDefaultSnoozeDays] = useState(4);
   const resizeCleanupRef = useRef<(() => void) | null>(null);
@@ -540,7 +567,8 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
       .filter((row) => {
         if (statusFilters.size === 0) return true;
         return statusFilters.has(normalizeStatus(getCell(row, trackingColumns.status).value));
-      });
+      })
+      .filter((row) => originFilter === "all" || row.origin === originFilter); // ai: claude-opus-5-5 | 2026-11-11
     if (!sortConfig) return filteredRows;
 
     const sortColumn = parentColumns.find((entry) => entry.key === sortConfig.key);
@@ -555,7 +583,7 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
       }
       return sortConfig.direction === "asc" ? valueComparison : -valueComparison;
     });
-  }, [parentColumns, search, sheet.rows, sortConfig, statusFilters, trackingColumns.status]);
+  }, [originFilter, parentColumns, search, sheet.rows, sortConfig, statusFilters, trackingColumns.status]);
 
   const statusCounts: Record<string, number> = useMemo(() => {
     return sheet.rows.reduce((acc: Record<string, number>, row) => {
@@ -1106,6 +1134,23 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
         </div>
       </div>
 
+      {/* ai: claude-opus-5-5 | 2026-11-11 */}
+      <div style={filterBarStyle}>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "12px", color: "var(--text-muted)" }}>
+          Came from
+          <select
+            value={originFilter}
+            onChange={(event) => setOriginFilter(event.target.value as JobOrigin | "all")}
+            aria-label="Filter by where the job came from"
+          >
+            <option value="all">Anywhere</option>
+            {(Object.keys(ORIGIN_LABELS) as JobOrigin[]).map((origin) => (
+              <option key={origin} value={origin}>{ORIGIN_LABELS[origin]}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+
       {filterOptions.length > 1 && (
         <div style={filterBarStyle}>
           {filterOptions.map(({ key, label, count }) => {
@@ -1122,6 +1167,17 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
             );
           })}
         </div>
+      )}
+
+      {leadDrawerJobId !== null && (
+        <Suspense fallback={null}>
+          <LeadDrawer
+            jobId={leadDrawerJobId}
+            catalog={stageStatuses}
+            onChanged={() => void loadSheet()}
+            onClose={() => setLeadDrawerJobId(null)}
+          />
+        </Suspense>
       )}
 
       {ghostDialog && (
@@ -1381,6 +1437,19 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
                             >
                               {cell.value || "Untitled role"}
                             </button>
+                          ) : entry.key === "company" ? (
+                            // ai: claude-opus-5-5 | 2026-11-11 -- origin badge and "via <recruiter>"
+                            <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                              <span style={oneLineStyle}>
+                                {cell.value || ""}
+                                {row.origin === "recruiter_contact" && (
+                                  <span className="badge badge-accent" style={{ marginLeft: 6 }}>Recruiter</span>
+                                )}
+                              </span>
+                              {row.via && (
+                                <span style={{ ...oneLineStyle, fontSize: "11px", color: "var(--text-muted)" }}>via {row.via}</span>
+                              )}
+                            </span>
                           ) : (
                             <span style={oneLineStyle}>{cell.value || ""}</span>
                           )}
@@ -1409,6 +1478,10 @@ export default function ApplicationSheetPanel({ onNavigateToJobCard }: Applicati
                             <span style={detailLabelStyle}>Notes</span>
                             <span style={detailValueStyle}>{getCell(row, trackingColumns.notes).value || "-"}</span>
                           </div>
+                          {/* ai: claude-opus-5-5 | 2026-11-11 */}
+                          <button type="button" className="btn-secondary" onClick={() => setLeadDrawerJobId(row.row_number)}>
+                            People, calls &amp; notes
+                          </button>
                         </div>
                         {editingRows[row.row_number] ? (
                           <div style={editGridStyle}>

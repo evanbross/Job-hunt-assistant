@@ -419,3 +419,48 @@ a:hover {
   margin-left: auto;
 }
 
+
+/* ai: claude-opus-5-5 | 2026-11-11 -- rich-text notes (components/common/RichText.tsx) */
+.rich-text { font-size: 14px; line-height: 1.5; color: var(--text); overflow-wrap: anywhere; }
+.rich-text > :first-child { margin-top: 0; }
+.rich-text > :last-child { margin-bottom: 0; }
+.rich-text p { margin: 0 0 8px; }
+.rich-text h2, .rich-text h3 { font-size: 15px; font-weight: 700; margin: 12px 0 6px; }
+.rich-text ul, .rich-text ol { margin: 0 0 8px; padding-left: 22px; }
+.rich-text blockquote { margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--border); color: var(--text-muted); }
+.rich-text code, .rich-text pre { font-family: ui-monospace, Consolas, monospace; font-size: 13px; background: var(--surface2); border-radius: 4px; }
+.rich-text pre { padding: 8px; white-space: pre-wrap; }
+.rich-text a { color: var(--accent); }
+.rich-text-empty { margin: 0; color: var(--text-muted); font-style: italic; font-size: 13px; }
+.rich-text-editor { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.rich-text-editor:focus-within { border-color: var(--accent); }
+.rich-text-toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px; border-bottom: 1px solid var(--border); background: var(--surface2); border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.rich-text-tool { min-width: 30px; padding: 3px 8px; font-size: 13px; font-weight: 600; background: transparent; color: var(--text-muted); border: 1px solid transparent; }
+.rich-text-tool.active { background: var(--accent-light); color: var(--accent); border-color: var(--accent); }
+.rich-text-editor-surface { min-height: 110px; padding: 10px 12px; outline: none; }
+.rich-text-editor-surface p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--text-muted); float: left; height: 0; pointer-events: none; }
+
+/* ai: claude-opus-5-5 | 2026-11-11 -- Leads tab (components/LeadsPanel.tsx, LeadDrawer.tsx) */
+.leads-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 14px; }
+.leads-table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: var(--radius); box-shadow: var(--shadow-sm); overflow: hidden; }
+.leads-table th { text-align: left; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 10px 12px; background: var(--surface2); border-bottom: 1px solid var(--border); }
+.leads-table td { padding: 10px 12px; border-bottom: 1px solid var(--surface2); font-size: 14px; vertical-align: top; }
+.leads-table tr.lead-row { cursor: pointer; }
+.leads-table tr.lead-row:hover td { background: var(--accent-light); }
+.leads-table tr.lead-row.stale td { background: var(--orange-light); }
+.leads-table tr.lead-row.closed td { color: var(--text-muted); }
+.lead-sub { display: block; font-size: 12px; color: var(--text-muted); }
+.leads-section-title { font-size: 15px; font-weight: 700; margin: 24px 0 8px; }
+.lead-drawer-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.lead-drawer-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.lead-drawer-section { margin-top: 18px; }
+.lead-drawer-section h4 { margin: 0 0 8px; font-size: 14px; }
+.lead-timeline { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.lead-timeline li { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface); }
+.lead-timeline li.stage-entry { background: var(--surface2); border-style: dashed; }
+.lead-timeline-meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 12px; color: var(--text-muted); margin-bottom: 4px; }
+.lead-people { display: flex; flex-direction: column; gap: 6px; }
+.lead-person { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 14px; }
+.form-stack { display: flex; flex-direction: column; gap: 10px; }
+.form-stack label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }

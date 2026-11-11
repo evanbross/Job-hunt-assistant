@@ -32,10 +32,11 @@ template/draft/stage routes)."""
 from __future__ import annotations
 
 import logging
-import re
 from datetime import UTC, datetime
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
+import psycopg2.errors
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
 from pydantic import (
@@ -50,6 +51,7 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIProviderError
+from backend.contacts.contact_identity import contact_identity_columns
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.outreach_drafts import (
     MAX_OUTREACH_MESSAGE_LENGTH,
@@ -62,6 +64,8 @@ from backend.contacts.title_suggestion_service import (
     prepare_title_suggestions,
 )
 from backend.db import DuplicateOutreachTemplateTitleError
+from backend.leads.lead_service import LeadService, NewContact
+from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     CandidateProfileMissingError,
@@ -76,25 +80,17 @@ logger = logging.getLogger(__name__)
 
 contacts_bp = Blueprint("contacts", __name__)
 
-_MAX_EMAIL_ADDRESS_LENGTH = 254
 _MAX_BULK_CONTACT_IDS = 50_000
 _MAX_NOTES_LENGTH = 5000
+# ai: claude-opus-5-5 | 2026-11-11
+_MAX_PHONE_LENGTH = 50
+_MAX_IDENTITY_FIELD_LENGTH = 300
+_MAX_PROFILE_URL_LENGTH = 2000
+_IDENTITY_FIELDS: frozenset[str] = frozenset({"full_name", "company", "position", "profile_url"})
 _MAX_BULK_TITLES = 5000
 
 
-# ai: claude-sonnet-5 | 2026-09-25
-def _normalize_utc_timestamp(value: str) -> str:
-    """Accept an ISO 8601 instant with an explicit UTC offset ("Z" or +hh:mm)
-    and return it as a UTC string. A value with no offset is rejected rather
-    than guessed at -- a naive time is ambiguous, and a date-only string
-    parses as a naive midnight."""
-    parsed = datetime.fromisoformat(value)
-    if parsed.tzinfo is None:
-        raise ValueError("timestamp must include a UTC offset")
-    return parsed.astimezone(UTC).isoformat(timespec="seconds")
-
-
-UtcTimestamp = Annotated[str, AfterValidator(_normalize_utc_timestamp)]
+# ai: claude-opus-5-5 | 2026-11-11 -- UtcTimestamp moved to backend/utils/request_fields.py
 
 # NULL means "not a recruiter"; see docs/contacts-recruiter-classification-plan.md.
 # Matches backend/db/schema.py's recruiter_type CHECK constraint.
@@ -105,11 +101,22 @@ RecruiterType = Literal["unrated", "motion", "low_reliability", "high_reliabilit
 CompanyWorkforce = Literal["unknown", "onshore", "offshore_hybrid"]
 
 # ai: claude-opus-5-5 | 2026-10-14
-# Matches backend/db/schema.py's contact_outreach_channel_check constraint.
+# ai: claude-opus-5-5 | 2026-11-11 -- the outreach channels, a subset of
+# backend/db/schema.py's interactions channel CHECK (was contact_outreach's).
 OutreachChannel = Literal["email", "linkedin"]
 
 # ai: claude-opus-5-5 | 2026-10-21
 _MAX_OUTREACH_TEMPLATE_TITLE_LENGTH = 100
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+def _optional_http_url(value: str | None) -> str | None:
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("profile_url must be an http(s) link")
+    return value
 
 
 # ai: claude-sonnet-5 | 2026-09-28
@@ -126,32 +133,54 @@ def _normalize_optional_text(value: str | None, max_length: int, *, field_name: 
 class ContactUpdate(BaseModel):
     """Partial update: only fields present in the request body are written
     (see model_dump(exclude_unset=True) in update_contact), so a PATCH of one
-    flag never nulls out the others."""
+    flag never nulls out the others. full_name/company/position/profile_url are
+    the contact's identity, editable only on a contact added by hand."""
 
     model_config = ConfigDict(extra="forbid")
 
     # ai: claude-sonnet-5 | 2026-10-13 -- tri-state: True/False/None = yes/no/undecided.
     interested: StrictBool | None = None
     recruiter_type: RecruiterType | None = None
-    email_address: str | None = None
+    email_address: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-11 -- shared validator
     notes: str | None = None
-
-    @field_validator("email_address")
-    @classmethod
-    def _normalize_email_address(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
-        value = value.strip()
-        if not value:
-            return None
-        if len(value) > _MAX_EMAIL_ADDRESS_LENGTH or not re.fullmatch(r"[^@\s]+@[^@\s]+", value):
-            raise ValueError("not a valid email address")
-        return value
+    # ai: claude-opus-5-5 | 2026-11-11 -- lead tracking
+    phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
+    keep_informed: StrictBool | None = None
+    full_name: Annotated[str, Field(min_length=1, max_length=_MAX_IDENTITY_FIELD_LENGTH)] | None = None
+    company: Annotated[str, Field(max_length=_MAX_IDENTITY_FIELD_LENGTH)] | None = None
+    position: Annotated[str, Field(max_length=_MAX_IDENTITY_FIELD_LENGTH)] | None = None
+    profile_url: Annotated[str, Field(max_length=_MAX_PROFILE_URL_LENGTH)] | None = None
 
     @field_validator("notes")
     @classmethod
     def _normalize_notes(cls, value: str | None) -> str | None:
         return _normalize_optional_text(value, _MAX_NOTES_LENGTH, field_name="notes")
+
+    @field_validator("profile_url")
+    @classmethod
+    def _http_profile_url(cls, value: str | None) -> str | None:
+        return _optional_http_url(value)
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+class ContactCreate(BaseModel):
+    """A contact added by hand -- a recruiter who called or emailed and isn't (yet)
+    a LinkedIn connection."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    full_name: Annotated[str, Field(min_length=1, max_length=_MAX_IDENTITY_FIELD_LENGTH)]
+    company: Annotated[str, Field(max_length=_MAX_IDENTITY_FIELD_LENGTH)] = ""
+    position: Annotated[str, Field(max_length=_MAX_IDENTITY_FIELD_LENGTH)] = ""
+    profile_url: Annotated[str, Field(max_length=_MAX_PROFILE_URL_LENGTH)] | None = None
+    phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
+    email_address: OptionalEmailAddress = None
+    keep_informed: StrictBool = False
+
+    @field_validator("profile_url")
+    @classmethod
+    def _http_profile_url(cls, value: str | None) -> str | None:
+        return _optional_http_url(value)
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -223,17 +252,6 @@ class ContactOutreachCreate(BaseModel):
 
     sent_at: UtcTimestamp | None = None
     channel: OutreachChannel
-
-
-# ai: claude-sonnet-5 | 2026-09-25
-# ai: claude-opus-5-5 | 2026-10-14 -- was ContactEmailResponseUpdate
-class ContactOutreachResponseUpdate(BaseModel):
-    """response_received_at is required (no default) so a body must state
-    explicitly whether a reply came in (a date) or is being cleared (null)."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    response_received_at: UtcTimestamp | None
 
 
 # ai: claude-opus-5-5 | 2026-10-14
@@ -361,12 +379,80 @@ def update_contact(contact_id: int) -> ResponseReturnValue:
     # never overwritten later by a title rule (see PostgresTitleRuleRepository).
     if "recruiter_type" in fields:
         fields["decided_by"] = "manual"
+    # ai: claude-opus-5-5 | 2026-11-11
+    identity_edits = {key: fields.pop(key) for key in _IDENTITY_FIELDS & fields.keys()}
+    if "keep_informed" in fields and fields["keep_informed"] is None:
+        return jsonify({"error": "keep_informed can't be cleared"}), 400
+    if "full_name" in identity_edits and not identity_edits["full_name"]:
+        return jsonify({"error": "full_name can't be cleared"}), 400
 
+    user_id = current_user_id()
     with get_repos() as repos:
-        if not repos["contacts"].update(current_user_id(), contact_id, fields):
+        # ai: claude-opus-5-5 | 2026-11-11 -- identity edits recompute the
+        # normalized columns and dedup_key exactly as creation does.
+        if identity_edits:
+            current = repos["contacts"].get_by_id(user_id, contact_id)
+            if current is None:
+                return jsonify({"error": "Contact not found"}), 404
+            if current.get("source") != "manual":
+                return (
+                    jsonify({"error": "Only contacts added by hand can be renamed; LinkedIn imports keep LinkedIn's details."}),
+                    400,
+                )
+            identity = contact_identity_columns(
+                identity_edits.get("full_name") or current["full_name"],
+                identity_edits.get("company", current["company_raw"]) or "",
+                identity_edits.get("position", current["position"]) or "",
+                identity_edits.get("profile_url", current["profile_url"]),
+            )
+            try:
+                repos["contacts"].update_identity(user_id, contact_id, identity)
+            except psycopg2.errors.UniqueViolation:
+                repos["conn"].rollback()
+                return jsonify({"error": "Another contact already has that name and company or profile link."}), 409
+        if fields and not repos["contacts"].update(user_id, contact_id, fields):
             return jsonify({"error": "Contact not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+@contacts_bp.route("/contacts", methods=["POST"])
+def create_contact() -> ResponseReturnValue:
+    """Add a contact by hand. When the person is already in Contacts (same profile
+    link, or same name and company), nothing is added: 409 with their id."""
+    try:
+        body = ContactCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    contact = NewContact(
+        full_name=body.full_name,
+        company=body.company,
+        position=body.position,
+        profile_url=body.profile_url,
+        phone=body.phone or None,
+        email_address=body.email_address,
+    )
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    with get_repos() as repos:
+        contact_id, created = LeadService(repos).create_contact(
+            current_user_id(), contact, now_iso, keep_informed=body.keep_informed
+        )
+        if not created:
+            return jsonify({"error": "This person is already in your contacts.", "contact_id": contact_id}), 409
+        repos["conn"].commit()
+    return jsonify({"id": contact_id}), 201
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+@contacts_bp.route("/contacts/<int:contact_id>/activity")
+def get_contact_activity(contact_id: int) -> ResponseReturnValue:
+    """The jobs a contact is attached to and their call/message/note history."""
+    with get_repos() as repos:
+        activity = LeadService(repos).contact_activity(current_user_id(), contact_id)
+    if activity is None:
+        return jsonify({"error": "Contact not found"}), 404
+    return jsonify(activity)
 
 
 # ai: claude-sonnet-5 | 2026-09-25
@@ -501,6 +587,9 @@ def apply_title_suggestions() -> ResponseReturnValue:
 # ai: claude-opus-5-5 | 2026-10-14 -- was POST /contacts/<id>/emails. Logging
 # outreach also clears the contact's prepared LinkedIn draft: the message it
 # was for has now gone out.
+# ai: claude-opus-5-5 | 2026-11-11 -- writes an outbound message to interactions
+# (contact_outreach was folded into it). Editing or deleting a logged message, or
+# marking its reply, is PATCH/DELETE /interactions/<id> (routes/leads.py).
 @contacts_bp.route("/contacts/<int:contact_id>/outreach", methods=["POST"])
 def log_contact_outreach(contact_id: int) -> ResponseReturnValue:
     try:
@@ -508,44 +597,37 @@ def log_contact_outreach(contact_id: int) -> ResponseReturnValue:
     except ValidationError as exc:
         return invalid_request_response(exc)
 
-    sent_at = body.sent_at or datetime.now(UTC).isoformat(timespec="seconds")
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    sent_at = body.sent_at or now_iso
     user_id = current_user_id()
     with get_repos() as repos:
-        created = repos["contact_outreach"].add(user_id, contact_id, sent_at, body.channel)
+        created = repos["interactions"].add(
+            user_id,
+            {
+                "contact_id": contact_id,
+                "occurred_at": sent_at,
+                "channel": body.channel,
+                "direction": "outbound",
+                "kind": "message",
+            },
+            now_iso,
+        )
         if created is None:
             return jsonify({"error": "Contact not found"}), 404
         repos["contacts"].clear_outreach_draft(user_id, contact_id)
         repos["conn"].commit()
-    return jsonify(created), 201
-
-
-# ai: claude-sonnet-5 | 2026-09-25
-# ai: claude-opus-5-5 | 2026-10-14 -- was PATCH /contact-emails/<id>
-@contacts_bp.route("/contact-outreach/<int:outreach_id>", methods=["PATCH"])
-def update_contact_outreach_response(outreach_id: int) -> ResponseReturnValue:
-    try:
-        body = ContactOutreachResponseUpdate.model_validate(request.get_json(silent=True) or {})
-    except ValidationError as exc:
-        return invalid_request_response(exc)
-
-    with get_repos() as repos:
-        if not repos["contact_outreach"].set_response(
-            current_user_id(), outreach_id, body.response_received_at
-        ):
-            return jsonify({"error": "Outreach entry not found"}), 404
-        repos["conn"].commit()
-    return jsonify({"ok": True})
-
-
-# ai: claude-sonnet-5 | 2026-09-25
-# ai: claude-opus-5-5 | 2026-10-14 -- was DELETE /contact-emails/<id>
-@contacts_bp.route("/contact-outreach/<int:outreach_id>", methods=["DELETE"])
-def delete_contact_outreach(outreach_id: int) -> ResponseReturnValue:
-    with get_repos() as repos:
-        if not repos["contact_outreach"].delete(current_user_id(), outreach_id):
-            return jsonify({"error": "Outreach entry not found"}), 404
-        repos["conn"].commit()
-    return jsonify({"ok": True})
+    # The Contacts tab's outreach entry shape (PostgresContactRepository.list_with_outreach).
+    return (
+        jsonify(
+            {
+                "id": created["id"],
+                "sent_at": created["occurred_at"],
+                "response_received_at": created["response_received_at"],
+                "channel": created["channel"],
+            }
+        ),
+        201,
+    )
 
 
 _MAX_EMPLOYMENT_FIELD_LENGTH = 300

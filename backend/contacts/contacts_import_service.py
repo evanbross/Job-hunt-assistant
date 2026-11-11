@@ -26,6 +26,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from backend.contacts.contact_identity import contact_dedup_key
 from backend.contacts.title_normalization import normalize_title
 from backend.db.interfaces import ContactSyncResult
 from backend.scoring.company_matching import normalize_company_name
@@ -106,8 +107,7 @@ class ContactImportService:
             company_normalized = normalize_company_name(parsed.company)
             position = parsed.position.strip()
             full_name = f"{parsed.first_name.strip()} {parsed.last_name.strip()}".strip()
-            # Must match the contacts.dedup_key backfill in backend/db/schema.py.
-            dedup_key = profile_url or f"{full_name.lower()}|{company_normalized}"
+            dedup_key = contact_dedup_key(profile_url, full_name, company_normalized)  # ai: claude-opus-5-5 | 2026-11-11
             if dedup_key in seen_keys:
                 skipped_reasons["duplicate_in_file"] = (
                     skipped_reasons.get("duplicate_in_file", 0) + 1

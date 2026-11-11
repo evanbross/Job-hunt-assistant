@@ -55,6 +55,15 @@ _NOT_TENANT_SCOPED = frozenset(
 )
 
 
+# ai: claude-opus-5-5 | 2026-11-11
+@dataclass(frozen=True)
+class _Id:
+    """A payload value standing for one of account A's seeded ids (Tenants.ids[kind]),
+    for a body that has to name a resource, resolved when the request is made."""
+
+    kind: str
+
+
 @dataclass(frozen=True)
 class Case:
     method: str
@@ -88,9 +97,8 @@ CASES: list[Case] = [
     _c("DELETE", "/api/company-aliases/<int:alias_id>", alias_id="company_alias"),
     _c("DELETE", "/api/contact-employment-history/<int:entry_id>", entry_id="contact_employment_history"),
     _c("PATCH", "/api/contact-employment-history/<int:entry_id>", {"company": "x"}, entry_id="contact_employment_history"),
-    _c("DELETE", "/api/contact-outreach/<int:outreach_id>", outreach_id="contact_outreach"),
-    _c("PATCH", "/api/contact-outreach/<int:outreach_id>", {"response_received_at": _TS}, outreach_id="contact_outreach"),
     _c("PATCH", "/api/contacts/<int:contact_id>", {"interested": True}, contact_id="contact"),
+    _c("GET", "/api/contacts/<int:contact_id>/activity", contact_id="contact"),  # ai: claude-opus-5-5 | 2026-11-11
     _c("GET", "/api/contacts/<int:contact_id>/employment-history", contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/employment-history", {"company": "x"}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach", {"sent_at": _TS, "channel": "linkedin"}, contact_id="contact"),
@@ -112,6 +120,14 @@ CASES: list[Case] = [
     _c("GET", "/api/jd-health-check/run/<task_id>/status", task_id="task"),
     _c("DELETE", "/api/jd-health-check/targets/<int:target_id>", target_id="health_target"),
     _c("PUT", "/api/jd-health-check/targets/<int:target_id>", {"label": "x"}, target_id="health_target"),
+    # ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking. The contact_id in the
+    # link body is A's own contact (_Id), so B is refused on the job, not on the body.
+    _c("PATCH", "/api/interactions/<int:interaction_id>", {"summary": "x"}, interaction_id="interaction"),
+    _c("DELETE", "/api/interactions/<int:interaction_id>", interaction_id="interaction"),
+    _c("GET", "/api/leads/<int:job_id>", job_id="lead"),
+    _c("PATCH", "/api/leads/<int:job_id>", {"next_follow_up": "2026-12-01"}, job_id="lead"),
+    _c("POST", "/api/leads/<int:job_id>/contacts", {"contact_id": _Id("contact")}, job_id="lead"),
+    _c("DELETE", "/api/leads/<int:job_id>/contacts/<int:contact_id>", job_id="lead", contact_id="contact"),
     _c("GET", "/api/jobs/<int:job_id>", job_id="job"),
     _c("PATCH", "/api/jobs/<int:job_id>", {"company": "x"}, job_id="job"),
     _c("POST", "/api/jobs/<int:job_id>/apply", job_id="job"),
@@ -279,6 +295,19 @@ class Tenants:
                     "date_found": "2026-09-26",
                 },
             )
+            # ai: claude-opus-5-5 | 2026-11-11 -- a tracked recruiter lead: the /leads
+            # routes only open jobs on the sheet, which the queue job above is not.
+            lead_id = repos["jobs"].insert(
+                self.a_id,
+                {
+                    "company": f"{_MARKER} Client",
+                    "job_title": f"{_MARKER} Lead",
+                    "status": "applied",
+                    "on_sheet": 1,
+                    "origin": "recruiter_contact",
+                    "date_found": "2026-09-26",
+                },
+            )
             repos["conn"].commit()
         conn = psycopg2.connect(self.dsn)
         conn.autocommit = True
@@ -293,6 +322,7 @@ class Tenants:
             self.ids = {
                 "account": self.a_id,  # ai: claude-opus-5-5 | 2026-11-09
                 "job": job_id,
+                "lead": lead_id,  # ai: claude-opus-5-5 | 2026-11-11
                 "answer": ins(cur, "application_answers", question_text=f"{_MARKER}?", question_normalized=f"{_MARKER.lower()}-{next(_SEQUENCE)}", answer_text=_MARKER),
                 "stage": ins(cur, "application_stages", job_id=job_id, status=stage_status, date="2026-09-26"),
                 "history": ins(cur, "job_status_history", job_id=job_id, from_status="pending_review", to_status="applied", changed_at=_TS, trigger="test"),
@@ -310,7 +340,11 @@ class Tenants:
                     created_at=_TS,
                 ),
                 "contact": contact_id,
-                "contact_outreach": ins(cur, "contact_outreach", contact_id=contact_id, sent_at=_TS),
+                # ai: claude-opus-5-5 | 2026-11-11 -- was contact_outreach
+                "interaction": ins(
+                    cur, "interactions", contact_id=contact_id, occurred_at=_TS, channel="phone",
+                    direction="inbound", kind="call", summary=_MARKER, created_at=_TS,
+                ),
                 "contact_employment_history": ins(
                     cur, "contact_employment_history", contact_id=contact_id, company=_MARKER, captured_at=_TS
                 ),
@@ -329,6 +363,7 @@ class Tenants:
             cur.execute(
                 "INSERT INTO scanned_emails (user_id, email_id) VALUES (%s, %s)", (self.a_id, email_id)
             )
+            ins(cur, "job_contacts", job_id=lead_id, contact_id=contact_id, created_at=_TS)  # ai: claude-opus-5-5 | 2026-11-11
             self.ids["scanned_email"] = email_id
         finally:
             conn.close()
@@ -372,8 +407,13 @@ def tenants(pg_dsn: str, flask_app: Flask, open_registration: None) -> Tenants:
     return Tenants(pg_dsn, flask_app)
 
 
-def _call(client: Any, case: Case, url: str) -> Any:
-    kwargs: dict[str, Any] = {} if case.method == "GET" else {"json": case.payload or _PAYLOAD}
+def _call(client: Any, case: Case, url: str, ids: dict[str, Any]) -> Any:
+    # ai: claude-opus-5-5 | 2026-11-11 -- _Id payload values resolve to A's seeded ids.
+    payload = {
+        key: ids[value.kind] if isinstance(value, _Id) else value
+        for key, value in (case.payload or _PAYLOAD).items()
+    }
+    kwargs: dict[str, Any] = {} if case.method == "GET" else {"json": payload}
     return client.open(url, method=case.method, **kwargs)
 
 
@@ -429,7 +469,7 @@ def test_no_route_lets_one_account_act_on_anothers_resource(tenants: Tenants) ->
     unrefused: list[str] = []
 
     for case in CASES:
-        response = _call(tenants.b, case, tenants.path(case))
+        response = _call(tenants.b, case, tenants.path(case), tenants.ids)
         if response.status_code not in (403, 404) and (case.method, case.rule) not in _NOT_REFUSED:
             unrefused.append(f"{case.method} {case.rule} -> {response.status_code} {response.get_data(as_text=True)[:100]!r}")
 
@@ -452,7 +492,7 @@ def test_the_owner_is_not_refused_on_the_same_routes(tenants: Tenants) -> None:
         if not case.control:
             continue
         tenants.seed_rows()
-        response = _call(tenants.a, case, tenants.path(case))
+        response = _call(tenants.a, case, tenants.path(case), tenants.ids)
         if response.status_code in (403, 404):
             refused.append(f"{case.method} {case.rule} -> {response.status_code} {response.get_data(as_text=True)[:120]}")
 
