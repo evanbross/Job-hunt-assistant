@@ -50,6 +50,8 @@ class UserEventTopic(StrEnum):
     IMPORT_STATUS = "import"
     # GET /api/candidate-profile/file-sync
     CANDIDATE_PROFILE_FILE = "candidate-profile-file"
+    # GET /api/lead-suggestions  # ai: claude-opus-5-5 | 2026-11-11
+    LEAD_SUGGESTIONS = "lead-suggestions"
 
 
 # What listen() returns: a generator, so a caller can close() it to unsubscribe.

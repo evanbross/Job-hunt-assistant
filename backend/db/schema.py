@@ -2404,6 +2404,49 @@ def create_tables(conn: Any) -> None:
         CREATE UNIQUE INDEX IF NOT EXISTS idx_job_contacts_one_primary
             ON job_contacts (job_id) WHERE is_primary
         """,
+        # ai: claude-opus-5-5 | 2026-11-11
+        # Recruiter lead tracking, phase 2: conversations from an imported LinkedIn
+        # messages.csv that might be a recruiter reaching out, waiting for the user
+        # to accept (contact + logged messages, optionally a lead) or dismiss.
+        # One row per conversation (external_ref = LinkedIn's conversation id), so
+        # re-importing a newer export refreshes rows instead of duplicating them.
+        # status: 'unclassified' (not checked yet), 'suggested', 'not_recruiter'
+        # (the AI or a Contacts decision ruled it out), 'accepted', 'dismissed'.
+        # detection says what flagged it: a Contacts recruiter mark, a recruiter
+        # title, or the AI. messages is the conversation, oldest first
+        # (backend/leads/linkedin_messages.py's ExportMessage.as_json), kept so
+        # accepting needs no re-upload. Timestamps are UTC ISO 8601 text.
+        """
+        CREATE TABLE IF NOT EXISTS lead_suggestions (
+            id                        SERIAL PRIMARY KEY,
+            user_id                   INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            source                    TEXT NOT NULL CHECK (source IN ('linkedin_messages')),
+            external_ref              TEXT NOT NULL,
+            status                    TEXT NOT NULL DEFAULT 'unclassified'
+                CHECK (status IN ('unclassified', 'suggested', 'not_recruiter', 'accepted', 'dismissed')),
+            detection                 TEXT CHECK (detection IN ('contact', 'title', 'ai')),
+            reason                    TEXT,
+            counterpart_name          TEXT NOT NULL,
+            counterpart_profile_url   TEXT,
+            contact_id                INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+            job_id                    INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            conversation_title        TEXT,
+            role_guess                TEXT,
+            hiring_company_guess      TEXT,
+            recruiter_company_guess   TEXT,
+            first_message_at          TEXT NOT NULL,
+            last_message_at           TEXT NOT NULL,
+            message_count             INTEGER NOT NULL,
+            messages                  JSONB NOT NULL,
+            imported_at               TEXT NOT NULL,
+            decided_at                TEXT,
+            CONSTRAINT lead_suggestions_user_source_ref_key UNIQUE (user_id, source, external_ref)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_lead_suggestions_user_status
+            ON lead_suggestions (user_id, status, last_message_at DESC)
+        """,
         # ai: claude-sonnet-5 | 2026-10-15
         # One row per employment stint a contact has had (not just their
         # current company_raw/position) -- populated manually or by a future

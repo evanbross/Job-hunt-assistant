@@ -16,7 +16,8 @@
 	encode zstd gzip
 
 	# Largest legitimate body is the extension listener's captured page (15 MB by
-	# default); this front door needs no more than that.
+	# default); this front door needs no more than that. The LinkedIn messages
+	# upload (backend/leads/linkedin_messages.py's MAX_UPLOAD_BYTES) is held under it.
 	request_body {
 		max_size 16MB
 	}

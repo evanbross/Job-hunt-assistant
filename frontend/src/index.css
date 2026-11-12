@@ -464,3 +464,8 @@ a:hover {
 .form-stack { display: flex; flex-direction: column; gap: 10px; }
 .form-stack label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; font-weight: 600; color: var(--text-muted); }
 .form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+/* ai: claude-opus-5-5 | 2026-11-11 -- suggested leads (components/leads/SuggestedLeads.tsx) */
+.link-button { background: none; border: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-align: left; }
+.link-button:hover { text-decoration: underline; }
+.suggestion-messages { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; }
+.suggestion-message-text { white-space: pre-wrap; }

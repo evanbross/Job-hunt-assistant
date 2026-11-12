@@ -202,3 +202,95 @@ export const ORIGIN_LABELS: Record<JobOrigin, string> = {
   recruiter_contact: "Recruiter",
   manual: "Added by hand",
 };
+
+// ai: claude-opus-5-5 | 2026-11-11 -- phase 2: suggested leads from a LinkedIn messages.csv
+/** The inbox tabs (GET /api/lead-suggestions?status=). */
+export type SuggestionTab = "suggested" | "unclassified" | "not_recruiter" | "dismissed";
+export type SuggestionStatus = SuggestionTab | "accepted";
+
+/** One message of an imported conversation (backend/leads/linkedin_messages.py's ExportMessage). */
+export interface SuggestionMessage {
+  external_ref: string;
+  sent_at: string;
+  sender_name: string;
+  from_owner: boolean;
+  subject: string;
+  text: string;
+}
+
+/** A lead_suggestions row: one LinkedIn conversation that may be a recruiter reaching out. */
+export interface LeadSuggestion {
+  id: number;
+  source: "linkedin_messages";
+  external_ref: string;
+  status: SuggestionStatus;
+  detection: "contact" | "title" | "ai" | null;
+  reason: string | null;
+  counterpart_name: string;
+  counterpart_profile_url: string | null;
+  contact_id: number | null;
+  job_id: number | null;
+  conversation_title: string | null;
+  role_guess: string | null;
+  hiring_company_guess: string | null;
+  recruiter_company_guess: string | null;
+  first_message_at: string;
+  last_message_at: string;
+  message_count: number;
+  messages: SuggestionMessage[];
+  imported_at: string;
+  decided_at: string | null;
+}
+
+/** The AI check's progress (routes/lead_suggestions.py's SuggestionCheckState). */
+export interface SuggestionCheck {
+  running: boolean;
+  checked: number;
+  suggested: number;
+  error: string | null;
+  message: string;
+}
+
+/** GET /api/lead-suggestions */
+export interface LeadSuggestionsResponse {
+  suggestions: LeadSuggestion[];
+  counts: Record<SuggestionStatus, number>;
+  check: SuggestionCheck;
+}
+
+/** POST /api/lead-suggestions/linkedin-messages (backend/leads/lead_suggestions.py's ImportOutcome). */
+export interface MessagesImportResponse {
+  conversations: number;
+  candidates: number;
+  added: number;
+  refreshed: number;
+  messages_logged: number;
+  skipped: Partial<Record<"spam" | "started_by_you" | "group" | "no_profile" | "too_old", number>>;
+  unreadable_rows: number;
+  waiting_for_ai: number;
+  check_started: boolean;
+}
+
+/** POST /api/lead-suggestions/<id>/accept body. */
+export interface AcceptSuggestionBody {
+  lead: "none" | "new" | "existing";
+  company?: string;
+  job_title?: string;
+  job_id?: number;
+  contact_company?: string;
+  contact_position?: string;
+}
+
+/** POST /api/lead-suggestions/<id>/accept response. */
+export interface AcceptSuggestionResponse {
+  contact_id: number;
+  job_id: number | null;
+  messages_logged: number;
+}
+
+export const SUGGESTION_TAB_LABELS: Record<SuggestionTab, string> = {
+  suggested: "Suggested",
+  unclassified: "Not checked yet",
+  not_recruiter: "Ruled out",
+  dismissed: "Dismissed",
+};

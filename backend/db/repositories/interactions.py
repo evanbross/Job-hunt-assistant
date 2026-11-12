@@ -49,6 +49,23 @@ class PostgresInteractionRepository(_BaseRepo):
     def add(self, user_id: int, fields: dict[str, Any], created_at: str) -> dict[str, Any] | None:
         """Insert one interaction. Returns None (and inserts nothing) when the named
         contact or job doesn't exist or belongs to another user."""
+        row = self._insert(user_id, fields, created_at, skip_known_ref=False)
+        return self.get_by_id(user_id, row["id"]) if row else None
+
+    # ai: claude-opus-5-5 | 2026-11-11
+    def add_imported(self, user_id: int, fields: dict[str, Any], created_at: str) -> bool:
+        """Insert one interaction from an external import (fields carry source and
+        external_ref). False when that source already logged that external_ref --
+        re-importing the same export adds nothing -- or when the named contact or
+        job isn't this user's."""
+        if not fields.get("external_ref"):
+            raise ValueError("An imported interaction needs an external_ref")
+        return self._insert(user_id, fields, created_at, skip_known_ref=True) is not None
+
+    # ai: claude-opus-5-5 | 2026-11-11 -- the body of add(), shared with add_imported()
+    def _insert(
+        self, user_id: int, fields: dict[str, Any], created_at: str, *, skip_known_ref: bool
+    ) -> dict[str, Any] | None:
         unknown = set(fields) - self._INSERT_COLUMNS
         if unknown:
             raise ValueError(f"Attempt to insert unknown columns: {unknown}")
@@ -57,6 +74,12 @@ class PostgresInteractionRepository(_BaseRepo):
         if contact_id is None and job_id is None:
             raise ValueError("An interaction needs a contact_id or a job_id")
         columns = list(fields)
+        # The partial unique index idx_interactions_user_external_ref.
+        on_conflict = (
+            " ON CONFLICT (user_id, source, external_ref) WHERE external_ref IS NOT NULL DO NOTHING"
+            if skip_known_ref
+            else ""
+        )
         cur = self._execute(
             f"INSERT INTO interactions (user_id, {', '.join(columns)}, created_at)"
             f" SELECT %s, {', '.join(['%s'] * len(columns))}, %s"
@@ -64,6 +87,7 @@ class PostgresInteractionRepository(_BaseRepo):
             "        OR EXISTS (SELECT 1 FROM contacts WHERE id = %s AND user_id = %s))"
             "   AND (%s::integer IS NULL"
             "        OR EXISTS (SELECT 1 FROM jobs WHERE id = %s AND user_id = %s))"
+            f"{on_conflict}"
             " RETURNING id",
             [
                 user_id, *fields.values(), created_at,
@@ -71,8 +95,7 @@ class PostgresInteractionRepository(_BaseRepo):
                 job_id, job_id, user_id,
             ],
         )
-        row = cur.fetchone()
-        return self.get_by_id(user_id, row["id"]) if row else None
+        return cur.fetchone()
 
     def get_by_id(self, user_id: int, interaction_id: int) -> dict[str, Any] | None:
         cur = self._execute(

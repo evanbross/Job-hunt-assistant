@@ -48,4 +48,4 @@ export interface SystemHealthResponse {
 // ai: claude-opus-5-5 | 2026-10-28
 /** The named events GET /api/events pushes -- backend/user_events.py's
  * UserEventTopic values. Each means "re-read that topic's endpoint". */
-export type ServerEventTopic = "import" | "candidate-profile-file";
+export type ServerEventTopic = "import" | "candidate-profile-file" | "lead-suggestions"; // ai: claude-opus-5-5 | 2026-11-11

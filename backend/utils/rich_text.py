@@ -20,6 +20,9 @@ A leaf module (no project imports), like the other helpers in backend/utils."""
 
 from __future__ import annotations
 
+import html
+import re
+
 import nh3
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -37,6 +40,9 @@ _ALLOWED_URL_SCHEMES: frozenset[str] = frozenset({"http", "https", "mailto"})
 # A long call transcript pasted into a note is a few tens of KB; this bounds a
 # single field well above that without letting one request store megabytes.
 MAX_RICH_TEXT_LENGTH = 200_000
+
+# Where html_to_plain_text() starts a new line.
+_BLOCK_END_RE = re.compile(r"<br\s*/?>|</(?:p|div|li|h[1-6]|blockquote|pre|tr)>", re.IGNORECASE)
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -59,3 +65,24 @@ def sanitize_rich_text(html: str | None) -> str | None:
     if not nh3.clean(cleaned, tags=set()).strip() and "<hr" not in cleaned:
         return None
     return cleaned
+
+
+# ai: claude-opus-5-5 | 2026-11-11 -- moved from backend/leads/call_notes.py (was
+# notes_to_html) now that LinkedIn message import stores plain text the same way.
+def plain_text_to_html(text: str) -> str:
+    """Plain text as escaped HTML paragraphs (blank line = new paragraph, single
+    line break kept), for storing verbatim text in a rich-text column."""
+    paragraphs = [p for p in text.replace("\r\n", "\n").split("\n\n") if p.strip()]
+    return "".join(
+        "<p>" + "<br>".join(html.escape(line) for line in p.split("\n")) + "</p>" for p in paragraphs
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+def html_to_plain_text(markup: str) -> str:
+    """The visible text of an HTML fragment: block ends become line breaks, every
+    tag is dropped and entities are decoded. For previews and AI input, never for
+    rendering."""
+    with_breaks = _BLOCK_END_RE.sub("\n", markup)
+    text = html.unescape(nh3.clean(with_breaks, tags=set()))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()

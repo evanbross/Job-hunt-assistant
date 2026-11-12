@@ -15,6 +15,7 @@ later import merges into a hand-added recruiter instead of duplicating them."""
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from backend.contacts.title_normalization import normalize_title
 from backend.scoring.company_matching import normalize_company_name
@@ -43,3 +44,21 @@ def contact_identity_columns(
         "normalized_title": normalize_title(position),
         "profile_url": profile_url,
     }
+
+
+# ai: claude-opus-5-5 | 2026-10-14 -- moved here from outreach_drafts.py 2026-11-11
+def linkedin_profile_slug(url: str | None) -> str | None:
+    """The member identifier from a linkedin.com/in/<slug> URL, lowercased and
+    percent-decoded, or None for anything else. Comparing slugs rather than
+    whole URLs tolerates the trailing slashes, query strings, overlay paths
+    (/in/<slug>/overlay/...) and http/www variants LinkedIn adds or drops."""
+    if not url:
+        return None
+    parsed = urlparse(url.strip())
+    host = (parsed.hostname or "").lower()
+    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2 or parts[0].lower() != "in":
+        return None
+    return unquote(parts[1]).lower() or None

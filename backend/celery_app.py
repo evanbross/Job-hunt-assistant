@@ -84,6 +84,7 @@ celery_app = Celery(
         "routes.applications",
         "routes.jd_health_check",
         "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
+        "routes.lead_suggestions",  # ai: claude-opus-5-5 | 2026-11-11
         "backend.security.data_lifecycle",
         "backend.db.scheduled_backup",  # ai: claude-opus-5-5 | 2026-11-07
         "backend.queue_depth",  # ai: claude-opus-5-5 | 2026-11-08

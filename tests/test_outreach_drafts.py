@@ -13,10 +13,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from backend.contacts.contact_identity import linkedin_profile_slug
 from backend.contacts.outreach_drafts import (
     STAGED_DRAFT_TTL,
     claim_draft_for_page,
-    linkedin_profile_slug,
     render_outreach_template,
 )
 from backend.db import (

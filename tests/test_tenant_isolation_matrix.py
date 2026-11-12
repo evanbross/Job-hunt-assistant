@@ -130,6 +130,10 @@ CASES: list[Case] = [
     # ai: claude-opus-5-5 | 2026-11-11 -- calls the AI provider for the owner
     _c_no_control("POST", "/api/leads/<int:job_id>/call-notes", {"text": "Call notes"}, job_id="lead"),
     _c("DELETE", "/api/leads/<int:job_id>/contacts/<int:contact_id>", job_id="lead", contact_id="contact"),
+    # ai: claude-opus-5-5 | 2026-11-11 -- suggested leads (LinkedIn messages import)
+    _c("POST", "/api/lead-suggestions/<int:suggestion_id>/accept", {"lead": "none"}, suggestion_id="suggestion"),
+    _c("POST", "/api/lead-suggestions/<int:suggestion_id>/dismiss", suggestion_id="suggestion"),
+    _c("POST", "/api/lead-suggestions/<int:suggestion_id>/restore", suggestion_id="dismissed_suggestion"),
     _c("GET", "/api/jobs/<int:job_id>", job_id="job"),
     _c("PATCH", "/api/jobs/<int:job_id>", {"company": "x"}, job_id="job"),
     _c("POST", "/api/jobs/<int:job_id>/apply", job_id="job"),
@@ -366,6 +370,14 @@ class Tenants:
                 "INSERT INTO scanned_emails (user_id, email_id) VALUES (%s, %s)", (self.a_id, email_id)
             )
             ins(cur, "job_contacts", job_id=lead_id, contact_id=contact_id, created_at=_TS)  # ai: claude-opus-5-5 | 2026-11-11
+            # ai: claude-opus-5-5 | 2026-11-11 -- one suggestion per status the routes start from
+            for kind, status in (("suggestion", "suggested"), ("dismissed_suggestion", "dismissed")):
+                self.ids[kind] = ins(
+                    cur, "lead_suggestions", source="linkedin_messages",
+                    external_ref=f"{_MARKER}-conv-{next(_SEQUENCE)}", status=status,
+                    counterpart_name=f"{_MARKER} Recruiter", first_message_at=_TS, last_message_at=_TS,
+                    message_count=0, messages="[]", imported_at=_TS,
+                )
             self.ids["scanned_email"] = email_id
         finally:
             conn.close()

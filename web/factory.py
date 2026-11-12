@@ -55,6 +55,7 @@ from routes.fit import fit_bp
 from routes.import_ import import_bp
 from routes.jd_health_check import jd_health_check_bp
 from routes.jobs import jobs_bp
+from routes.lead_suggestions import lead_suggestions_bp
 from routes.leads import leads_bp
 from routes.registration_invites import registration_invites_bp
 from routes.scan import scan_bp
@@ -96,6 +97,7 @@ _API_BLUEPRINTS: tuple[flask.Blueprint, ...] = (
     jd_health_check_bp,
     jobs_bp,
     leads_bp,  # ai: claude-opus-5-5 | 2026-11-11
+    lead_suggestions_bp,  # ai: claude-opus-5-5 | 2026-11-11
     registration_invites_bp,  # ai: claude-opus-5-5 | 2026-11-07
     admin_accounts_bp,  # ai: claude-opus-5-5 | 2026-11-09
     scan_bp,

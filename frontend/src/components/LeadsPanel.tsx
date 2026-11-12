@@ -17,6 +17,7 @@ import type { LeadSummary, LeadsBoard } from "../types/leads.ts";
 import { CHANNEL_LABELS, ORIGIN_LABELS } from "../types/leads.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import { getJson, loadStageCatalog, localToday, needsAttention, stageLabel } from "./leads/leadsShared.ts";
+import SuggestedLeads from "./leads/SuggestedLeads.tsx";
 
 // Lazy: these carry the rich-text editor, which the board itself doesn't need.
 const InteractionModal = lazy(() => import("./leads/InteractionModal.tsx"));
@@ -211,6 +212,15 @@ export default function LeadsPanel() {
           (change this in Settings).
         </p>
       )}
+
+      {/* ai: claude-opus-5-5 | 2026-11-11 -- phase 2: LinkedIn messages import */}
+      <SuggestedLeads
+        leads={board?.leads || []}
+        onAccepted={(result) => {
+          refreshAll();
+          if (result.job_id !== null) setOpenLeadId(result.job_id);
+        }}
+      />
 
       <h3 className="leads-section-title">Conversations without a role yet</h3>
       {board && board.open_conversations.length === 0 && (

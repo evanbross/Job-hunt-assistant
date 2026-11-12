@@ -16,9 +16,7 @@ reviews it and applies what they accept through the ordinary lead routes
 
 from __future__ import annotations
 
-import html
 import io
-import json
 import logging
 import re
 import zipfile
@@ -29,7 +27,7 @@ import docx
 from docx.opc.exceptions import OpcError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from backend.ai_provider import AIMessage, AIProviderClient
+from backend.ai_provider import AIMessage, AIProviderClient, json_object_from_reply
 
 logger = logging.getLogger(__name__)
 
@@ -111,15 +109,6 @@ def normalize_notes_text(text: str) -> str:
     return collapsed
 
 
-def notes_to_html(text: str) -> str:
-    """Verbatim notes as escaped HTML paragraphs (blank line = new paragraph,
-    single line break kept), for an interaction's body_html."""
-    paragraphs = [p for p in text.split("\n\n") if p.strip()]
-    return "".join(
-        "<p>" + "<br>".join(html.escape(line) for line in p.split("\n")) + "</p>" for p in paragraphs
-    )
-
-
 # ai: claude-opus-5-5 | 2026-11-11
 class CallNotesProposal(BaseModel):
     """What the AI read out of the notes. Every field is optional: absent means the
@@ -196,23 +185,6 @@ def _extraction_prompt(notes: str, lead_context: dict[str, str | None], today: d
     )
 
 
-def _json_object(raw: str) -> dict[str, object]:
-    """The JSON object in a model reply, tolerating a code fence or leading prose."""
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        start, end = raw.find("{"), raw.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("AI reply contained no JSON object") from None
-        try:
-            parsed = json.loads(raw[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"AI reply was not valid JSON: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError("AI reply was not a JSON object")
-    return parsed
-
-
 # ai: claude-opus-5-5 | 2026-11-11
 def extract_call_notes(
     user_id: int, notes: str, lead_context: dict[str, str | None], today: date
@@ -228,7 +200,7 @@ def extract_call_notes(
             json_response=True,
         )
     try:
-        return CallNotesProposal.model_validate(_json_object(raw))
+        return CallNotesProposal.model_validate(json_object_from_reply(raw))
     except ValidationError as exc:
         logger.warning("Call-notes extraction reply failed validation: %s", exc)
         raise ValueError("AI reply didn't have the expected fields") from exc

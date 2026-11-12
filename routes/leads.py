@@ -39,7 +39,6 @@ from backend.leads.call_notes import (
     CallNotesFormatError,
     extract_call_notes,
     normalize_notes_text,
-    notes_to_html,
     read_call_notes_upload,
 )
 from backend.leads.lead_service import (
@@ -52,7 +51,11 @@ from backend.leads.lead_service import (
 )
 from backend.settings_service import get_setting_int
 from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
-from backend.utils.rich_text import MAX_RICH_TEXT_LENGTH, sanitize_rich_text
+from backend.utils.rich_text import (
+    MAX_RICH_TEXT_LENGTH,
+    plain_text_to_html,
+    sanitize_rich_text,
+)
 from backend.utils.stage_status_normalization import normalize_stage_status
 from backend.utils.utils import (
     current_user_id,
@@ -502,7 +505,7 @@ def import_call_notes(job_id: int) -> ResponseReturnValue:
                 "direction": "inbound",
                 "kind": "transcript",
                 "summary": "Imported call notes",
-                "body_html": sanitize_rich_text(notes_to_html(notes)),
+                "body_html": sanitize_rich_text(plain_text_to_html(notes)),
                 "source": "notetaker",
             },
             now_iso,

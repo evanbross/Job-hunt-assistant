@@ -21,9 +21,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
-from urllib.parse import unquote, urlparse
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.contacts.contact_identity import linkedin_profile_slug
 
 # A staged draft older than this is treated as abandoned, so it's never pasted
 # into a profile the user happens to open much later.
@@ -59,24 +59,6 @@ def render_outreach_template(template: str, contact: dict[str, Any]) -> str:
     for placeholder, value in values.items():
         template = template.replace(placeholder, value)
     return template.strip()
-
-
-# ai: claude-opus-5-5 | 2026-10-14
-def linkedin_profile_slug(url: str | None) -> str | None:
-    """The member identifier from a linkedin.com/in/<slug> URL, lowercased and
-    percent-decoded, or None for anything else. Comparing slugs rather than
-    whole URLs tolerates the trailing slashes, query strings, overlay paths
-    (/in/<slug>/overlay/...) and http/www variants LinkedIn adds or drops."""
-    if not url:
-        return None
-    parsed = urlparse(url.strip())
-    host = (parsed.hostname or "").lower()
-    if host != "linkedin.com" and not host.endswith(".linkedin.com"):
-        return None
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) < 2 or parts[0].lower() != "in":
-        return None
-    return unquote(parts[1]).lower() or None
 
 
 # ai: claude-opus-5-5 | 2026-10-14

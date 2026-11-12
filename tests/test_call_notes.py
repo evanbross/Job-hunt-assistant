@@ -26,7 +26,6 @@ from backend.leads.call_notes import (
     CallNotesFormatError,
     CallNotesProposal,
     extract_call_notes,
-    notes_to_html,
     read_call_notes_upload,
 )
 
@@ -77,12 +76,6 @@ def test_plain_text_is_trimmed_and_blank_runs_collapsed() -> None:
 def test_unreadable_uploads_are_refused(filename: str, raw: bytes, message: str) -> None:
     with pytest.raises(CallNotesFormatError, match=message):
         read_call_notes_upload(filename, raw)
-
-
-def test_notes_become_escaped_paragraphs() -> None:
-    assert notes_to_html("Rate <90>\nremote\n\nNext: send resume") == (
-        "<p>Rate &lt;90&gt;<br>remote</p><p>Next: send resume</p>"
-    )
 
 
 def test_proposal_drops_unusable_dates_and_bounds_lists() -> None:
