@@ -31,6 +31,7 @@ from backend.email.google_oauth_pending import (
     PendingGoogleAuth,
     RedisPendingAuthStore,
 )
+from tests.redis_doubles import unreachable_redis
 
 _FLOW = PendingGoogleAuth(verifier="pkce-verifier", user_id=7, return_origin="http://localhost:5174")
 
@@ -117,7 +118,7 @@ def test_redis_flows_expire(redis_prefix: str) -> None:
 
 
 def test_an_unreachable_redis_raises_rather_than_losing_the_flow_silently() -> None:
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
     store = RedisPendingAuthStore(dead)
 
     with pytest.raises(redis.RedisError):

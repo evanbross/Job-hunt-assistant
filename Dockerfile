@@ -45,7 +45,8 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
 WORKDIR /src
 COPY pyproject.toml uv.lock ./
 # The app runs from source (/app on PYTHONPATH), so the project itself isn't installed.
-RUN uv sync --frozen --no-dev --no-install-project
+# --no-default-groups, not --no-dev: also skips the devkit group (a path dep on ../infra).
+RUN uv sync --frozen --no-default-groups --no-install-project
 
 # ── Runtime ─────────────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS runtime

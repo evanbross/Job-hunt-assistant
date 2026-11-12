@@ -24,6 +24,15 @@ Read these detailed standards only when touching the related area:
 
 ---
 
+## Running Tests
+
+The full suite (`uv run pytest`, ~2,050 tests against real Postgres) takes ~15 minutes.
+Follow `../Dev-Standards/TESTING_STANDARDS.md` "Run Targeted Tests While Iterating; the
+Full Suite Once" on **every** edit, not only test changes: targeted test files or the
+narrowest direct check while iterating, the full suite once before committing (or CI).
+
+---
+
 ## Project Overview
 
 Flask backend + React/Vite frontend (`frontend/src/`).
