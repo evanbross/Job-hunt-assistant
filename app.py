@@ -48,8 +48,6 @@ import os
 import socket
 import subprocess as _subprocess
 import sys
-import threading
-import time
 import urllib.parse
 from pathlib import Path
 
@@ -376,15 +374,13 @@ def _stop_celery_process(proc: _subprocess.Popen, name: str) -> None:
 
 # ─── Dev Caddy registration ───────────────────────────────────────────────────
 
-# ai: claude-sonnet-5 | 2026-09-05
-_CADDY_RECONCILE_INTERVAL_SECONDS = 120
-
-
-# ai: claude-sonnet-5 | 2026-07-31
+# ai: claude-opus-5-5 | 2026-11-12 -- deregistration now always scheduled.
 def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
     assert _caddy_registry is not None
+    # Scheduled even if registration fails now: the reconciler below may register
+    # the route later, and deregister() is a no-op for a route that isn't there.
+    atexit.register(_caddy_registry.deregister, name)
     if _caddy_registry.register(name, port):
-        atexit.register(_caddy_registry.deregister, name)
         return True
     logger.warning(
         "Caddy registration failed — %s://%s.localhost will not work; "
@@ -398,56 +394,38 @@ def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
     return False
 
 
-# ai: claude-sonnet-5 | 2026-09-05
-def _reconcile_caddy_routes(routes: list[tuple[str, int]]) -> None:
-    """Background loop: re-register any Caddy route that has disappeared.
-
-    _register_with_caddy above (via caddy_registry.register()'s own
-    retries) only covers registration failing at startup. Caddy holds
-    routes in memory only, so if the Caddy container is restarted
-    independently of this app (a Docker/Desktop restart, not an app
-    restart) an already-registered route silently vanishes and
-    *.localhost stops resolving with no further signal — this process
-    keeps running, unaware. Caddy has no restart webhook to push that
-    event to us, so this polls at a slow, minutes-scale interval as a
-    fallback safety net rather than a primary mechanism.
-    """
-    assert _caddy_registry is not None
-    while True:
-        time.sleep(_CADDY_RECONCILE_INTERVAL_SECONDS)
-        for name, port in routes:
-            if not _caddy_registry.route_registered(f"app-{name}"):
-                logger.warning(
-                    "Caddy: route for %s.localhost has disappeared — re-registering",
-                    name,
-                )
-                _caddy_registry.register(name, port)
-
-
 # ai: claude-opus-5-5 | 2026-11-05 -- was inline in the __main__ block.
 def _register_caddy_routes(named_ports: list[tuple[str, int | None, str]]) -> None:
     """Register each (name, port, scheme) whose port is known with the dev Caddy and
     keep the registrations alive. A no-op when ../infra's caddy_registry is absent."""
     if _caddy_registry is None:
         return
+    registry = _caddy_registry
     # ai: claude-sonnet-5 | 2026-08-07
     # The browser extension talks to the listener servers directly (see
     # browser-extension/background.js) — registering them under stable Caddy
     # names, rather than requiring a fixed port, lets both fall back to an
     # OS-assigned port on conflict (see backend/import_listener.py and
     # backend/queue_websocket.py) without the extension needing any changes.
-    registered = [
-        (name, port)
-        for name, port, scheme in named_ports
-        if port is not None and _register_with_caddy(name, port, scheme)
-    ]
-    if registered:
-        threading.Thread(
-            target=_reconcile_caddy_routes,
-            args=(registered,),
-            daemon=True,
-            name="caddy-route-reconciler",
-        ).start()
+    known = [(name, port, scheme) for name, port, scheme in named_ports if port is not None]
+    for name, port, scheme in known:
+        _register_with_caddy(name, port, scheme)
+
+    # ai: claude-opus-5-5 | 2026-11-12
+    # Caddy keeps routes in memory only, so a Caddy container restart (or Caddy
+    # being down at startup) leaves *.localhost dead while this app keeps running.
+    # ../infra's shared RouteReconciler re-registers missing routes on a slow poll.
+    # It now covers routes that failed at startup too, not only ones that vanished.
+    def _reregister() -> None:
+        for name, port, _scheme in known:
+            registry.register(name, port)
+
+    if known:
+        reconciler = registry.RouteReconciler([f"app-{name}" for name, _, _ in known], _reregister)
+        reconciler.start()
+        # atexit runs handlers last-in first-out, so this stops the reconciler
+        # before the per-route deregister() calls scheduled above.
+        atexit.register(reconciler.stop)
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
