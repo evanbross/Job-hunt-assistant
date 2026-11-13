@@ -60,10 +60,24 @@ def release() -> ModuleType:
 
 # ── git: which commit a release is ─────────────────────────────────────────────
 
+# ai: claude-opus-5-5 | 2026-11-11
+# Variables that point git at a particular repository. Git sets some of these for
+# hooks (the pre-push gate runs this suite), and any of them overrides the cwd.
+_INHERITED_REPO_LOCATION_VARS: tuple[str, ...] = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_QUARANTINE_PATH",
+)
+
 
 @pytest.fixture
 def git_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hermetic git: no global/system config (hooks, signing, autocrlf), fixed identity."""
+    """Hermetic git: no global/system config (hooks, signing, autocrlf), fixed identity,
+    and no inherited repository location."""
+    # ai: claude-opus-5-5 | 2026-11-11 -- git exports GIT_DIR (and friends) to hooks; a
+    # pre-push run from a worktree inherited them, so the temp repo's `git commit`
+    # acted on the worktree's repository instead and every clone-based test errored.
+    for name in _INHERITED_REPO_LOCATION_VARS:
+        monkeypatch.delenv(name, raising=False)
     empty = tmp_path / "empty-gitconfig"
     empty.write_text("", encoding="utf-8")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty))
