@@ -29,6 +29,7 @@ from backend.scanning.host_fetch_spacing import (
     MemoryHostClaimStore,
     RedisHostClaimStore,
 )
+from tests.redis_doubles import unreachable_redis
 
 _WTTJ = "app.welcometothejungle.com"
 
@@ -135,7 +136,7 @@ def test_two_processes_end_up_spaced_apart(redis_prefix: str) -> None:
 
 
 def test_an_unreachable_redis_raises_instead_of_fetching_unpaced() -> None:
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
 
     with pytest.raises(redis.RedisError):
         HostFetchSpacing(RedisHostClaimStore(dead)).wait_turn(_WTTJ, 1.0)

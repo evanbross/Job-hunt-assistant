@@ -38,6 +38,7 @@ from flask import Flask
 
 import config
 from routes.system import system_bp
+from tests.redis_doubles import unreachable_redis
 
 
 def make_fake_get_repos(repos: dict) -> Any:
@@ -164,7 +165,7 @@ def test_readiness_checks_the_database_and_redis(anonymous_client: Any) -> None:
 def test_readiness_fails_when_redis_is_down_but_liveness_does_not(
     anonymous_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
     monkeypatch.setattr("routes.system._redis_probe", dead)
 
     ready = anonymous_client.get("/api/system/ready")

@@ -30,6 +30,7 @@ from backend.scanning.import_progress import (
     MemoryImportProgressStore,
     RedisImportProgressStore,
 )
+from tests.redis_doubles import unreachable_redis
 
 _USER = 1
 _OTHER = 2
@@ -124,7 +125,7 @@ def test_each_account_keeps_only_its_newest_imports(store: ImportProgressStore) 
 
 
 def test_an_unreachable_redis_loses_progress_but_never_raises() -> None:
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
     progress = ImportProgress(RedisImportProgressStore(dead, key_prefix="jha:test-import:dead"))
 
     progress.put("a", _state("2026-11-06T10:00:00+00:00"))

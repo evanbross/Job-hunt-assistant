@@ -24,6 +24,7 @@ from backend.security.rate_limiter import (
     hash_identifier,
 )
 from tests.conftest import FakeClock
+from tests.redis_doubles import unreachable_redis
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -169,7 +170,7 @@ def test_redis_keys_expire_on_their_own(redis_client: redis.Redis, rate_clock: F
 
 
 def _dead_redis_limiter(clock: FakeClock) -> RateLimiter:
-    client = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    client = unreachable_redis()
     return RateLimiter(RedisBackend(client), clock=clock, retry_seconds=30)
 
 

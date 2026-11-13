@@ -32,6 +32,7 @@ from backend.active_tasks import (
     RedisActiveTaskStore,
     TaskRecord,
 )
+from tests.redis_doubles import unreachable_redis
 
 _KIND = "career_scan"
 _USER = 1
@@ -176,7 +177,7 @@ def test_redis_records_expire(redis_prefix: str) -> None:
 
 def test_an_unreachable_redis_raises_instead_of_dispatching_unchecked() -> None:
     celery = _Celery()
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
     tasks = ActiveTasks(RedisActiveTaskStore(dead), celery.state)
 
     with pytest.raises(redis.RedisError):

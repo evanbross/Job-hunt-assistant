@@ -774,6 +774,9 @@ dev = [
     { name = "pytest-cov" },
     { name = "ruff" },
 ]
+devkit = [
+    { name = "zt-devkit" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -814,6 +817,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.5.0" },
 ]
+devkit = [{ name = "zt-devkit", editable = "../infra/devkit" }]
 
 [[package]]
 name = "jsonschema"
@@ -1781,3 +1785,13 @@ sdist = { url = "https://files.pythonhosted.org/packages/19/70/80f3b7c10d2630aa6
 wheels = [
     { url = "https://files.pythonhosted.org/packages/38/34/98a2f52245f4d47be93b580dae5f9861ef58977d73a79eb47c58f1ad1f3a/xmltodict-1.0.4-py3-none-any.whl", hash = "sha256:a4a00d300b0e1c59fc2bfccb53d7b2e88c32f200df138a0dd2229f842497026a", size = 13580, upload-time = "2026-02-22T02:21:21.039Z" },
 ]
+
+[[package]]
+name = "zt-devkit"
+version = "0.1.0"
+source = { editable = "../infra/devkit" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=8" }]

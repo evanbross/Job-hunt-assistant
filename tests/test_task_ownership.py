@@ -21,6 +21,7 @@ from backend.security.task_ownership import (
     RedisOwnerStore,
     TaskOwnership,
 )
+from tests.redis_doubles import unreachable_redis
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -38,7 +39,7 @@ def test_an_unknown_task_belongs_to_nobody() -> None:
 
 
 def test_an_unreachable_store_answers_no_rather_than_yes() -> None:
-    dead = redis.Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2, socket_timeout=0.2)
+    dead = unreachable_redis()
     ownership = TaskOwnership(RedisOwnerStore(dead))
 
     ownership.record("task-1", 7)  # must not raise: the task is already queued

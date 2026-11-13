@@ -74,9 +74,12 @@ from web.serving import (
     verify_database_ready,
 )
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "infra"))
+# ai: claude-opus-5-5 | 2026-11-12
+# Shared dev-Caddy client from the zt-devkit package (../infra/devkit), installed by
+# `uv sync` via the `devkit` dependency group. Optional on purpose: CI, Docker and the
+# desktop build don't install it, and only the dev Caddy registration uses it.
 try:
-    import caddy_registry as _caddy_registry  # noqa: E402 -- needs the sys.path entry above
+    from zt_devkit import caddy_registry as _caddy_registry
 except ImportError:
     _caddy_registry = None
 
@@ -397,7 +400,7 @@ def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
 # ai: claude-opus-5-5 | 2026-11-05 -- was inline in the __main__ block.
 def _register_caddy_routes(named_ports: list[tuple[str, int | None, str]]) -> None:
     """Register each (name, port, scheme) whose port is known with the dev Caddy and
-    keep the registrations alive. A no-op when ../infra's caddy_registry is absent."""
+    keep the registrations alive. A no-op when zt-devkit (../infra/devkit) isn't installed."""
     if _caddy_registry is None:
         return
     registry = _caddy_registry

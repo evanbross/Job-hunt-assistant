@@ -15,16 +15,21 @@ import re
 import socket
 import ssl
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import pytest
+import redis
 import yaml
+from redis.backoff import NoBackoff
+from redis.retry import Retry
 
+import config
 from backend.celery_app import DEFAULT_QUEUE, MAINTENANCE_QUEUE
 from backend.leads import linkedin_messages
 from backend.security.client_ip import parse_trusted_proxies
-from backend.security.redis_tls import redis_ssl_options
+from backend.security.redis_tls import app_redis_client, redis_ssl_options
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -49,6 +54,28 @@ def test_a_rediss_url_requires_certificate_verification() -> None:
 def test_a_rediss_url_without_a_ca_file_is_refused_not_downgraded(ca_file: str) -> None:
     with pytest.raises(ValueError, match="REDIS_TLS_CA_FILE"):
         redis_ssl_options("rediss://:pw@redis:6379/0", ca_file)
+
+
+# ai: claude-opus-5-5 | 2026-11-12
+def test_an_app_redis_client_gives_up_quickly_when_redis_is_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    # redis-py 6's default retry policy (3 retries, exponential backoff) took 9.8 s here;
+    # fail_fast_retry() should keep it near two 0.2 s timeouts.
+    monkeypatch.setattr(config, "REDIS_URL", "redis://127.0.0.1:1/0")
+    client = app_redis_client(socket_connect_timeout=0.2, socket_timeout=0.2)
+
+    started = time.monotonic()
+    with pytest.raises(redis.RedisError):
+        client.ping()
+
+    assert time.monotonic() - started < 2.0
+
+
+# ai: claude-opus-5-5 | 2026-11-12
+def test_a_callers_own_retry_policy_is_kept(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(config, "REDIS_URL", "redis://127.0.0.1:1/0")
+    own = Retry(NoBackoff(), 5)
+
+    assert app_redis_client(retry=own).get_retry() is own
 
 
 def test_the_celery_app_stays_plain_for_a_plain_url() -> None:
