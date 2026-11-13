@@ -1,0 +1,188 @@
+# Quality gates: every merge request and every push to the default branch must pass
+# lint (Python and frontend), the production frontend build, and the full test suite
+# against a throwaway Postgres and Redis. Nothing here deploys anything.
+#
+# ai: claude-opus-5-5 | 2026-10-13
+# Each job runs only when a path it depends on changed (see the .*_changes anchors), so
+# an extension- or docs-only push doesn't spend ~20 runner-minutes on pytest -- in
+# Oct 2026 only 26 of 73 commits touched Python. A pipeline whose jobs all skip is not
+# created at all. Scheduled pipelines evaluate every `changes:` rule as true, so a
+# schedule (CI/CD > Schedules) runs the full set, including the dependency audits.
+
+# ai: claude-sonnet-5 | 2026-10-15
+# Disabled: runs are no longer triggered on GitLab's shared runners (to stop
+# spending CI minutes/credits) in favor of running the same checks locally
+# before pushing. Every job definition below is left intact -- to re-enable,
+# restore the three commented-out rules (merge_request_event, pushes to the
+# default branch, and scheduled pipelines) and delete the `when: never` line.
+# ai: claude-opus-5-5 | 2026-11-03
+# The local replacement is enforced, not remembered: scripts/check.py runs these
+# jobs' commands, selected by these jobs' own `rules: changes:` paths, from a
+# pre-push hook (.githooks/pre-push; enable with `git config core.hooksPath .githooks`).
+# tests/test_check_gate.py fails if a gate command stops matching its job's script.
+workflow:
+  rules:
+    # - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    # - if: $CI_PIPELINE_SOURCE == "schedule"
+    - when: never
+
+# Everything the Python lint/test jobs read. tests/ also reads a few non-Python files:
+# deploy/ and .gitignore (test_infra_hardening.py), shared/skip_reasons.json and
+# frontend/src/utils/triagePanelUtils.ts (test_skip_reasons_sync.py).
+.python_changes: &python_changes
+  - "backend/**/*"
+  - "routes/**/*"
+  - "web/**/*"
+  - "tests/**/*"
+  - "scripts/**/*"
+  - "shared/**/*"
+  - "deploy/**/*"
+  - "prompts/**/*"
+  - "*.py"
+  - "*.md.example"
+  - ".env.example"
+  - ".gitignore"
+  - "pyproject.toml"
+  - "pyrightconfig.json"
+  - "uv.lock"
+  - ".python-version"
+  - "frontend/src/utils/triagePanelUtils.ts"
+  - ".gitlab-ci.yml"
+
+# The frontend imports shared/skip_reasons.json directly.
+.frontend_changes: &frontend_changes
+  - "frontend/**/*"
+  - "shared/**/*"
+  - ".gitlab-ci.yml"
+
+# ai: claude-opus-5-5 | 2026-11-03
+.extension_changes: &extension_changes
+  - "browser-extension/**/*"
+  - ".gitlab-ci.yml"
+
+stages:
+  - lint
+  - test
+  - audit
+
+variables:
+  UV_CACHE_DIR: "$CI_PROJECT_DIR/.uv-cache"
+  UV_LINK_MODE: copy
+  npm_config_cache: "$CI_PROJECT_DIR/.npm-cache"
+
+.python:
+  image: ghcr.io/astral-sh/uv:python3.14-bookworm
+  cache:
+    key:
+      files: [uv.lock]
+    paths: [.uv-cache/]
+
+ruff:
+  extends: .python
+  stage: lint
+  rules:
+    - changes: *python_changes
+  script:
+    # --frozen: fail if uv.lock is out of date with pyproject.toml rather than re-resolving.
+    - uv sync --frozen --only-group dev
+    - uv run --frozen --no-sync ruff check .
+
+frontend:
+  stage: lint
+  image: node:22-bookworm-slim
+  rules:
+    - changes: *frontend_changes
+  cache:
+    key:
+      files: [frontend/package-lock.json]
+    paths: [.npm-cache/]
+  script:
+    - cd frontend
+    - npm ci
+    # ESLint allows only the warnings that already exist (see package.json); a new one fails.
+    - npm run lint:ci
+    # Vite transpiles TS without a full type check, and ESLint isn't a substitute for
+    # tsc's cross-module structural checks -- run it explicitly as its own gate.
+    - npm run type-check
+    # ai: claude-opus-5-5 | 2026-11-03 — the Vitest suite (added 2026-10-18) was never wired in here.
+    - npm run test
+    # A plain JS React project can lint clean and still fail to build (or reference an
+    # undefined name only on a branch nothing renders), so the production build is a gate too.
+    - npm run build
+
+# ai: claude-opus-5-5 | 2026-11-03
+# The browser extension's Vitest suite (jsdom + a vm-based chrome mock), which no job ran.
+extension:
+  stage: test
+  image: node:22-bookworm-slim
+  rules:
+    - changes: *extension_changes
+  cache:
+    key:
+      files: [browser-extension/package-lock.json]
+    paths: [.npm-cache/]
+  script:
+    - cd browser-extension
+    - npm ci
+    - npm test
+
+pytest:
+  extends: .python
+  stage: test
+  rules:
+    - changes: *python_changes
+  services:
+    - name: postgres:17-alpine
+      alias: postgres
+      variables:
+        POSTGRES_DB: jha_test_db
+        POSTGRES_PASSWORD: ci-only-password
+    - name: redis:7-alpine
+      alias: redis
+  variables:
+    # The suite truncates every table, so it refuses non-local databases (tests/db_guard.py).
+    # This job names its own throwaway Postgres service as the one extra host to accept.
+    # jha_test_app (not the service's own superuser) is what tests actually run as -- a
+    # superuser bypasses row-level security unconditionally, which would make the RLS
+    # tests (tests/test_row_level_security.py) pass or fail regardless of whether the
+    # policies work. scripts/provision_ci_test_role.py creates it before pytest runs.
+    TEST_DATABASE_URL: postgresql://jha_test_app:ci-only-app-password@postgres:5432/jha_test_db?sslmode=disable
+    TEST_DATABASE_EXTRA_HOSTS: postgres
+    REDIS_URL: redis://redis:6379/0
+  script:
+    - uv sync --frozen
+    - uv run --frozen python scripts/provision_ci_test_role.py
+        postgresql://postgres:ci-only-password@postgres:5432/postgres ci-only-app-password
+    - uv run --frozen pytest -q --junitxml=report.xml --cov=backend --cov=routes --cov=web --cov-report=term --cov-report=xml
+  coverage: '/^TOTAL.*\s+(\d+(?:\.\d+)?)%$/'
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage.xml
+
+# Dependency vulnerability audits. They report but do not block yet: a new advisory in a
+# transitive dependency should not stop unrelated work. Promote to blocking (remove
+# allow_failure) once the current findings are triaged.
+pip-audit:
+  extends: .python
+  stage: audit
+  allow_failure: true
+  rules:
+    - changes: ["pyproject.toml", "uv.lock", ".gitlab-ci.yml"]
+  script:
+    - uv export --frozen --no-dev --no-emit-project -o requirements-audit.txt
+    - uvx pip-audit -r requirements-audit.txt --no-deps --disable-pip
+
+npm-audit:
+  stage: audit
+  image: node:22-bookworm-slim
+  allow_failure: true
+  rules:
+    - changes: ["frontend/package.json", "frontend/package-lock.json", ".gitlab-ci.yml"]
+  script:
+    - cd frontend
+    - npm audit --audit-level=high

@@ -1,0 +1,7 @@
+# Git hooks run under sh, which fails on CRLF line endings (core.autocrlf=true
+# would otherwise check them out that way on Windows).
+.githooks/* text eol=lf
+# Container files run under Linux sh, with the same problem (docs/cloud-deployment-readiness-plan.md 1.7).
+deploy/docker-entrypoint.sh text eol=lf
+deploy/host-deploy.sh text eol=lf
+Dockerfile text eol=lf

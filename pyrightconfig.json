@@ -1,0 +1,13 @@
+{
+  "pythonVersion": "3.13",
+  "typeCheckingMode": "basic",
+  "reportUndefinedVariable": "error",
+  "reportMissingImports": "error",
+  "reportMissingModuleSource": "warning",
+  "exclude": [
+    ".claude",
+    "frontend",
+    "node_modules",
+    "**/__pycache__"
+  ]
+}

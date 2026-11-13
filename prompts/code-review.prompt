@@ -1,0 +1,6 @@
+do a full code review of this project and put the result in the docs folder.
+Look for best practices, proper tests of all functionality, adherence to the guardrails in ../Dev-standards,
+proper handling of exceptions, resource leaks, dead code, and overall efficiency issues.
+Also look for duplicated code that could be placed into shared methods.
+Look for patterns that are 'cutting corners' which are ok for personal use but could fail in a commercial deployment
+Keep an eye out for inefficiencies that would have an impact in production

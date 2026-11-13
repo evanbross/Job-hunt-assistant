@@ -1,0 +1,272 @@
+# Job Hunt Assistant
+
+An AI-powered job application tracker that reads your Gmail inbox, scores job postings against your profile, and logs applications to Google Sheets.
+
+---
+
+## Features
+
+- **Email scanning** — scans Gmail for unread job emails from configured sources
+- **AI parsing** — extracts company, title, and URL from emails (Claude claude-sonnet-4-20250514)
+- **Fit scoring** — scores each job 0-100 against your profile and resume, with configurable penalty rules
+- **Triage system** — low-confidence emails are held for manual review; decisions are learned for future scans
+- **Google Sheets export** — one-click "Add to Sheet" appends a row to your Job Hunt 2026 spreadsheet
+- **Settings** — manage email sources, penalty rules, and learned patterns from the UI
+
+---
+
+## 1. Google Cloud Console Setup
+
+### Enable APIs
+1. Go to [Google Cloud Console](https://console.cloud.google.com)
+2. Create a new project (or use an existing one)
+3. Navigate to **APIs & Services → Library**
+4. Enable **Gmail API**
+5. Enable **Google Sheets API**
+
+### Create OAuth2 Credentials
+1. Go to **APIs & Services → Credentials**
+2. Click **Create Credentials → OAuth 2.0 Client IDs**
+3. Application type: **Desktop app**
+4. Name it anything (e.g. "Job Hunt Assistant")
+5. Click **Create**, then **Download JSON**
+6. Rename the downloaded file to `google_credentials.json`
+7. Move it into the `credentials/` directory
+
+### Configure OAuth Consent Screen
+1. Go to **APIs & Services → OAuth consent screen**
+2. Set user type to **External**
+3. Fill in the required fields (app name, email)
+4. Add your Gmail address as a **Test user**
+5. Add these OAuth scopes:
+   - `https://www.googleapis.com/auth/gmail.modify`
+   - `https://www.googleapis.com/auth/spreadsheets`
+
+---
+
+## 2. Google Sheets ID
+
+Your sheet ID is in the URL when you have the spreadsheet open:
+
+```
+https://docs.google.com/spreadsheets/d/SPREADSHEET_ID_IS_HERE/edit
+```
+
+Copy that ID and put it in `.env` as `GOOGLE_SHEETS_ID=...`.
+
+The app writes to the **first tab** of the spreadsheet, named exactly **"Job Hunt 2026"**. Create that tab if it doesn't exist.
+
+---
+
+## 3. Setup
+
+### Prerequisites
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (`pip install uv` or see uv docs)
+- Node.js 18+
+
+### Backend
+
+```bash
+cd job-hunt-assistant
+
+# Install Python dependencies
+uv sync
+
+# Copy and fill in environment variables
+cp .env.example .env
+
+# Generate the two required secrets and paste them into .env
+python scripts/manage_secrets.py generate
+```
+
+Edit `.env` and set at least:
+```
+FLASK_SECRET_KEY=<from the generate command>
+SETTINGS_ENCRYPTION_KEY=<from the generate command>
+POSTGRES_HOST / POSTGRES_PORT / POSTGRES_DB / POSTGRES_SSLMODE
+POSTGRES_USER / POSTGRES_PASSWORD          # the role that owns the tables
+POSTGRES_APP_USER / POSTGRES_APP_PASSWORD  # a separate role the app serves as
+```
+
+The app serves requests as `POSTGRES_APP_USER`, never as the table owner, so
+Postgres row-level security applies to every request. Pick any new user name and a
+long random password; the app creates that role itself when it migrates at startup.
+It refuses to start if the two are the same role (see `deploy/README.md`,
+"Database roles and migrations").
+
+The app **refuses to start** without strong values for those two (a missing,
+example, or short value is an error). Everything else is optional. AI provider
+keys are entered per account in the app (Settings), not in `.env`. For local
+development you can set `APP_ENV=development` to have a missing
+`FLASK_SECRET_KEY` generated for you. See
+[docs/secrets-and-key-rotation.md](docs/secrets-and-key-rotation.md) for
+rotating either secret.
+
+### App login
+
+The whole app sits behind a login screen backed by the database (an
+`user_accounts` table, not an env var). Registration is open — the first time
+you load the app, use the "Create account" link on the login page to set
+your email and password; there's nothing to configure in `.env` for this.
+
+On a brand-new database the app also creates a bootstrap admin
+(`admin@localhost`) so you can sign in before email is configured. Its
+password is **random and shown once in the server log at first start** (look
+for "ONE-TIME password"); it is never a fixed value. A deployment that
+provisions the account can set `BOOTSTRAP_ADMIN_PASSWORD` (12+ characters)
+instead. You are required to replace both the email and the password before
+anything else works.
+
+If you're locked out (forgot a password and can't reach "Change password"
+because you can't log in), run:
+
+```bash
+uv run python scripts/reset_login_account.py <email>
+```
+
+This deletes that one account so you can register again with the same
+email. It doesn't touch any other accounts on the instance.
+
+### Frontend
+
+```bash
+cd frontend
+npm install
+```
+
+### Quality gate (pre-push hook)
+
+The GitLab CI workflow is disabled to save shared-runner minutes, so the same checks run
+locally on every push instead. Enable the hook once per clone (and run `npm install` in
+`browser-extension/` too, for its tests):
+
+```bash
+git config core.hooksPath .githooks
+```
+
+Each push then runs `scripts/check.py`, which picks the checks the push's changes need
+(ruff, frontend lint/type-check/Vitest/build, extension Vitest, pytest) using the CI
+jobs' own `rules: changes:` paths from `.gitlab-ci.yml`. A failure blocks the push;
+`git push --no-verify` overrides it for that one push. pytest needs the local test
+Postgres running, as it does for any test run.
+
+Run it by hand any time:
+
+```bash
+uv run python scripts/check.py         # what differs from upstream
+uv run python scripts/check.py --all   # everything
+```
+
+---
+
+## 4. Running the App
+
+### Development (recommended for first-time setup)
+
+Terminal 1 — Flask backend:
+```bash
+cd job-hunt-assistant
+uv run python app.py
+```
+
+Terminal 2 — Vite dev server:
+```bash
+cd job-hunt-assistant/frontend
+npm run dev
+```
+
+Open [http://localhost:5174](http://localhost:5174). API calls are proxied to Flask on port 5004.
+
+### Production (single server)
+
+Build the frontend once:
+```bash
+cd job-hunt-assistant/frontend
+npm run build
+```
+
+Then run only Flask — it serves the built frontend:
+```bash
+cd job-hunt-assistant
+uv run python app.py
+```
+
+Open [http://localhost:5004](http://localhost:5004).
+
+---
+
+## 5. First-Run OAuth Flow
+
+1. Start the app and open it at **`http://localhost:5004`** (not `jha.localhost` or `127.0.0.1` — see below)
+2. You'll see a **"Connect Google Account"** banner at the top
+3. Click the button — it generates an OAuth URL and redirects you to Google
+4. Grant access to Gmail
+5. Google redirects back to `http://localhost:5004/api/auth/google/callback`
+6. Your token is saved, encrypted, to your account in the database (`google_oauth_tokens`)
+7. The banner disappears — you're ready to scan
+
+Google can only redirect back to the registered `localhost` callback, and your app login
+cookie belongs to whichever hostname you signed in on. Connecting from any other hostname
+is refused up front with a link to the `localhost` URL. Once connected, you can use the
+app from any hostname again.
+
+The token is long-lived (refreshed automatically). You only need to do this once.
+
+---
+
+## 6. How the Triage / Learning System Works
+
+Every scanned email gets a **confidence level**:
+
+| Confidence | Criteria | Destination |
+|---|---|---|
+| **High** | Clear job title + company + apply URL found | Job Queue (scored immediately) |
+| **Low** | Missing fields, digest format, looks like a newsletter | Triage panel for your review |
+
+### Triage decisions teach the system
+
+- **"It's a Job Posting"** → Saves the sender as a known job source. Future emails from this sender skip triage and go straight to the queue.
+- **"Not Relevant"** → Saves the sender as noise. Future emails from this sender are silently skipped and marked as read.
+
+You can view and delete learned patterns under **Settings → Learned Patterns**.
+
+---
+
+## 7. Fit Scoring
+
+Each job is scored 0–100 by Claude based on:
+- Match with your skill set (Python, Java, C/C++, AI/LLM, fintech, clinical, etc.)
+- Remote work confirmation
+- Seniority level (Principal / Staff Engineer target)
+- Your uploaded resume
+
+**Penalty rules** deduct points for unwanted keywords (e.g. "hybrid" = -25, "on-site" = -40). Configure them under **Settings → Scoring Rules**.
+
+Score colors:
+- **Green (≥70)**: Strong match
+- **Yellow (40–69)**: Partial match
+- **Red (<40)**: Poor match
+
+---
+
+## File Layout
+
+```
+job-hunt-assistant/
+├── app.py              # Desktop launcher (dev server, Vite, Celery, schedulers)
+├── web/                # Flask app factory (create_app) + serving setup
+├── routes/             # One Flask blueprint per feature area
+├── config.py           # Configuration constants
+├── pyproject.toml      # uv project + dependencies
+├── .env                # API keys (gitignored)
+├── data/               # Runtime config (Postgres/Neon is the database)
+├── uploads/            # Uploaded resume PDF
+├── credentials/        # Google OAuth files (gitignored)
+└── backend/
+    ├── db/             # Repository pattern — all Postgres access
+    ├── email_parser.py # Anthropic-powered email parsing
+    ├── fit_scorer.py   # Anthropic-powered job scoring
+    ├── gmail_client.py # Gmail API wrapper
+    └── sheets_client.py# Google Sheets API wrapper
+```

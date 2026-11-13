@@ -1,0 +1,33 @@
+/*!
+ * Copyright (c) 2026 ZombieTech LLC. All rights reserved.
+ *
+ * SPDX-License-Identifier: PolyForm-Strict-1.0.0
+ * See LICENSE in the project root for the full terms.
+ *
+ * Licensing inquiries: license@zombietech.biz
+ */
+
+// ai: claude-sonnet-5 | 2026-10-07
+interface VoiceAssistantButtonProps {
+  onClick: () => void;
+}
+
+export default function VoiceAssistantButton({ onClick }: VoiceAssistantButtonProps) {
+  return (
+    <button
+      onClick={onClick}
+      title="Ask a question or give a command"
+      style={{
+        fontSize: "12px",
+        padding: "5px 12px",
+        background: "rgba(255,255,255,0.1)",
+        color: "rgba(255,255,255,0.8)",
+        border: "1px solid rgba(255,255,255,0.2)",
+        borderRadius: "var(--radius)",
+        cursor: "pointer",
+      }}
+    >
+      🎤 Voice
+    </button>
+  );
+}
