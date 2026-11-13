@@ -16,6 +16,7 @@ import {
   toLocalDateTimeInputValue,
 } from "../utils/dateTimeUtils.ts";
 import type { Contact, ContactOutreach, OutreachChannel } from "../types/contacts.ts";
+import ContactLeadsSection from "./leads/ContactLeadsSection.tsx";
 
 interface ContactDetailProps {
   contact: Contact;
@@ -25,6 +26,11 @@ interface ContactDetailProps {
   onLogOutreach: (contactId: number, sentAtUtc: string, channel: OutreachChannel) => Promise<void>;
   onSetResponse: (contactId: number, outreachId: number, responseReceivedAt: string | null) => Promise<void>;
   onDeleteOutreach: (contactId: number, outreachId: number) => Promise<void>;
+  // ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking
+  onSavePhone: (contactId: number, phone: string) => Promise<boolean>;
+  onSetKeepInformed: (contactId: number, keepInformed: boolean) => Promise<boolean>;
+  /** Every contact, for the lead pickers in the leads section. */
+  allContacts: Contact[];
 }
 
 // ai: claude-opus-5-5 | 2026-10-14
@@ -46,8 +52,12 @@ export default function ContactDetail({
   onLogOutreach,
   onSetResponse,
   onDeleteOutreach,
+  onSavePhone,
+  onSetKeepInformed,
+  allContacts,
 }: ContactDetailProps) {
   const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
+  const [phoneDraft, setPhoneDraft] = useState(contact.phone || ""); // ai: claude-opus-5-5 | 2026-11-11
   const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
   const [channel, setChannel] = useState<OutreachChannel>("linkedin");
@@ -68,6 +78,16 @@ export default function ContactDetail({
     run(async () => {
       const saved = await onSaveEmailAddress(contact.id, trimmed);
       if (!saved) setAddressDraft(contact.email_address || "");
+    });
+  };
+
+  // ai: claude-opus-5-5 | 2026-11-11
+  const commitPhone = () => {
+    const trimmed = phoneDraft.trim();
+    if (trimmed === (contact.phone || "")) return;
+    run(async () => {
+      const saved = await onSavePhone(contact.id, trimmed);
+      if (!saved) setPhoneDraft(contact.phone || "");
     });
   };
 
@@ -109,6 +129,39 @@ export default function ContactDetail({
           onBlur={commitAddress}
           style={{ flex: 1, maxWidth: "320px" }}
         />
+      </div>
+
+      {/* ai: claude-opus-5-5 | 2026-11-11 */}
+      <div style={{ ...fieldRow, marginTop: "12px" }}>
+        <label htmlFor={`contact-phone-${contact.id}`} style={fieldLabel}>
+          Phone
+        </label>
+        <input
+          id={`contact-phone-${contact.id}`}
+          type="tel"
+          value={phoneDraft}
+          maxLength={50}
+          onChange={(e) => setPhoneDraft(e.target.value)}
+          onBlur={commitPhone}
+          style={{ flex: 1, maxWidth: "220px" }}
+        />
+        <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "13px" }}>
+          <input
+            type="checkbox"
+            checked={!!contact.keep_informed}
+            disabled={pending}
+            onChange={(e) => {
+              const next = e.target.checked;
+              run(() => onSetKeepInformed(contact.id, next));
+            }}
+          />
+          Keep them posted on my search
+        </label>
+        {contact.keep_informed && (
+          <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+            Last reached out: {contact.last_outbound_at ? formatLocalDateTime(contact.last_outbound_at) : "never"}
+          </span>
+        )}
       </div>
 
       <div style={{ ...fieldRow, alignItems: "flex-start", marginTop: "12px" }}>
@@ -206,6 +259,8 @@ export default function ContactDetail({
           Log message sent
         </button>
       </div>
+
+      <ContactLeadsSection contact={contact} contacts={allContacts} />
     </div>
   );
 }

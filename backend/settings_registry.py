@@ -323,6 +323,12 @@ SETTINGS: dict[str, SettingSpec] = {
         help_text="Sent only when a run has at least one failing target.",
         desktop_only=True,  # ai: claude-opus-5-5 | 2026-11-09 -- see career_scan_digest_notify_email
     ),
+    # ai: claude-opus-5-5 | 2026-11-11
+    "lead_stale_after_days": SettingSpec(
+        scope="user", is_secret=False, default=str(config.DEFAULT_LEAD_STALE_AFTER_DAYS),
+        label="Flag a lead as quiet after (days)", group="Leads",
+        help_text="A lead with nothing logged for this many days is highlighted on the Leads tab.",
+    ),
 }
 
 # Keys an admin may write via PUT /api/settings/system.

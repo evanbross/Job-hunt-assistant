@@ -31,7 +31,7 @@ const LEADER_LOCK = "jha-server-events";
 const RELAY_CHANNEL = "jha-server-events";
 // Relayed to other tabs for a (re)connect, which concerns every topic.
 const ALL_TOPICS = "*";
-const SERVER_EVENT_TOPICS: readonly ServerEventTopic[] = ["import", "candidate-profile-file"];
+const SERVER_EVENT_TOPICS: readonly ServerEventTopic[] = ["import", "candidate-profile-file", "lead-suggestions"]; // ai: claude-opus-5-5 | 2026-11-11
 export const SERVER_EVENT_FALLBACK_MS = 60_000;
 
 type Listener = () => void;

@@ -24,7 +24,14 @@ const LEAVE_PROMPT = "You have unsaved changes. Leave this page and discard them
 
 // ContactsPanel is lazy-loaded, and the first test to open it pays for the
 // module load, so allow longer than findBy's 1s default.
-const findTemplatesTab = () => screen.findByRole("button", { name: "Templates" }, { timeout: 10000 });
+const TEMPLATES_TAB_WAIT_MS = 10000;
+const findTemplatesTab = () => screen.findByRole("button", { name: "Templates" }, { timeout: TEMPLATES_TAB_WAIT_MS });
+
+// ai: claude-opus-5-5 | 2026-11-11
+// The per-test timeout must outlast that wait: under load (the pre-push gate) the
+// first test hit vitest's 5s default mid-wait, and its still-running body then
+// clicked through the next test's render and failed that one too.
+const TEST_TIMEOUT_MS = TEMPLATES_TAB_WAIT_MS + 10000;
 
 const RESPONSES: Record<string, unknown> = {
   "/api/session": { authenticated: true },
@@ -36,7 +43,7 @@ const RESPONSES: Record<string, unknown> = {
   "/api/logout": { ok: true },
 };
 
-describe("App unsaved-changes guard", () => {
+describe("App unsaved-changes guard", { timeout: TEST_TIMEOUT_MS }, () => {
   let confirmAnswer: boolean;
 
   beforeEach(() => {

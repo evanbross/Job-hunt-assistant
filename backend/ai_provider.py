@@ -415,3 +415,21 @@ def _http_error_message(body: str, fallback: str) -> str:
         if isinstance(current, str) and current.strip():
             return current.strip()
     return fallback
+
+
+# ai: claude-opus-5-5 | 2026-11-11 -- moved from backend/leads/call_notes.py (was _json_object)
+def json_object_from_reply(raw: str) -> dict[str, object]:
+    """The JSON object in a model reply, tolerating a code fence or leading prose."""
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            raise ValueError("AI reply contained no JSON object") from None
+        try:
+            parsed = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"AI reply was not valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("AI reply was not a JSON object")
+    return parsed

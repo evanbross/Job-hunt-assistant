@@ -13,6 +13,7 @@ import type { CSSProperties } from "react";
 import CompaniesReport from "./CompaniesReport.tsx";
 import ContactDetail from "./ContactDetail.tsx";
 import ContactsImport from "./ContactsImport.tsx";
+import AddContactModal from "./leads/AddContactModal.tsx";
 import OutreachQueue from "./OutreachQueue.tsx";
 import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
 import TitlesReport from "./TitlesReport.tsx";
@@ -324,7 +325,10 @@ function matchesFilters(
   );
 }
 
-type ContactPatchFields = Partial<Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type">>;
+// ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added
+type ContactPatchFields = Partial<
+  Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type" | "phone" | "keep_informed">
+>;
 
 // ai: claude-opus-5-5 | 2026-10-26
 interface ContactsPanelProps {
@@ -344,6 +348,7 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [showImport, setShowImport] = useState(false);
+  const [addingContact, setAddingContact] = useState(false); // ai: claude-opus-5-5 | 2026-11-11
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const [search, setSearch] = useState(initialFilters.search);
@@ -629,6 +634,13 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
   const saveNotes = (contactId: number, value: string) =>
     patchContact(contactId, { notes: value === "" ? null : value });
 
+  // ai: claude-opus-5-5 | 2026-11-11
+  const savePhone = (contactId: number, value: string) =>
+    patchContact(contactId, { phone: value === "" ? null : value });
+
+  const setKeepInformed = (contactId: number, keepInformed: boolean) =>
+    patchContact(contactId, { keep_informed: keepInformed });
+
   // ai: claude-opus-5-5 | 2026-10-14 -- was logEmail; records the channel too
   const logOutreach = async (contactId: number, sentAt: string, channel: OutreachChannel) => {
     try {
@@ -657,7 +669,8 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
 
   const setResponse = async (contactId: number, outreachId: number, receivedAt: string | null) => {
     try {
-      const res = await sendJson(`/api/contact-outreach/${outreachId}`, "PATCH", {
+      // ai: claude-opus-5-5 | 2026-11-11 -- logged outreach lives in interactions now
+      const res = await sendJson(`/api/interactions/${outreachId}`, "PATCH", {
         response_received_at: receivedAt,
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -682,7 +695,7 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
 
   const deleteOutreach = async (contactId: number, outreachId: number) => {
     try {
-      const res = await sendJson(`/api/contact-outreach/${outreachId}`, "DELETE");
+      const res = await sendJson(`/api/interactions/${outreachId}`, "DELETE"); // ai: claude-opus-5-5 | 2026-11-11
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setContacts((prev) =>
         prev.map((c) =>
@@ -749,7 +762,23 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
             {importVisible ? "Hide import" : "Import CSV"}
           </button>
         )}
+        {/* ai: claude-opus-5-5 | 2026-11-11 */}
+        {view === "contacts" && (
+          <button className="btn-secondary btn-sm" onClick={() => setAddingContact(true)}>
+            Add contact
+          </button>
+        )}
       </div>
+
+      {addingContact && (
+        <AddContactModal
+          onClose={() => setAddingContact(false)}
+          onAdded={() => {
+            setAddingContact(false);
+            void loadContacts();
+          }}
+        />
+      )}
 
       {view === "outreach" && (
         <OutreachQueue
@@ -1080,6 +1109,9 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
                             onLogOutreach={logOutreach}
                             onSetResponse={setResponse}
                             onDeleteOutreach={deleteOutreach}
+                            onSavePhone={savePhone}
+                            onSetKeepInformed={setKeepInformed}
+                            allContacts={contacts}
                           />
                         )}
                       </div>

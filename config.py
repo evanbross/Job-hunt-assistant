@@ -375,6 +375,12 @@ DEFAULT_JD_HEALTH_CHECK_FREQUENCY_DAYS: int = int(
 )
 DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL: str = os.getenv("JD_HEALTH_CHECK_NOTIFY_EMAIL", "")
 
+# ai: claude-opus-5-5 | 2026-11-11
+# Leads tab: a lead with nothing logged for this many days is flagged as going
+# quiet. Per-user setting (lead_stale_after_days); deliberately not read from the
+# environment -- new settings live in the DB (TODO.md's "eliminate .env").
+DEFAULT_LEAD_STALE_AFTER_DAYS: int = 10
+
 # ai: claude-sonnet-4-6 | 2026-06-10
 # Default cover letter prompt template, written to DEFAULT_COVER_LETTER_PROMPT_PATH
 # on first run so customers can edit it without touching Python code.

@@ -231,6 +231,7 @@ def get_application_sheet() -> ResponseReturnValue:
     with get_repos() as repos:
         jobs = repos["jobs"].get_sheet_entries(user_id)
         all_stages = repos["stages"].get_all(user_id)
+        via_by_job_id = repos["job_contacts"].primary_names_by_job(user_id)  # ai: claude-opus-5-5 | 2026-11-11
         stages_by_job_id: dict[int, list] = {}
         for stage in all_stages:
             stages_by_job_id.setdefault(stage["job_id"], []).append(stage)
@@ -261,6 +262,10 @@ def get_application_sheet() -> ResponseReturnValue:
             # matching comment: lets the frontend match rows to a company by
             # this column's equality instead of re-deriving it client-side.
             "company_normalized": job.get("company_normalized"),
+            # ai: claude-opus-5-5 | 2026-11-11 — recruiter lead tracking: where the
+            # job came from (origin badge/filter) and its primary contact ("via").
+            "origin": job.get("origin"),
+            "via": via_by_job_id.get(job["id"]),
         }
 
     return jsonify(
@@ -291,6 +296,7 @@ def add_application_sheet_row() -> ResponseReturnValue:
             "source": row["source"] or None,
             "date_found": row["date"] or datetime.now(UTC).date().isoformat(),
             "on_sheet": 1,
+            "origin": "manual",  # ai: claude-opus-5-5 | 2026-11-11
             "job_title": row["job_title"] or None,
             "url": row["url"] or None,
             "notes": row["notes"] or None,

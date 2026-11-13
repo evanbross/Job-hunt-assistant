@@ -26,6 +26,7 @@
  */
 
 import type { CompanyMapContact } from "./contacts.ts";
+import type { JobOrigin } from "./leads.ts";
 
 // ai: claude-sonnet-5 | 2026-10-07
 // Mirrors the `jobs` table columns declared in backend/db/job_columns.py's
@@ -35,6 +36,7 @@ import type { CompanyMapContact } from "./contacts.ts";
 // existing frontend code defensively treats them that way (`job.foo || ""`,
 // `job.foo ?? null`, etc.), so this type mirrors that nullability rather than
 // tightening it — this is a type-level migration, not a data-contract change.
+
 export interface Job {
   id: number;
   dedup_key?: string | null;
@@ -68,6 +70,11 @@ export interface Job {
   salary_max?: number | null;
   unreachable_since?: string | null;
   linkedin_ai_insight?: string | null;
+  // ai: claude-opus-5-5 | 2026-11-11 — recruiter lead tracking columns. summary_html
+  // is lazy-only like job_description (JobColumns._DISPLAY_LAZY_ONLY).
+  origin?: JobOrigin;
+  next_follow_up?: string | null;
+  summary_html?: string | null;
   // ai: claude-sonnet-5 | 2026-10-17 — present only on GET /jobs/queue's
   // responses (JobColumns.display_summary() +
   // _display_flag_columns_sql() in backend/db/repositories/jobs.py), which omit
@@ -218,6 +225,9 @@ export interface ApplicationSheetRow {
   skip_reason: string | null;
   // ai: claude-sonnet-5 | 2026-10-19 — see ApplicationHistoryRow's matching field.
   company_normalized: string | null;
+  // ai: claude-opus-5-5 | 2026-11-11 — where the job came from, and its primary contact's name.
+  origin?: JobOrigin;
+  via?: string | null;
 }
 
 /** Response body of GET /api/applications (routes/applications.py's get_application_sheet). */

@@ -70,7 +70,13 @@ logger = logging.getLogger(__name__)
 # ai: claude-opus-5-5 | 2026-10-27 -- eval_1..3 replaced by interview_1..4 and
 # code_eval (see _RENAMED_STAGE_STATUSES); sort orders spaced by 10. seed_data()
 # now upserts these, so this list is authoritative for every key it names.
+# ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead stages (before Applied) and
+# offer outcomes added. Each key is its label run through normalize_stage_status(),
+# so a stage picked by label resolves to its key with no alias entry.
 _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
+    ("recruiter_reached_out", "Recruiter Reached Out", 2, False, False),
+    ("recruiter_screen", "Recruiter Screen", 4, False, False),
+    ("submitted_to_client", "Submitted to Client", 6, True, False),
     ("applied", "Applied", 10, True, False),
     ("waiting_call", "Waiting for Call", 20, True, False),
     ("waiting_second", "Waiting for 2nd", 30, True, False),
@@ -79,10 +85,15 @@ _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
     ("interview_3", "Interview 3", 60, False, False),
     ("interview_4", "Interview 4", 70, False, False),
     ("code_eval", "Code Eval", 80, False, False),
+    ("offer", "Offer", 82, False, False),
+    ("counter_offer", "Counter-offer", 84, False, False),
+    ("accepted_offer", "Accepted Offer", 86, False, True),
     ("rejected", "Rejected", 90, False, True),
     ("job_filled", "Job Filled", 100, False, True),
     ("req_closed", "Req Closed", 110, False, True),
     ("ghosted", "Ghosted", 120, False, True),
+    ("withdrew", "Withdrew", 130, False, True),
+    ("declined_offer", "Declined Offer", 140, False, True),
 ]
 
 # ai: claude-opus-5-5 | 2026-10-27
@@ -236,7 +247,6 @@ _PER_USER_TABLES: tuple[str, ...] = (
     "jd_health_check_targets",
     "jd_health_check_results",
     "contacts",
-    "contact_outreach",
     "extension_tokens",
     "cover_letter_phrases",
     "career_scan_digest_log",
@@ -1543,21 +1553,14 @@ def migrate_schema(conn: Any) -> None:
     conn.commit()
 
     # ai: claude-opus-5-5 | 2026-10-14
-    # LinkedIn outreach queue (Contacts tab). channel records how each logged
-    # outreach went out; every row that predates it was an email, which the
-    # column default backfills. outreach_draft is the message last prepared
-    # for a contact; outreach_draft_staged_at (UTC ISO 8601) marks it as
+    # LinkedIn outreach queue (Contacts tab). outreach_draft is the message last
+    # prepared for a contact; outreach_draft_staged_at (UTC ISO 8601) marks it as
     # waiting for the browser extension to paste into that contact's LinkedIn
     # message box -- at most one contact per user is staged at a time (see
     # PostgresContactRepository.stage_outreach_draft).
-    cur.execute(
-        "ALTER TABLE contact_outreach ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'email'"
-    )
-    if not _has_unique(cur, "contact_outreach", "contact_outreach_channel_check"):
-        cur.execute(
-            "ALTER TABLE contact_outreach ADD CONSTRAINT contact_outreach_channel_check"
-            " CHECK (channel IN ('email', 'linkedin'))"
-        )
+    # ai: claude-opus-5-5 | 2026-11-11 -- the contact_outreach.channel column this
+    # block also added is gone with that table (see
+    # _migrate_legacy_outreach_to_interactions).
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS outreach_draft TEXT")
     cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS outreach_draft_staged_at TEXT")
     conn.commit()
@@ -1642,6 +1645,78 @@ def migrate_schema(conn: Any) -> None:
         " next_scan_offset INTEGER NOT NULL DEFAULT 0"
     )
     conn.commit()
+
+    # ai: claude-opus-5-5 | 2026-11-11
+    # Recruiter lead tracking, phase 1 (interactions/job_contacts are created in
+    # create_tables). jobs.origin tells a recruiter lead apart from a scraped or
+    # hand-added job; rows that predate it are labelled 'scraped', since a hand-added
+    # sheet row can't be told apart after the fact. next_follow_up is a plain
+    # YYYY-MM-DD date. summary_html is the lead's rich-text running summary -- kept
+    # apart from jobs.notes, the Applications sheet's short plain-text note, which
+    # code appends to ("; Confirmed duplicate") and which must stay plain text.
+    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS origin TEXT NOT NULL DEFAULT 'scraped'")
+    if not _has_unique(cur, "jobs", "jobs_origin_check"):
+        cur.execute(
+            "ALTER TABLE jobs ADD CONSTRAINT jobs_origin_check"
+            " CHECK (origin IN ('scraped', 'recruiter_contact', 'manual'))"
+        )
+    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS next_follow_up TEXT")
+    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS summary_html TEXT")
+    # Recruiters who reach out by phone or email have no LinkedIn connection row:
+    # source='manual' contacts are added by hand and are never swept by a LinkedIn
+    # re-import (PostgresContactRepository.sync_import). keep_informed marks the
+    # recruiters to keep posted on the user's search.
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS phone TEXT")
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS keep_informed BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    cur.execute(
+        "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'linkedin_import'"
+    )
+    if not _has_unique(cur, "contacts", "contacts_source_check"):
+        cur.execute(
+            "ALTER TABLE contacts ADD CONSTRAINT contacts_source_check"
+            " CHECK (source IN ('linkedin_import', 'manual'))"
+        )
+    conn.commit()
+    _migrate_legacy_outreach_to_interactions(conn)
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+# Newest name first: an install migrated after 2026-10-14 has contact_outreach,
+# an older one may still have contact_emails (which never had a channel column).
+_LEGACY_OUTREACH_TABLES: tuple[str, ...] = ("contact_outreach", "contact_emails")
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+def _migrate_legacy_outreach_to_interactions(conn: Any) -> None:
+    """Move every logged outreach message into `interactions` (outbound messages,
+    keeping each row's id-independent fields) and drop the old table, so outreach
+    and the new call/message log are one table rather than two logs of the same
+    thing. Runs once per legacy table; a no-op once none remain. Every legacy row
+    already carries user_id: both tables were created after the multi-tenancy
+    retrofit, which adds it in the same migrate pass that creates the table."""
+    cur = conn.cursor()
+    for table in _LEGACY_OUTREACH_TABLES:
+        if not _has_table(cur, table):
+            continue
+        channel = (
+            sql.SQL("channel") if _has_column(cur, table, "channel") else sql.Literal("email")
+        )
+        cur.execute(
+            sql.SQL(
+                "INSERT INTO interactions"
+                " (user_id, contact_id, occurred_at, channel, direction, kind,"
+                "  response_received_at, source, created_at)"
+                " SELECT user_id, contact_id, sent_at, {channel}, 'outbound', 'message',"
+                "  response_received_at, 'manual', sent_at"
+                " FROM {table} ORDER BY id"
+            ).format(channel=channel, table=sql.Identifier(table))
+        )
+        moved = cur.rowcount
+        cur.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(table)))
+        conn.commit()
+        logger.info("Moved %d outreach rows from %s into interactions.", moved, table)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-09
@@ -1865,45 +1940,9 @@ def create_tables(conn: Any) -> None:
             )
         conn.commit()
 
-    # ai: claude-opus-5-5 | 2026-10-14
-    # contact_emails renamed to contact_outreach: the log now also records
-    # LinkedIn messages (see its channel column), so "emails" no longer
-    # describes what it holds. Same ordering constraint as the renames above;
-    # dependent constraint/sequence/index names are renamed to what a fresh
-    # install creates so the two never diverge. Constraints are read from
-    # pg_constraint rather than listed by hand: besides the pkey/fkeys,
-    # PostgreSQL 18+ also names each NOT NULL constraint after the table. That
-    # constraint pass runs whenever the table exists, not only on the rename
-    # itself, so an install renamed before it covered NOT NULL constraints is
-    # converged too; with nothing left to rename it's a single no-op SELECT.
-    if _has_table(cur, "contact_emails") and not _has_table(cur, "contact_outreach"):
-        cur.execute("ALTER TABLE contact_emails RENAME TO contact_outreach")
-        cur.execute(
-            "ALTER SEQUENCE IF EXISTS contact_emails_id_seq RENAME TO contact_outreach_id_seq"
-        )
-        cur.execute(
-            "ALTER INDEX IF EXISTS idx_contact_emails_contact_id"
-            " RENAME TO idx_contact_outreach_contact_id"
-        )
-        cur.execute(
-            "ALTER INDEX IF EXISTS idx_contact_emails_user_id RENAME TO idx_contact_outreach_user_id"
-        )
-        conn.commit()
-    if _has_table(cur, "contact_outreach"):
-        cur.execute(
-            "SELECT conname FROM pg_constraint"
-            " WHERE conrelid = 'contact_outreach'::regclass AND conname LIKE %s",
-            ("contact\\_emails\\_%",),
-        )
-        for row in cur.fetchall():
-            old_name = row["conname"]
-            new_name = "contact_outreach_" + old_name[len("contact_emails_"):]
-            cur.execute(
-                sql.SQL("ALTER TABLE contact_outreach RENAME CONSTRAINT {} TO {}").format(
-                    sql.Identifier(old_name), sql.Identifier(new_name)
-                )
-            )
-        conn.commit()
+    # ai: claude-opus-5-5 | 2026-11-11 -- the contact_emails -> contact_outreach
+    # rename that lived here is gone: both legacy tables are now copied into
+    # `interactions` and dropped by _migrate_legacy_outreach_to_interactions().
 
     for stmt in [
         """
@@ -2293,23 +2332,120 @@ def create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_contacts_company_normalized
             ON contacts (company_normalized)
         """,
-        # ai: claude-sonnet-5 | 2026-09-25
-        # One row per outreach message the user logged to a contact. sent_at and
-        # response_received_at are UTC ISO 8601 timestamps
-        # ('2026-09-25T18:30:00+00:00'); the frontend converts to/from local time.
-        # ai: claude-opus-5-5 | 2026-10-14 -- was contact_emails; channel column
-        # added in migrate_schema() (see the contact_outreach.channel block there).
+        # ai: claude-opus-5-5 | 2026-11-11
+        # Recruiter lead tracking, phase 1. One row per call, message, note or
+        # transcript, tied to a contact, a job, or both. Replaces contact_outreach
+        # (an outbound message is direction='outbound', kind='message'; see
+        # _migrate_legacy_outreach_to_interactions). occurred_at and
+        # response_received_at are UTC ISO 8601 timestamps, like the rest of the
+        # contacts tables. body_html is sanitized on every write
+        # (backend/utils/rich_text.py) -- never stored as the client sent it.
+        # The CHECK lists are mirrored by routes/leads.py's Literal types.
         """
-        CREATE TABLE IF NOT EXISTS contact_outreach (
+        CREATE TABLE IF NOT EXISTS interactions (
             id                    SERIAL PRIMARY KEY,
-            contact_id            INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
-            sent_at               TEXT NOT NULL,
-            response_received_at  TEXT
+            user_id               INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            contact_id            INTEGER REFERENCES contacts(id) ON DELETE CASCADE,
+            job_id                INTEGER REFERENCES jobs(id) ON DELETE CASCADE,
+            occurred_at           TEXT NOT NULL,
+            channel               TEXT NOT NULL
+                CHECK (channel IN ('phone', 'video', 'linkedin', 'email', 'text', 'in_person', 'other')),
+            direction             TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+            kind                  TEXT NOT NULL CHECK (kind IN ('call', 'message', 'note', 'transcript')),
+            summary               TEXT,
+            body_html             TEXT,
+            source                TEXT NOT NULL DEFAULT 'manual'
+                CHECK (source IN ('manual', 'notetaker', 'linkedin_import', 'gmail')),
+            external_ref          TEXT,
+            response_received_at  TEXT,
+            created_at            TEXT NOT NULL,
+            CONSTRAINT interactions_contact_or_job_check
+                CHECK (contact_id IS NOT NULL OR job_id IS NOT NULL)
         )
         """,
         """
-        CREATE INDEX IF NOT EXISTS idx_contact_outreach_contact_id
-            ON contact_outreach (contact_id)
+        CREATE INDEX IF NOT EXISTS idx_interactions_user_contact
+            ON interactions (user_id, contact_id)
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_interactions_user_job
+            ON interactions (user_id, job_id)
+        """,
+        # External imports (LinkedIn messages.csv, note-taker emails) dedupe on
+        # this, so a second import of the same file adds nothing.
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_user_external_ref
+            ON interactions (user_id, source, external_ref) WHERE external_ref IS NOT NULL
+        """,
+        # ai: claude-opus-5-5 | 2026-11-11
+        # Which people are attached to which job (many-to-many): an agency
+        # recruiter pitching several roles, or several recruiters on one role.
+        # is_primary picks the name shown on the lead's row; at most one per job
+        # (partial unique index below).
+        """
+        CREATE TABLE IF NOT EXISTS job_contacts (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            job_id      INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            contact_id  INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            role        TEXT NOT NULL DEFAULT 'agency_recruiter'
+                CHECK (role IN ('agency_recruiter', 'internal_recruiter', 'hiring_manager',
+                                'interviewer', 'referrer', 'other')),
+            is_primary  BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at  TEXT NOT NULL,
+            CONSTRAINT job_contacts_job_contact_key UNIQUE (job_id, contact_id)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_job_contacts_user_contact
+            ON job_contacts (user_id, contact_id)
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_contacts_one_primary
+            ON job_contacts (job_id) WHERE is_primary
+        """,
+        # ai: claude-opus-5-5 | 2026-11-11
+        # Recruiter lead tracking, phase 2: conversations from an imported LinkedIn
+        # messages.csv that might be a recruiter reaching out, waiting for the user
+        # to accept (contact + logged messages, optionally a lead) or dismiss.
+        # One row per conversation (external_ref = LinkedIn's conversation id), so
+        # re-importing a newer export refreshes rows instead of duplicating them.
+        # status: 'unclassified' (not checked yet), 'suggested', 'not_recruiter'
+        # (the AI or a Contacts decision ruled it out), 'accepted', 'dismissed'.
+        # detection says what flagged it: a Contacts recruiter mark, a recruiter
+        # title, or the AI. messages is the conversation, oldest first
+        # (backend/leads/linkedin_messages.py's ExportMessage.as_json), kept so
+        # accepting needs no re-upload. Timestamps are UTC ISO 8601 text.
+        """
+        CREATE TABLE IF NOT EXISTS lead_suggestions (
+            id                        SERIAL PRIMARY KEY,
+            user_id                   INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            source                    TEXT NOT NULL CHECK (source IN ('linkedin_messages')),
+            external_ref              TEXT NOT NULL,
+            status                    TEXT NOT NULL DEFAULT 'unclassified'
+                CHECK (status IN ('unclassified', 'suggested', 'not_recruiter', 'accepted', 'dismissed')),
+            detection                 TEXT CHECK (detection IN ('contact', 'title', 'ai')),
+            reason                    TEXT,
+            counterpart_name          TEXT NOT NULL,
+            counterpart_profile_url   TEXT,
+            contact_id                INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+            job_id                    INTEGER REFERENCES jobs(id) ON DELETE SET NULL,
+            conversation_title        TEXT,
+            role_guess                TEXT,
+            hiring_company_guess      TEXT,
+            recruiter_company_guess   TEXT,
+            first_message_at          TEXT NOT NULL,
+            last_message_at           TEXT NOT NULL,
+            message_count             INTEGER NOT NULL,
+            messages                  JSONB NOT NULL,
+            imported_at               TEXT NOT NULL,
+            decided_at                TEXT,
+            CONSTRAINT lead_suggestions_user_source_ref_key UNIQUE (user_id, source, external_ref)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_lead_suggestions_user_status
+            ON lead_suggestions (user_id, status, last_message_at DESC)
         """,
         # ai: claude-sonnet-5 | 2026-10-15
         # One row per employment stint a contact has had (not just their

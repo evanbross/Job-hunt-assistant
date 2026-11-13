@@ -22,6 +22,7 @@ import pytest
 import yaml
 
 from backend.celery_app import DEFAULT_QUEUE, MAINTENANCE_QUEUE
+from backend.leads import linkedin_messages
 from backend.security.client_ip import parse_trusted_proxies
 from backend.security.redis_tls import redis_ssl_options
 
@@ -197,6 +198,16 @@ def test_the_production_caddyfile_disables_the_admin_api_and_sets_security_heade
     assert "X-Content-Type-Options" in caddyfile
     assert "request_body" in caddyfile
     assert "microphone=(self)" in caddyfile  # the voice assistant needs it
+
+
+# ai: claude-opus-5-5 | 2026-11-11
+def test_the_linkedin_messages_upload_fits_through_the_front_door() -> None:
+    """A limit above Caddy's would let production refuse the upload with a bare 413
+    before the app could say what was wrong."""
+    caddyfile = (DEPLOY / "Caddyfile").read_text(encoding="utf-8")
+    app_site = caddyfile[caddyfile.index("{$APP_DOMAIN} {"):caddyfile.index("listener.{$APP_DOMAIN}")]
+    max_mb = int(re.search(r"max_size (\d+)MB", app_site).group(1))
+    assert linkedin_messages.MAX_UPLOAD_BYTES < max_mb * 1_000_000
 
 
 # ai: claude-opus-5-5 | 2026-11-09

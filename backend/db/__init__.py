@@ -71,7 +71,6 @@ from .interfaces import (
     ICompanyAliasRepository,
     ICompanyRepository,
     IContactEmploymentHistoryRepository,
-    IContactOutreachRepository,
     IContactRepository,
     ICoverLetterPhraseRepository,
     IEmailSourceRepository,
@@ -79,10 +78,13 @@ from .interfaces import (
     IExtensionTokenRepository,
     IGoogleTokenRepository,
     IImportRepairHistoryRepository,
+    IInteractionRepository,
     IJdHealthCheckResultRepository,
     IJdHealthCheckTargetRepository,
+    IJobContactRepository,
     IJobRepository,
     IJobStatusHistoryRepository,
+    ILeadRepository,
     IOutreachTemplateRepository,
     IPenaltyRuleRepository,
     IRegistrationInviteRepository,
@@ -120,7 +122,6 @@ from .repositories.company_aliases import PostgresCompanyAliasRepository
 from .repositories.contact_employment_history import (
     PostgresContactEmploymentHistoryRepository,
 )
-from .repositories.contact_outreach import PostgresContactOutreachRepository
 from .repositories.contacts import PostgresContactRepository
 from .repositories.cover_letter_phrases import PostgresCoverLetterPhraseRepository
 from .repositories.email_sources import PostgresEmailSourceRepository
@@ -128,12 +129,16 @@ from .repositories.email_subject_rules import PostgresEmailSubjectRuleRepository
 from .repositories.extension_tokens import PostgresExtensionTokenRepository
 from .repositories.google_tokens import PostgresGoogleTokenRepository
 from .repositories.import_repair_history import PostgresImportRepairHistoryRepository
+from .repositories.interactions import PostgresInteractionRepository
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
+from .repositories.job_contacts import PostgresJobContactRepository
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
 
 # ai: claude-sonnet-5 | 2026-08-12
 from .repositories.jobs import DuplicateJobUrlError, PostgresJobRepository
+from .repositories.lead_suggestions import PostgresLeadSuggestionRepository
+from .repositories.leads import PostgresLeadRepository
 from .repositories.outreach_templates import (
     DuplicateOutreachTemplateTitleError,
     PostgresOutreachTemplateRepository,
@@ -174,7 +179,9 @@ __all__ = [
     "ICompanyAliasRepository",
     "ICompanyRepository",
     "IContactEmploymentHistoryRepository",
-    "IContactOutreachRepository",
+    "IInteractionRepository",
+    "IJobContactRepository",
+    "ILeadRepository",
     "IContactRepository",
     "IExtensionTokenRepository",
     "IRegistrationInviteRepository",
@@ -215,7 +222,10 @@ __all__ = [
     "PostgresCompanyAliasRepository",
     "PostgresCompanyRepository",
     "PostgresContactEmploymentHistoryRepository",
-    "PostgresContactOutreachRepository",
+    "PostgresInteractionRepository",
+    "PostgresJobContactRepository",
+    "PostgresLeadSuggestionRepository",
+    "PostgresLeadRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
     "PostgresRegistrationInviteRepository",
@@ -436,7 +446,11 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "companies": PostgresCompanyRepository(conn),
         "company_aliases": PostgresCompanyAliasRepository(conn),
         "title_rules": PostgresTitleRuleRepository(conn),
-        "contact_outreach": PostgresContactOutreachRepository(conn),
+        # ai: claude-opus-5-5 | 2026-11-11 -- interactions replaces contact_outreach
+        "interactions": PostgresInteractionRepository(conn),
+        "job_contacts": PostgresJobContactRepository(conn),
+        "leads": PostgresLeadRepository(conn),
+        "lead_suggestions": PostgresLeadSuggestionRepository(conn),  # ai: claude-opus-5-5 | 2026-11-11
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),

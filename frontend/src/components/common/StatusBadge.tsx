@@ -41,6 +41,15 @@ function statusLabel(status: string): string {
   // callers that don't load the catalog; pass `label` when you have it.
   const labels: Record<string, string> = {
     ...JOB_QUEUE_STATUS_LABELS,
+    // ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead and offer stages
+    recruiter_reached_out: "Recruiter Reached Out",
+    recruiter_screen: "Recruiter Screen",
+    submitted_to_client: "Submitted to Client",
+    offer: "Offer",
+    counter_offer: "Counter-offer",
+    accepted_offer: "Accepted Offer",
+    withdrew: "Withdrew",
+    declined_offer: "Declined Offer",
     applied: "Applied",
     code_eval: "Code Eval",
     ghosted: "Ghosted",
