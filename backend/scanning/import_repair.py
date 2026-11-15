@@ -27,8 +27,10 @@
 
 from __future__ import annotations
 
+import re
 import time  # ai: claude-sonnet-5 | 2026-10-08
 from collections.abc import Collection  # ai: claude-fable-5 | 2026-07-17
+from dataclasses import dataclass
 from typing import Any, Protocol
 from urllib.error import (
     HTTPError as UrllibHTTPError,  # ai: claude-sonnet-5 | 2026-10-08
@@ -48,6 +50,14 @@ from backend.scanning.closed_req_scan_helpers import (  # ai: claude-sonnet-5 | 
     rate_limit_backoff_seconds,
 )
 from backend.scoring.duplicate_checker import DuplicateChecker, companies_match
+from backend.scoring.duplicate_matching import (  # ai: claude-opus-5-5 | 2026-11-13
+    auto_duplicate_skip_feedback,
+    db_match_for_job,
+    dismissed_duplicate_ids,
+    is_auto_duplicate_skip,
+    is_near_certain_duplicate,
+)
+from backend.scoring.posting_identity import are_distinct_postings
 from backend.utils.company_urls import company_from_ats_url
 from backend.utils.url_safety import safe_urlopen  # ai: claude-sonnet-5 | 2026-10-08
 from backend.utils.utils import (
@@ -168,6 +178,150 @@ def apply_linkedin_repair(
     return True
 
 
+# ai: claude-opus-5-5 | 2026-11-13
+@dataclass(frozen=True)
+class DuplicateRecheck:
+    """What re-checking one job's duplicate status would change.
+
+    status is the status to move the job to, or None to keep it. A job the
+    user applied to or skipped never gets a status here; a job the *app*
+    skipped as a near-certain duplicate does (restores_auto_skip), since that
+    skip rested on the very match being re-checked.
+    """
+
+    job_id: int
+    duplicate_of_id: int | None
+    duplicate_hint: str | None
+    status: str | None
+    restores_auto_skip: bool
+    # Refreshed "Auto-rejected ... of job #N" text for an auto-skip that stays
+    # skipped but now points at a different job; None otherwise.
+    auto_skip_feedback: str | None = None
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def plan_duplicate_recheck(
+    job: dict[str, Any], all_jobs: list[dict[str, Any]]
+) -> DuplicateRecheck | None:
+    """Re-run duplicate detection for *job* against *all_jobs*, writing nothing.
+
+    Returns None when the job still matches the job it's linked to on company
+    and title -- even if another job would now score higher. A posting reposted three times
+    matches all its copies; re-pointing to whichever copy scores best would
+    churn links (and ping-pong two copies onto each other) without fixing
+    anything. A new match is sought among older jobs only, so two jobs never
+    end up flagged as duplicates of each other. Goes through db_match_for_job like every import path, so a pair
+    the user dismissed is never re-flagged, an exact URL/posting-ID match
+    still counts, and a closed req never matches.
+    """
+
+    def match(known_jobs: list[dict[str, Any]]) -> tuple[str | None, str | None, int | None, dict[str, int] | None]:
+        _status, source, hint, matched_id, scores = db_match_for_job(
+            job_title=str(job.get("job_title") or ""),
+            company=str(job.get("company") or ""),
+            job_url=str(job.get("url") or ""),
+            known_jobs=known_jobs,
+            dedup_checker=DuplicateChecker(),
+            exclude_id=int(job["id"]),
+            dismissed_ids=dismissed_duplicate_ids(job),
+        )
+        return source, hint, matched_id, scores
+
+    current_link = job.get("duplicate_of_id")
+    if current_link is not None:
+        # Judged on company and title (match_pair) plus distinct requisition
+        # IDs, which never change: two R-numbers were never one posting. The
+        # closed-req rule is deliberately skipped -- it decides whether a NEW
+        # posting duplicates a dead req, and applied retroactively it unlinked
+        # 97 old auto-skipped reposts just because the original later closed.
+        linked = next((row for row in all_jobs if row.get("id") == current_link), None)
+        if (
+            linked is not None
+            and not are_distinct_postings(str(job.get("url") or ""), str(linked.get("url") or ""))
+            and DuplicateChecker().match_pair(
+                str(job.get("job_title") or ""), str(job.get("company") or ""), linked
+            )
+        ):
+            return None
+    # ai: claude-opus-5-5 | 2026-11-14
+    # A fresh match only looks at OLDER jobs, as an import does (a new job is
+    # compared with what already exists). Matching against every job flagged
+    # both halves of a pair as duplicates of each other -- Lance #2079/#2080,
+    # Vela #2067/#2068 -- leaving no original to review either against.
+    own_id = int(job["id"])
+    source, hint, matched_id, scores = match(
+        [row for row in all_jobs if int(row.get("id") or 0) < own_id]
+    )
+    if matched_id == current_link:
+        return None
+    status = str(job.get("status") or "")
+    auto_skipped = is_auto_duplicate_skip(job)
+    if matched_id is None:
+        restore = status == "possible_duplicate" or auto_skipped
+        fit_score = job.get("fit_score") or 0
+        new_status = ("pending_review" if fit_score >= 70 else "triage") if restore else None
+    elif auto_skipped and is_near_certain_duplicate(source, scores):
+        # Its old match was wrong but it has a new one the auto-skip bar
+        # would accept on its own: still skipped, just re-pointed.
+        new_status = None
+    else:
+        new_status = (
+            "possible_duplicate"
+            if auto_skipped or status not in USER_COMMITTED_JOB_STATUSES
+            else None
+        )
+        if new_status == status:
+            new_status = None
+    return DuplicateRecheck(
+        job_id=int(job["id"]),
+        duplicate_of_id=matched_id,
+        duplicate_hint=hint,
+        status=new_status,
+        restores_auto_skip=auto_skipped and new_status is not None,
+        auto_skip_feedback=(
+            auto_duplicate_skip_feedback(matched_id, hint)
+            if auto_skipped and new_status is None and matched_id is not None
+            else None
+        ),
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def apply_duplicate_recheck(
+    user_id: int, jobs_repo: JobUpdater, plan: DuplicateRecheck
+) -> None:
+    """Write a plan_duplicate_recheck result. Pointer fields are descriptive
+    and always written; status only through a conditional update on the
+    status the plan was made from, so an Apply/Skip that lands in between is
+    never overwritten."""
+    jobs_repo.update(
+        user_id,
+        plan.job_id,
+        {"duplicate_hint": plan.duplicate_hint, "duplicate_of_id": plan.duplicate_of_id},
+    )
+    if plan.auto_skip_feedback is not None:
+        jobs_repo.update_if_status_in(
+            user_id, plan.job_id, {"skip_feedback": plan.auto_skip_feedback}, {"skipped"}
+        )
+    if plan.status is None:
+        return
+    if plan.restores_auto_skip:
+        jobs_repo.update_if_status_in(
+            user_id,
+            plan.job_id,
+            {"status": plan.status, "skip_reason": None, "skip_feedback": None},
+            {"skipped"},
+        )
+    elif plan.status == "possible_duplicate":
+        jobs_repo.update_if_status_not_in(
+            user_id, plan.job_id, {"status": plan.status}, USER_COMMITTED_JOB_STATUSES
+        )
+    else:
+        jobs_repo.update_if_status_in(
+            user_id, plan.job_id, {"status": plan.status}, {"possible_duplicate"}
+        )
+
+
 def post_repair_duplicate_check(
     user_id: int,
     jobs_repo: JobUpdater,
@@ -191,7 +345,10 @@ def post_repair_duplicate_check(
     same guard update_if_status_not_in's other callers use: a job the user
     has already acted on (applied, skipped) keeps its real status no matter
     which branch below runs, and a concurrent /apply or /skip landing between
-    this function's read and write can't be clobbered either.
+    this function's read and write can't be clobbered either. The one
+    exception is a job the app itself auto-skipped as a near-certain
+    duplicate: if that match no longer holds, the skip is undone (see
+    DuplicateRecheck).
 
     all_jobs is deliberately NOT a parameter: every caller here is itself a
     loop that repairs and re-checks several jobs in sequence (or, for
@@ -204,63 +361,12 @@ def post_repair_duplicate_check(
     lock_for_duplicate_check's docstring).
     """
     jobs_repo.lock_for_duplicate_check(user_id)
-    all_jobs = jobs_repo.get_all_ordered(user_id)
-    job_id = int(fixed_job["id"])
-    job_title = str(fixed_job.get("job_title") or "")
-    company = str(fixed_job.get("company") or "")
-    candidates = [j for j in all_jobs if int(j.get("id", -1)) != job_id]
-    match = (
-        DuplicateChecker().check(
-            job_title=job_title,
-            company=company,
-            job_url=str(fixed_job.get("url") or ""),
-            sheet_jobs=candidates,
-        )
-        if job_title and company
-        else None
-    )
-    if not match:
-        if fixed_job.get("duplicate_of_id") is None:
-            return False
-        jobs_repo.update(user_id, job_id, {"duplicate_hint": None, "duplicate_of_id": None})
-        # ai: claude-sonnet-5 | 2026-10-08
-        # Conditioned on status still being "possible_duplicate" at write
-        # time (not just when `fixed_job` was read) so a concurrent /apply or
-        # /skip landing in this window isn't clobbered back to
-        # triage/pending_review -- see update_if_status_in's docstring.
-        if fixed_job.get("status") == "possible_duplicate":
-            fit_score = fixed_job.get("fit_score") or 0
-            jobs_repo.update_if_status_in(
-                user_id,
-                job_id,
-                {"status": "pending_review" if fit_score >= 70 else "triage"},
-                {"possible_duplicate"},
-            )
-        return True
-    hint = (
-        f'Possible duplicate of "{match["sheet_title"]}" '
-        f'at {match["sheet_company"]} already in your sheet '
-        f'(title match: {match["title_score"]}%, '
-        f'company match: {match["company_score"]}%)'
-    )
-    # ai: claude-opus-5-5 | 2026-10-29
-    matched_id = match["row"].get("id")
-    duplicate_of_id = int(matched_id) if matched_id is not None else None
-    # ai: claude-sonnet-5 | 2026-10-09
-    # duplicate_hint/duplicate_of_id are pointer fields -- always safe to
-    # write. status is the one field that's real user progress once it's
-    # "applied"/"skipped", so (closing the High finding from the 2026-10-09
-    # review) it's written through the same atomic conditional update the
-    # no-match branch above already uses, instead of folding it into the
-    # same unconditional jobs_repo.update() call as the pointer fields.
-    jobs_repo.update(
-        user_id,
-        job_id,
-        {"duplicate_hint": hint, "duplicate_of_id": duplicate_of_id},
-    )
-    jobs_repo.update_if_status_not_in(
-        user_id, job_id, {"status": "possible_duplicate"}, USER_COMMITTED_JOB_STATUSES
-    )
+    # ai: claude-opus-5-5 | 2026-11-13 -- now plan + apply, so a dry run can
+    # preview the same decision and dismissed pairs are respected.
+    plan = plan_duplicate_recheck(fixed_job, jobs_repo.get_all_ordered(user_id))
+    if plan is None:
+        return False
+    apply_duplicate_recheck(user_id, jobs_repo, plan)
     return True
 
 
@@ -338,21 +444,6 @@ def job_posting_title_company_from_html(page_html: str) -> tuple[str, str]:
 
 
 # ai: claude-fable-5 | 2026-07-17
-def _wttj_companies_match(a: str, b: str) -> bool:
-    """True when two company names refer to the same company.
-
-    Case-insensitive; also accepts a short-vs-long variant of the same name
-    ("Virta" vs "Virta Health") by requiring the longer name to extend the
-    shorter one at a word boundary — so "Meta" does not match "Metabase"."""
-    a_cf = a.casefold().strip()
-    b_cf = b.casefold().strip()
-    if a_cf == b_cf:
-        return True
-    shorter, longer = sorted((a_cf, b_cf), key=len)
-    return longer.startswith(shorter) and longer[len(shorter)] in " ,.-"
-
-
-# ai: claude-fable-5 | 2026-07-17
 def wttj_title_repair_updates(
     job: dict[str, Any], page_html: str
 ) -> tuple[dict[str, Any], str]:
@@ -378,7 +469,7 @@ def wttj_title_repair_updates(
     if (
         row_company
         and page_company
-        and not _wttj_companies_match(row_company, page_company)
+        and not companies_match(row_company, page_company)  # ai: claude-opus-5-5 | 2026-11-13 -- was a private copy of the same rule
     ):
         return {}, (
             f"page belongs to '{page_company}', not '{row_company}' — "
@@ -394,6 +485,23 @@ def wttj_title_repair_updates(
 
 
 # ai: claude-sonnet-5 | 2026-10-06
+# ai: claude-opus-5-5 | 2026-11-13
+_YC_BATCH_SUFFIX_RE = re.compile(r"\s*\([A-Z]\d{2}\)\s*$")
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def workatastartup_company_name(value: str) -> str:
+    """The employer name from a Work at a Startup listing's company line.
+
+    The listing's company link reads "Nitrode\\u00a0(W25)•Frontier AI research
+    to advance game development" -- name, YC batch, bullet, tagline -- and the
+    browser extension stored that whole line as the company until 1.34.1
+    (181 jobs). Same rule as content.js's buildWorkAtAStartupPayload. A name
+    without a bullet or batch tag comes back unchanged.
+    """
+    return _YC_BATCH_SUFFIX_RE.sub("", value.split("•", 1)[0]).strip()
+
+
 def is_jobgether_placeholder_company(value: object) -> bool:
     """True when a stored company is the literal board name "Jobgether".
 

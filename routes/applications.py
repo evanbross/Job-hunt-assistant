@@ -160,6 +160,10 @@ _PLATFORM_LABELS: dict[str, str] = {
     "mongodb": "MongoDB",  # ai: claude-fable-5 | 2026-07-16
     "jobgether": "Jobgether",  # ai: claude-sonnet-5 | 2026-07-24
     "kforce": "Kforce",  # ai: claude-sonnet-5 | 2026-08-23
+    # ai: claude-opus-5-5 | 2026-11-14 -- a removed Work at a Startup job is an
+    # HTTP 404 (jobs/92563) or a redirect to the company's YC profile
+    # (jobs/15071); see _check_closed_req and _classify_closed_req_page.
+    "workatastartup": "Work at a Startup",
 }
 
 # ai: claude-fable-5 | 2026-07-17
@@ -513,8 +517,8 @@ def mark_ghost_applications() -> ResponseReturnValue:
 
 
 def _detect_closed_req_platform(job: dict, url: str) -> str | None:
-    """Return 'linkedin', 'wttj', 'wellfound', 'mongodb', 'jobgether', or 'kforce'
-    if job/url belongs to a supported platform, else None."""
+    """Return 'linkedin', 'wttj', 'wellfound', 'mongodb', 'jobgether', 'kforce',
+    or 'workatastartup' if job/url belongs to a supported platform, else None."""
     source = str(job.get("source") or "").lower()
     netloc = urlparse(url).netloc.lower()
     if "linkedin" in source or "linkedin.com" in netloc or "lnkd.in" in netloc:
@@ -540,6 +544,8 @@ def _detect_closed_req_platform(job: dict, url: str) -> str | None:
     # ai: claude-sonnet-5 | 2026-08-23
     if "kforce" in source or "kforce.com" in netloc:
         return "kforce"
+    if "workatastartup.com" in netloc:  # ai: claude-opus-5-5 | 2026-11-14
+        return "workatastartup"
     return None
 
 
@@ -575,6 +581,10 @@ def _classify_closed_req_page(
         return "closed"
     # ai: claude-fable-5 | 2026-07-16
     if platform == "mongodb" and _is_mongodb_teams_hub_url(final_url):
+        return "closed"
+    # ai: claude-opus-5-5 | 2026-11-14 -- a removed Work at a Startup job
+    # redirects off the board to the company's YC profile page.
+    if platform == "workatastartup" and "workatastartup.com" not in urlparse(final_url).netloc.lower():
         return "closed"
     phrases = _CLOSED_PHRASES_BY_PLATFORM.get(platform, ())
     return "closed" if any(phrase in page_text_lower for phrase in phrases) else "open"
@@ -690,7 +700,7 @@ def _submit_closed_req_scan(
 
 
 def _closed_req_candidates(repos: dict, user_id: int) -> list[tuple[dict, str, str]]:
-    """Non-terminal jobs sourced from LinkedIn, Welcome to the Jungle, Wellfound, MongoDB, Jobgether, or Kforce, with their platform."""
+    """Non-terminal jobs from a closed-req platform (see _PLATFORM_LABELS), with their platform."""
     jobs = repos["jobs"].get_all_ordered(user_id)
     all_stages = repos["stages"].get_all(user_id)
     terminal_keys = {

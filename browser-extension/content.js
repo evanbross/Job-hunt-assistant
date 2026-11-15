@@ -1473,7 +1473,15 @@
       let company = '';
       if (container) {
         const companyLink = container.querySelector('a[href*="/companies/"]');
-        if (companyLink) company = companyLink.innerText?.split('\n')[0]?.trim() || '';
+        // ai: claude-opus-5-5 | 2026-11-13 -- the link reads "Nitrode (W25) • Frontier AI
+        // research…" (NBSPs around the batch); keep only the name. 151 of 194 captured
+        // WAAS jobs stored the whole line as the company.
+        if (companyLink) {
+          company = (companyLink.innerText?.split('\n')[0] || '')
+            .split('•')[0]
+            .replace(/\s*\([A-Z]\d{2}\)\s*$/, '')
+            .trim();
+        }
         if (!title) {
           const h = container.querySelector('h1,h2,h3,h4');
           if (h) title = h.innerText?.split('\n')[0]?.trim() || '';

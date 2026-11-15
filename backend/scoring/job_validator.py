@@ -109,7 +109,7 @@ def normalize_and_validate(
     if not str(job.get(JobColumns.JOB_DESCRIPTION) or "").strip():
         snippet = str(job.get(JobColumns.RAW_JD_SNIPPET) or "").strip()
         if snippet and is_email_tracking_url(snippet):
-            warnings.append("jd_body_is_tracking_link")
+            warnings.append(TRACKING_LINK_JD_WARNING)
 
     return job, warnings
 
@@ -120,6 +120,11 @@ def normalize_and_validate(
 # score. Every path that later scores the job successfully must clear it via
 # remove_import_warning().
 SCORING_FAILED_WARNING = "scoring_failed"
+
+# ai: claude-opus-5-5 | 2026-11-13
+# Set by normalize_and_validate when JD enrichment failed and the stored
+# snippet is only a tracking link. Cleared by any path that stores a real JD.
+TRACKING_LINK_JD_WARNING = "jd_body_is_tracking_link"
 
 
 # ai: claude-sonnet-5 | 2026-09-21

@@ -25,9 +25,30 @@ from backend.scoring.skip_reasons import is_req_closed_job_row
 
 # Thresholds for treating a duplicate match as near-certain enough to auto-skip
 # instead of routing to the triage queue for manual review. Stricter than
-# DuplicateChecker's own thresholds (80/70), which only flag a "possible duplicate".
+# DuplicateChecker's own bars (company rules, title 70), which only flag a "possible duplicate".
 AUTO_REJECT_DUPLICATE_TITLE_THRESHOLD: int = 95
 AUTO_REJECT_DUPLICATE_COMPANY_THRESHOLD: int = 95
+
+# ai: claude-opus-5-5 | 2026-11-13
+# The skip_feedback an auto-skip writes. It's the only thing that tells a job
+# the app skipped as a near-certain duplicate from one the user skipped with
+# reason "duplicate" -- a later re-check may undo the former, never the latter.
+_AUTO_DUPLICATE_SKIP_FEEDBACK_PREFIX = "Auto-rejected: near-certain duplicate"
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def auto_duplicate_skip_feedback(duplicate_of_id: int | None, duplicate_hint: str | None) -> str:
+    return f"{_AUTO_DUPLICATE_SKIP_FEEDBACK_PREFIX} of job #{duplicate_of_id} ({duplicate_hint})."
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def is_auto_duplicate_skip(job: dict) -> bool:
+    """True when the app, not the user, skipped this job as a duplicate."""
+    return (
+        job.get("status") == "skipped"
+        and job.get("skip_reason") == "duplicate"
+        and str(job.get("skip_feedback") or "").startswith(_AUTO_DUPLICATE_SKIP_FEEDBACK_PREFIX)
+    )
 
 
 # ai: claude-opus-5 | 2026-09-23

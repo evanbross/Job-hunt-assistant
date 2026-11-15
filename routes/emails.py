@@ -56,6 +56,7 @@ from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
+    auto_duplicate_skip_feedback,
     db_match_for_job,
     is_near_certain_duplicate,
 )
@@ -558,8 +559,8 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         # ai: claude-sonnet-4-6 | 2026-06-10
         if status == "skipped":
             job_data["skip_reason"] = "duplicate"
-            job_data["skip_feedback"] = (
-                f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
+            job_data["skip_feedback"] = auto_duplicate_skip_feedback(  # ai: claude-opus-5-5 | 2026-11-13
+                duplicate_of_id, duplicate_hint
             )
 
         scoring_failed = False  # ai: claude-sonnet-5 | 2026-09-21

@@ -12,16 +12,27 @@
 
 from __future__ import annotations
 
-import json
 import logging
+import time
+from http.client import HTTPException
 from typing import Any
 
 from backend.db import IJobRepository, IPenaltyRuleRepository, IResumeRepository
 from backend.db.job_columns import JobColumns
+from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
-from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
-from backend.utils.utils import ACTIVE_JOB_STATUSES, get_repos
+from backend.scoring.job_validator import (
+    SCORING_FAILED_WARNING,
+    TRACKING_LINK_JD_WARNING,
+    remove_import_warning,
+)
+from backend.scoring.workplace_type import ensure_workplace_type_preserved
+from backend.utils.utils import (
+    ACTIVE_JOB_STATUSES,
+    USER_COMMITTED_JOB_STATUSES,
+    get_repos,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,26 +134,9 @@ def enrich_job_description(
     Does not change status for applied or skipped jobs.
     """
     job_id = int(job["id"])
-    update_fields: dict[str, Any] = {
-        JobColumns.JOB_DESCRIPTION: description,
-        JobColumns.RAW_JD_SNIPPET: description[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
-    }
-    # ai: claude-sonnet-4-6 | 2026-07-20
-    # A real description means the "jd_body_is_tracking_link" warning (raised
-    # when the JD was empty and the snippet was just a tracking link) no
-    # longer applies; other warning codes are unrelated to JD content and
-    # stay untouched.
-    try:
-        existing_warnings = json.loads(job.get("import_warnings") or "[]")
-    except (json.JSONDecodeError, TypeError):
-        existing_warnings = []
-    if "jd_body_is_tracking_link" in existing_warnings:
-        remaining_warnings = [
-            code for code in existing_warnings if code != "jd_body_is_tracking_link"
-        ]
-        update_fields["import_warnings"] = (
-            json.dumps(remaining_warnings) if remaining_warnings else None
-        )
+    # ai: claude-opus-5-5 | 2026-11-13 -- description/warning fields now shared
+    # with refresh_job_description_from_url via _description_fields.
+    update_fields = _description_fields(job, description)
     repos["jobs"].update(user_id, job_id, update_fields)
     try:
         result = FitScorer(user_id).score(
@@ -154,7 +148,6 @@ def enrich_job_description(
             fit_feedback=fit_feedback,
         )
         score = int(result["score"])
-        current_status = str(job.get("status") or "")
         score_updates: dict[str, Any] = {
             "fit_score": score,
             "fit_reasoning": result["reasoning"],
@@ -163,15 +156,149 @@ def enrich_job_description(
             # ai: claude-sonnet-5 | 2026-09-21 — update_fields may already hold the
             # tracking-link-cleaned value; job's copy is stale in that case.
             "import_warnings": remove_import_warning(
-                update_fields.get("import_warnings", job.get("import_warnings")),
-                SCORING_FAILED_WARNING,
+                update_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
             ),
         }
-        if current_status not in {"skipped", "applied"}:
-            score_updates["status"] = "pending_review" if score >= 70 else "triage"
+        # ai: claude-opus-5-5 | 2026-11-13 -- was its own {"skipped", "applied"}
+        # copy, which let enrichment pull a possible_duplicate out of review.
+        new_status = status_after_rescore(str(job.get("status") or ""), score)
+        if new_status is not None:
+            score_updates["status"] = new_status
         repos["jobs"].update(user_id, job_id, score_updates)
     except Exception as exc:
         logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+# Statuses a re-score must leave alone: the user's own Apply/Skip decisions,
+# and a pending duplicate review (a better JD doesn't settle whether the job
+# is a duplicate).
+_RESCORE_KEEPS_STATUS: frozenset[str] = USER_COMMITTED_JOB_STATUSES | {"possible_duplicate"}
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def status_after_rescore(current_status: str, score: int) -> str | None:
+    """The queue/triage status a fresh fit score puts a job in, or None when
+    the job's current status must be kept."""
+    if current_status in _RESCORE_KEEPS_STATUS:
+        return None
+    return "pending_review" if score >= 70 else "triage"
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def _description_fields(job: dict[str, Any], description: str) -> dict[str, Any]:
+    """Columns to write when *description* becomes the job's JD. A real
+    description resolves the tracking-link warning; other warnings stay."""
+    return {
+        JobColumns.JOB_DESCRIPTION: description,
+        JobColumns.RAW_JD_SNIPPET: description[:RAW_JD_SNIPPET_MAX_CHARS],
+        JobColumns.IMPORT_WARNINGS: remove_import_warning(
+            job.get(JobColumns.IMPORT_WARNINGS), TRACKING_LINK_JD_WARNING
+        ),
+    }
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+# Below this the fetch hit a login wall, an error page, or a client-rendered
+# shell; the caller decides the fallback (the route queues a browser capture).
+_MIN_REFRESHED_TEXT_CHARS = 150
+
+
+class JobNotFoundError(LookupError):
+    """No job with that id for this user."""
+
+
+class JobHasNoUrlError(ValueError):
+    """The job has no stored URL to re-fetch from."""
+
+
+# ai: claude-opus-5-5 | 2026-11-13 -- extracted from routes/jobs.py's
+# refresh_job_from_url route so scripts can reuse it. The route only wrote
+# raw_jd_snippet, so a stale job_description (which every reader prefers) kept
+# winning over the fresh fetch; this writes both via _description_fields.
+def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any] | None:
+    """Re-fetch a job's JD from its stored URL, re-score it, and save both.
+
+    Returns the updated job, or None when the fetch yielded too little text to
+    use (nothing is written then). Raises JobNotFoundError / JobHasNoUrlError;
+    a scoring failure propagates unchanged. No DB connection is held across the
+    fetch or the AI call. The status write is conditional, so an Apply/Skip
+    that lands mid-refresh is never overwritten.
+    """
+    with get_repos(user_id) as repos:
+        job = repos["jobs"].get_by_id(user_id, job_id)
+        if not job:
+            raise JobNotFoundError(f"Job {job_id} not found")
+        url = str(job.get("url") or "").strip()
+        if not url:
+            raise JobHasNoUrlError(f"Job {job_id} has no URL")
+        resume_row = repos["resume"].get_latest(user_id)
+        resume_text = str(resume_row.get("content") or "") if resume_row else ""
+        penalty_rules = repos["penalties"].get_enabled(user_id)
+        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
+
+    t0 = time.monotonic()
+    try:
+        fetched = CareerSiteScanner().scan_single_job_url(str(job.get("source") or ""), url)
+    # URLError, timeouts and SSL errors are OSErrors; UnsafeUrlError is a ValueError.
+    except (ValueError, OSError, HTTPException) as exc:
+        logger.warning("refresh_job_description_from_url: fetch failed for job %d (%s): %s", job_id, url, exc)
+        return None
+    # ai: claude-sonnet-5 | 2026-08-21 (moved from routes/jobs.py)
+    # LinkedIn's fetched JD (guest jobs API) never carries the Hybrid/Remote/
+    # On-site top-card badge -- recover it from whatever text was already
+    # stored (email digest snippet, prior DOM capture) before it's replaced.
+    new_text = ensure_workplace_type_preserved(fetched["job_text"], job_description_text(job))
+    logger.info(
+        "refresh_job_description_from_url: job %d fetched %d chars in %.1fs",
+        job_id,
+        len(new_text),
+        time.monotonic() - t0,
+    )
+    if len(new_text) < _MIN_REFRESHED_TEXT_CHARS:
+        return None
+
+    score_result = FitScorer(user_id).score(
+        job_title=str(job.get("job_title") or ""),
+        company=str(job.get("company") or ""),
+        email_body=new_text,
+        resume_text=resume_text,
+        penalty_rules=penalty_rules,
+        fit_feedback=fit_feedback,
+    )
+    fit_score = int(score_result["score"])
+
+    description_fields = _description_fields(job, new_text)
+    with get_repos(user_id) as repos:
+        # ai: claude-sonnet-4-6 | 2026-06-26 (moved from routes/jobs.py)
+        # Certainty describes ingestion-time parsing and is stale once the JD
+        # has been fetched directly; keeping it showed "Certainty score: 45% /
+        # company name missing" on a fully refreshed job.
+        repos["jobs"].update(
+            user_id,
+            job_id,
+            {
+                **description_fields,
+                "fit_score": fit_score,
+                "fit_reasoning": score_result["reasoning"],
+                "salary_min": score_result["salary_min"],
+                "salary_max": score_result["salary_max"],
+                JobColumns.IMPORT_WARNINGS: remove_import_warning(
+                    description_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
+                ),
+                JobColumns.CERTAINTY_LEVEL: None,
+                JobColumns.CERTAINTY_SCORE: None,
+                JobColumns.CERTAINTY_REASON: None,
+            },
+        )
+        new_status = status_after_rescore(str(job.get("status") or ""), fit_score)
+        if new_status is not None:
+            repos["jobs"].update_if_status_not_in(
+                user_id, job_id, {"status": new_status}, _RESCORE_KEEPS_STATUS
+            )
+        updated_job = repos["jobs"].get_by_id(user_id, job_id)
+        repos["conn"].commit()
+    return updated_job
 
 
 # ai: claude-opus-5-5 | 2026-10-28 -- opens its own short-lived connections
