@@ -2,7 +2,7 @@
 // @name         Manual HTML to Job Hunt App
 // @description  install a button on a matched page that will feed the html to my job scanner
 // @namespace    http://tampermonkey.net/
-// @version      2026-10-15.01
+// @version      2026-11-13.01
 // @match        https://jobs.ashbyhq.com/vanta/*
 // @match        https://discord.com/careehrs*
 // @match        https://job-boards.greenhouse.io/*/jobs/*
@@ -628,7 +628,14 @@
             let company = '';
             if (container) {
                 const companyLink = container.querySelector('a[href*="/companies/"]');
-                if (companyLink) company = companyLink.innerText?.split('\n')[0]?.trim() || '';
+                // ai: claude-opus-5-5 | 2026-11-13 -- the link reads "Nitrode (W25) • Frontier
+                // AI research…" (NBSPs around the batch); keep only the name.
+                if (companyLink) {
+                    company = (companyLink.innerText?.split('\n')[0] || '')
+                        .split('•')[0]
+                        .replace(/\s*\([A-Z]\d{2}\)\s*$/, '')
+                        .trim();
+                }
                 if (!title) {
                     const h = container.querySelector('h1,h2,h3,h4');
                     if (h) title = h.innerText?.split('\n')[0]?.trim() || '';

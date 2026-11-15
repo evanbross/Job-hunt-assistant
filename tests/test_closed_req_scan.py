@@ -280,6 +280,27 @@ def test_detect_closed_req_platform_recognizes_kforce_url() -> None:
     assert _detect_closed_req_platform(job, url) == "kforce"
 
 
+# ai: claude-opus-5-5 | 2026-11-14
+def test_detect_closed_req_platform_recognizes_workatastartup_url() -> None:
+    job = {"source": "WorkAtAStartup"}
+    url = "https://www.workatastartup.com/jobs/92563"
+    assert _detect_closed_req_platform(job, url) == "workatastartup"
+
+
+# ai: claude-opus-5-5 | 2026-11-14
+def test_classify_closed_req_page_detects_workatastartup_redirect_off_the_board() -> None:
+    assert (
+        _classify_closed_req_page(
+            "simplyinsured: we sell health insurance", "https://www.ycombinator.com/companies/simplyinsured", "workatastartup"
+        )
+        == "closed"
+    )
+    assert (
+        _classify_closed_req_page("site reliability engineer", "https://www.workatastartup.com/jobs/121134", "workatastartup")
+        == "open"
+    )
+
+
 # ai: claude-fable-5 | 2026-07-16
 def test_check_closed_req_detects_mongodb_teams_hub_redirect() -> None:
     """MongoDB redirects a closed posting to its generic careers teams hub."""

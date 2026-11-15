@@ -610,6 +610,35 @@ def _ashby_organization_name_from_html(page_html: str) -> str | None:
     return name.strip() if isinstance(name, str) and name.strip() else None
 
 
+# ai: claude-opus-5-5 | 2026-11-13
+_INERTIA_DATA_PAGE_RE = re.compile(r'\bdata-page="([^"]*)"')
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def _workatastartup_page_props(page_html: str) -> dict[str, Any] | None:
+    """The job and company props from a Work at a Startup job page.
+
+    workatastartup.com is an Inertia.js app: the server-rendered body is an
+    empty mount point, and the whole page (job, company, similar jobs) ships
+    as HTML-escaped JSON in the root element's data-page attribute. Returns
+    None unless that payload carries a job with a description.
+    """
+    match = _INERTIA_DATA_PAGE_RE.search(page_html)
+    if not match:
+        return None
+    try:
+        page = json.loads(unescape(match.group(1)))
+    except json.JSONDecodeError:
+        return None
+    props = page.get("props") if isinstance(page, dict) else None
+    if not isinstance(props, dict):
+        return None
+    job = props.get("job")
+    if not isinstance(job, dict) or not str(job.get("descriptionHtml") or "").strip():
+        return None
+    return props
+
+
 def _detect_embedded_ashby_base_url(listing_html: str) -> str | None:
     match = re.search(
         r"https://jobs\.ashbyhq\.com/([A-Za-z0-9_-]+)/embed(?:\?[^\"'>\s]*)?",
@@ -1458,6 +1487,37 @@ class CareerSiteScanner:
                 "scan_single_job_url: Ashby extraction found nothing, falling through to generic parser"
             )
 
+        # ai: claude-opus-5-5 | 2026-11-13
+        # Work at a Startup (YC's job board, linked from its "YC startup jobs
+        # for you" digest emails) renders client-side from an Inertia data-page
+        # payload, so the generic parser below finds no text at all and every
+        # digest job was scored on its ~300-char email blurb instead (jobs
+        # 8042-8051: all low-scored into triage).
+        if "workatastartup.com" in urlparse(final_url).netloc.lower():
+            waas_props = _workatastartup_page_props(page_html)
+            if waas_props is not None:
+                logger.info(
+                    "scan_single_job_url: Work at a Startup data-page extraction "
+                    "succeeded in %.1fs total",
+                    time.monotonic() - t0,
+                )
+                return self._workatastartup_job_from_props(
+                    site_name, final_url, waas_props
+                )
+            logger.info(
+                "scan_single_job_url: Work at a Startup page had no job data-page "
+                "payload, falling through to generic parser"
+            )
+        # ai: claude-opus-5-5 | 2026-11-14
+        # A removed Work at a Startup job redirects to the company's YC profile
+        # (jobs/15071 -> ycombinator.com/companies/simplyinsured). The generic
+        # parser would return that profile's nav and marketing copy as the job
+        # text, at "high" confidence, and a re-fetch would score it as the JD.
+        elif "workatastartup.com" in parsed.netloc.lower() and parsed.path.startswith("/jobs/"):
+            raise ValueError(
+                f"Work at a Startup job no longer listed (redirected to {final_url})"
+            )
+
         # ai: claude-opus-5-5 | 2026-10-28
         # A JobPosting JSON-LD block is the posting itself, written for search
         # engines; the visible page around it can be anything. CVS Health's
@@ -1558,6 +1618,49 @@ class CareerSiteScanner:
         )
         if company:
             result["company"] = company
+        return result
+
+    # ai: claude-opus-5-5 | 2026-11-13
+    def _workatastartup_job_from_props(
+        self, site_name: str, job_url: str, props: dict[str, Any]
+    ) -> CareerSiteJob:
+        job = props["job"]
+        company_props = props.get("company")
+        company = company_props if isinstance(company_props, dict) else {}
+        title = _clean_text(str(job.get("title") or "")) or UNTITLED_JOB_TITLE
+        details = [
+            _clean_text(str(job.get(key) or ""))
+            for key in (
+                "location",
+                "jobType",
+                "salaryRange",
+                "equityRange",
+                "minExperience",
+                "sponsorsVisa",
+            )
+        ]
+        company_name = _clean_text(str(company.get("name") or ""))
+        company_blurb = _clean_text(str(company.get("description") or ""))
+        text_parts = [title]
+        if any(details):
+            text_parts.append(" | ".join(part for part in details if part))
+        if company_name and company_blurb:
+            text_parts.append(f"{company_name}: {company_blurb}")
+        text_parts.append(_html_to_text(str(job["descriptionHtml"])))
+        text = _clean_text(" ".join(text_parts))
+        confidence_level, confidence_score = _confidence_for(title, text)
+        result = CareerSiteJob(
+            site_name=site_name,
+            site_url=job_url,
+            job_title=title[:300],
+            job_url=job_url,
+            job_text=text[:CAPTURED_JOB_TEXT_MAX_CHARS],
+            posted_at=None,
+            confidence_level=confidence_level,
+            confidence_score=confidence_score,
+        )
+        if company_name:
+            result["company"] = company_name
         return result
 
     def _linkedin_job_from_guest_api(

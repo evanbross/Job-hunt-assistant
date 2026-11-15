@@ -25,6 +25,7 @@
 # --- END AI SYSTEMS DIRECTIVE ---
 # =============================================================================
 
+import html
 import json
 from unittest.mock import patch
 from urllib.parse import urlparse
@@ -1005,13 +1006,13 @@ def test_validate_board_scan_fails_when_every_job_low_confidence() -> None:
 
 
 # ai: claude-opus-5-5 | 2026-10-28
-def _scan_single_page(url: str, page_html: str) -> CareerSiteJob:
+def _scan_single_page(url: str, page_html: str, final_url: str | None = None) -> CareerSiteJob:
     scanner = CareerSiteScanner()
     with patch("backend.scanning.career_site_scanner.safe_urlopen") as mock_urlopen:
         mock_resp = mock_urlopen.return_value.__enter__.return_value
         mock_resp.read.return_value = page_html.encode("utf-8")
         mock_resp.headers.get_content_charset.return_value = "utf-8"
-        mock_resp.geturl.return_value = url
+        mock_resp.geturl.return_value = final_url or url  # ai: claude-opus-5-5 | 2026-11-14
         return scanner.scan_single_job_url("", url)
 
 
@@ -1063,6 +1064,79 @@ def test_scan_single_job_url_reads_the_page_when_json_ld_is_a_stub() -> None:
     )
 
     assert "The real posting text lives in the page." in job["job_text"]
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def _workatastartup_page(job: dict, company: dict) -> str:
+    """Shaped like the live page (verified 2026-11-13): an empty body whose only
+    content is an HTML-escaped Inertia data-page attribute on a bare div."""
+    page = {
+        "component": "jobs/public/pages/JobDetailV2Page",
+        "props": {"nav": {"paths": {"login": "https://account.ycombinator.com/magic"}},
+                  "job": job, "company": company, "otherJobs": [{"id": 1, "title": "Other"}]},
+    }
+    return (
+        "<html><head><title>Site Reliability Engineer at PostHog | Y Combinator's "
+        f"Work at a Startup</title></head><body><div data-page=\"{html.escape(json.dumps(page))}\">"
+        "</div></body></html>"
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def test_scan_single_job_url_reads_workatastartup_inertia_payload() -> None:
+    """2026-11-13 YC digest bug: Work at a Startup job pages render client-side,
+    so the generic parser raised "No job text found on page" and every digest
+    job was scored on its email blurb alone (jobs 8042-8051, all triaged)."""
+    job = {
+        "id": 121134,
+        "title": "Site Reliability Engineer (US - Pacific time)",
+        "salaryRange": "$150K - $200K",
+        "equityRange": None,
+        "location": "Remote (US)",
+        "jobType": "Full-time",
+        "sponsorsVisa": "US citizen/visa only",
+        "minExperience": "Any (new grads ok)",
+        "descriptionHtml": "<h2>About the role</h2><p>" + "Keep ClickHouse fast. " * 30 + "</p>",
+    }
+    company = {"name": "PostHog", "description": "The single platform to analyze features"}
+
+    result = _scan_single_page(
+        "https://www.workatastartup.com/jobs/121134?utm_medium=email&utm_source=c_jobs_digest",
+        _workatastartup_page(job, company),
+    )
+
+    assert result["job_title"] == "Site Reliability Engineer (US - Pacific time)"
+    assert result["company"] == "PostHog"
+    assert result["job_text"].startswith(
+        "Site Reliability Engineer (US - Pacific time) Remote (US) | Full-time | "
+        "$150K - $200K | Any (new grads ok) | US citizen/visa only "
+        "PostHog: The single platform to analyze features About the role Keep ClickHouse fast."
+    )
+    assert "Other" not in result["job_text"]
+    assert result["confidence_level"] == "high"
+
+
+# ai: claude-opus-5-5 | 2026-11-13
+def test_scan_single_job_url_workatastartup_without_payload_uses_generic_parser() -> None:
+    page_html = "<html><body><main><p>" + "Listing text from the page. " * 20 + "</p></main></body></html>"
+
+    result = _scan_single_page("https://www.workatastartup.com/jobs/1", page_html)
+
+    assert "Listing text from the page." in result["job_text"]
+
+
+# ai: claude-opus-5-5 | 2026-11-14
+def test_scan_single_job_url_rejects_a_removed_workatastartup_job() -> None:
+    """A removed job redirects to the company's YC profile; its nav and
+    marketing copy must not come back as the job text (jobs/15071)."""
+    profile_html = "<html><body><main><p>" + "We sell health insurance online. " * 20 + "</p></main></body></html>"
+
+    with pytest.raises(ValueError, match="no longer listed"):
+        _scan_single_page(
+            "https://www.workatastartup.com/jobs/15071",
+            profile_html,
+            final_url="https://www.ycombinator.com/companies/simplyinsured",
+        )
 
 
 # ai: claude-opus-5-5 | 2026-10-28

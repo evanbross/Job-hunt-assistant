@@ -65,6 +65,7 @@ from backend.scoring.auto_reject_rules import (
 )
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
+    auto_duplicate_skip_feedback,
     db_match_for_job,
     is_near_certain_duplicate,
 )
@@ -72,6 +73,7 @@ from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
+    TRACKING_LINK_JD_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
 )
@@ -809,8 +811,8 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     job_data["skip_feedback"] = hybrid_reject_note
                 elif status == "skipped":
                     job_data["skip_reason"] = "duplicate"
-                    job_data["skip_feedback"] = (
-                        f"Auto-rejected: near-certain duplicate of job #{duplicate_of_id} ({duplicate_hint})."
+                    job_data["skip_feedback"] = auto_duplicate_skip_feedback(  # ai: claude-opus-5-5 | 2026-11-13
+                        duplicate_of_id, duplicate_hint
                     )
 
                 # Score high-confidence jobs immediately
@@ -890,7 +892,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 if capture_with_extension:
                     capture_url = job_url_str
                     capture_source = job_data.get("source") or "Wellfound"
-                elif "jd_body_is_tracking_link" in import_warnings:
+                elif TRACKING_LINK_JD_WARNING in import_warnings:
                     _capture_url = str(job_data.get("url") or "").strip()
                     if _capture_url:
                         capture_url = _capture_url

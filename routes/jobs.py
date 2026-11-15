@@ -113,9 +113,15 @@ from backend.scoring.duplicate_matching import (
     is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_enrichment import (  # ai: claude-opus-5-5 | 2026-11-13
+    JobHasNoUrlError,
+    JobNotFoundError,
+    refresh_job_description_from_url,
+)
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
+    TRACKING_LINK_JD_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
     remove_import_warning,
@@ -123,7 +129,6 @@ from backend.scoring.job_validator import (
 from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
-from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.task_progress import TaskProgress, run_status
 from backend.utils.stage_status_normalization import (
     effective_application_status,
@@ -1265,160 +1270,57 @@ def refresh_job_from_url(job_id: int) -> ResponseReturnValue:
     """
     logger.info("refresh_job_from_url for job_id %d", job_id)
     user_id = current_user_id()
-    with get_repos() as repos:
-        job = repos["jobs"].get_by_id(user_id, job_id)
-        if not job:
-            return jsonify({"error": "Job not found"}), 404
-
-        url = (job.get("url") or "").strip()
-        if not url:
-            return jsonify({"error": "Job has no URL — cannot re-fetch"}), 422
-
-        resume_row = repos["resume"].get_latest(user_id)
-        resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled(user_id)
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
-    # Connection released before external fetch and AI scoring
-
-    # ai: claude-sonnet-4-6 | 2026-06-21
-    t0 = time.monotonic()
+    # ai: claude-opus-5-5 | 2026-11-13 -- fetch/score/save moved to
+    # backend.scoring.jd_enrichment so scripts/repair_waas_companies.py reuses it.
     try:
-        scanner = CareerSiteScanner()
-        logger.info(
-            "refresh-from-url: calling scan_single_job_url for job %d url=%s",
-            job_id,
-            url,
-        )
-        fetched = scanner.scan_single_job_url(job.get("source") or "", url)
-        # ai: claude-sonnet-5 | 2026-08-21
-        # LinkedIn's fetched JD (guest jobs API) never carries the
-        # Hybrid/Remote/On-site top-card badge — recover it from whatever
-        # text was already stored (email digest snippet, prior DOM capture)
-        # before it's replaced.
-        prior_text = str(
-            job.get("job_description") or job.get("raw_jd_snippet") or ""
-        )
-        new_text = ensure_workplace_type_preserved(fetched["job_text"], prior_text)
-        logger.info(
-            "refresh-from-url: scan_single_job_url returned in %.1fs, text length=%d",
-            time.monotonic() - t0,
-            len(new_text),
-        )
+        updated_job = refresh_job_description_from_url(user_id, job_id)
+    except JobNotFoundError:
+        return jsonify({"error": "Job not found"}), 404
+    except JobHasNoUrlError:
+        return jsonify({"error": "Job has no URL — cannot re-fetch"}), 422
     except Exception as exc:
-        logger.warning(
-            "refresh-from-url: fetch failed for job %d (%s) after %.1fs: %s",
-            job_id,
-            url,
-            time.monotonic() - t0,
-            exc,
-        )
-        new_text = ""
-
-    # ai: claude-sonnet-4-6 | 2026-06-16
-    # Direct fetch got a login wall, redirect, or empty page — queue for browser extension.
-    if len(new_text) < 150:
-        site_name = urlparse(url).netloc
-        try:
-            with get_repos() as repos:
-                repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
-                    user_id,
-                    url,
-                    site_name,
-                    origin=CaptureQueueOrigin.REFRESH_FROM_URL,
-                    origin_detail=f"Job #{job_id}",
-                )
-                repos["conn"].commit()
-            logger.info(
-                "refresh-from-url: queued job %d (%s) for browser extension capture",
-                job_id,
-                url,
-            )
-        except Exception as q_exc:
-            logger.warning(
-                "refresh-from-url: failed to enqueue job %d for browser capture: %s",
-                job_id,
-                q_exc,
-            )
-        return (
-            jsonify(
-                {
-                    "queued_for_browser_capture": True,
-                    "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture (usually within seconds, up to 1 min as a fallback) and update this card in place.",
-                }
-            ),
-            200,
-        )
-
-    # ai: claude-sonnet-4-6 | 2026-06-21
-    t_score = time.monotonic()
-    logger.info("refresh-from-url: starting FitScorer for job %d", job_id)
-    try:
-        score_result = FitScorer(user_id).score(
-            job_title=job.get("job_title") or "",
-            company=job.get("company") or "",
-            email_body=new_text,
-            resume_text=resume_text,
-            penalty_rules=penalty_rules,
-            fit_feedback=fit_feedback,
-        )
-        logger.info(
-            "refresh-from-url: FitScorer returned in %.1fs for job %d",
-            time.monotonic() - t_score,
-            job_id,
-        )
-    except Exception as exc:
-        logger.warning(
-            "refresh-from-url: scoring failed for job %d after %.1fs: %s",
-            job_id,
-            time.monotonic() - t_score,
-            exc,
-        )
+        logger.warning("refresh-from-url: scoring failed for job %d: %s", job_id, exc)
         return jsonify(
             {"error": safe_error_message(exc, "Scoring failed")}
         ), ai_error_http_status(exc)
+    if updated_job is not None:
+        return jsonify(updated_job)
 
-    fit_score = score_result["score"]
-    current_status = job.get("status", "triage")
-    if current_status not in {"possible_duplicate", "skipped", "applied"}:
-        current_status = "pending_review" if fit_score >= 70 else "triage"
-
-    # ai: claude-sonnet-4-6 | 2026-06-21
-    logger.info(
-        "refresh-from-url: saving results for job %d — fit_score=%s status=%s total=%.1fs",
-        job_id,
-        fit_score,
-        current_status,
-        time.monotonic() - t0,
-    )
+    # ai: claude-sonnet-4-6 | 2026-06-16
+    # Direct fetch got a login wall, redirect, or empty page — queue for browser extension.
     with get_repos() as repos:
-        # ai: claude-sonnet-4-6 | 2026-06-26
-        # Clear certainty fields: they describe ingestion-time certainty and are
-        # stale once the JD has been directly fetched. Keeping them would cause the
-        # triage panel to show "Certainty score: 45% / company name missing"
-        # even after a successful re-fetch with a complete description.
-        repos["jobs"].update(
-            user_id,
+        job = repos["jobs"].get_by_id(user_id, job_id) or {}
+    url = str(job.get("url") or "")
+    try:
+        with get_repos() as repos:
+            repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
+                user_id,
+                url,
+                urlparse(url).netloc,
+                origin=CaptureQueueOrigin.REFRESH_FROM_URL,
+                origin_detail=f"Job #{job_id}",
+            )
+            repos["conn"].commit()
+        logger.info(
+            "refresh-from-url: queued job %d (%s) for browser extension capture",
             job_id,
-            {
-                "raw_jd_snippet": new_text[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
-                "fit_score": fit_score,
-                "fit_reasoning": score_result["reasoning"],
-                "salary_min": score_result["salary_min"],
-                "salary_max": score_result["salary_max"],
-                "status": current_status,
-                JobColumns.CERTAINTY_LEVEL: None,
-                JobColumns.CERTAINTY_SCORE: None,
-                JobColumns.CERTAINTY_REASON: None,
-            },
+            url,
         )
-        updated_job = repos["jobs"].get_by_id(user_id, job_id)
-        repos["conn"].commit()
-    logger.info(
-        "refresh-from-url: completed for job %d in %.1fs total",
-        job_id,
-        time.monotonic() - t0,
+    except Exception as q_exc:
+        logger.warning(
+            "refresh-from-url: failed to enqueue job %d for browser capture: %s",
+            job_id,
+            q_exc,
+        )
+    return (
+        jsonify(
+            {
+                "queued_for_browser_capture": True,
+                "message": "Direct fetch returned no content — the page likely requires sign-in. URL queued for browser extension; it will auto-capture (usually within seconds, up to 1 min as a fallback) and update this card in place.",
+            }
+        ),
+        200,
     )
-    return jsonify(updated_job)
 
 
 @jobs_bp.route("/jobs/<int:job_id>/reprocess", methods=["POST"])
@@ -2348,11 +2250,11 @@ IMPORT_REPAIR_TASK_KIND = "import_repair"
 # render the findings doc, not for behavior.
 _IMPORT_WARNING_LABELS = {
     "homepage_url": "URL is a homepage, not a job listing",
-    "jd_body_is_tracking_link": "Job description couldn't be fetched — only a tracking link was captured",
+    TRACKING_LINK_JD_WARNING: "Job description couldn't be fetched — only a tracking link was captured",
     "missing_company": "Company name is missing",
     "missing_job_title": "Job title is missing",
     "page_title": "Title looks like a browser page title",
-    "scoring_failed": "Fit scoring failed when this job was imported — re-evaluate to score it",
+    SCORING_FAILED_WARNING: "Fit scoring failed when this job was imported — re-evaluate to score it",
 }
 
 _PATTERN_MIN_COUNT = 3
@@ -2388,7 +2290,7 @@ def _attempt_import_repair(
             working["url"] = candidate_url
             updates["url"] = candidate_url
 
-    if "jd_body_is_tracking_link" in warnings:
+    if TRACKING_LINK_JD_WARNING in warnings:
         # Can't be fixed synchronously — the description only renders after JS
         # executes on the target page. Queue it for the browser extension to
         # capture a fully-rendered copy; the capture pipeline already knows how
@@ -2626,14 +2528,14 @@ def _run_import_repair(user_id: int, progress: TaskProgress[ImportRepairState]) 
                 with progress.update():
                     progress.state.url_fixed = list(url_fixed)
 
-            if "jd_body_is_tracking_link" in warnings:
+            if TRACKING_LINK_JD_WARNING in warnings:
                 jd_queued.append(summary)
                 with progress.update():
                     progress.state.jd_queued = list(jd_queued)
 
             # jd_body_is_tracking_link is "handled" (queued for async capture) even
             # though it's still technically unresolved — don't show it as stuck.
-            stuck = [w for w in remaining if w != "jd_body_is_tracking_link"]
+            stuck = [w for w in remaining if w != TRACKING_LINK_JD_WARNING]
             if stuck:
                 unresolved.append({**summary, "warnings": stuck})
                 with progress.update():
