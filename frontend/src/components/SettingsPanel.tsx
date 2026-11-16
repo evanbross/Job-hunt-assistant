@@ -36,6 +36,7 @@ import AccountsPanel from "./AccountsPanel.tsx"; // ai: claude-opus-5-5 | 2026-1
 import ApplicationProfilePanel from "./ApplicationProfilePanel.tsx";
 import AccountDataSection from "./AccountDataSection.tsx";
 import BrowserExtensionPanel from "./BrowserExtensionPanel.tsx";
+import EmailsPanel from "./EmailsPanel.tsx";
 import RegistrationInvitesPanel from "./RegistrationInvitesPanel.tsx";
 import Modal from "./common/Modal.tsx";
 import ResumeUpload from "./ResumeUpload.tsx";
@@ -106,6 +107,7 @@ const SETTINGS_TREE: SettingsTreeNode[] = [
     id: "email",
     label: "Email",
     children: [
+      { id: "email_history", label: "History" }, // ai: claude-opus-5-5 | 2026-11-16 -- was a top-level tab
       { id: "sources", label: "Sources" },
       { id: "email_subject_rules", label: "Subject Rules" },
     ],
@@ -174,9 +176,17 @@ function groupIdContaining(sectionId: string): string | null {
 interface SettingsPanelProps {
   initialSection?: string;
   onSetupComplete: () => void;
+  // ai: claude-opus-5-5 | 2026-11-16 -- for Email > History (EmailsPanel)
+  isGoogleAuthenticated: boolean;
+  focusEmailId: string | null;
 }
 
-export default function SettingsPanel({ initialSection, onSetupComplete }: SettingsPanelProps) {
+export default function SettingsPanel({
+  initialSection,
+  onSetupComplete,
+  isGoogleAuthenticated,
+  focusEmailId,
+}: SettingsPanelProps) {
   const startSection = initialSection && isSettingsSection(initialSection) ? initialSection : "resume";
   const [activeSection, setActiveSection] = useState(startSection);
   // ai: claude-sonnet-5 | 2026-08-21
@@ -272,6 +282,9 @@ export default function SettingsPanel({ initialSection, onSetupComplete }: Setti
         {activeSection === "application_profile" && <ApplicationProfilePanel />}
         {activeSection === "company_aliases" && <CompanyAliasesSection />}
         {activeSection === "profile_settings" && <ProfileSettingsSection />}
+        {activeSection === "email_history" && (
+          <EmailsPanel isAuthenticated={isGoogleAuthenticated} focusEmailId={focusEmailId} />
+        )}
         {activeSection === "sources" && <EmailSourcesSection />}
         {activeSection === "email_subject_rules" && <EmailSubjectRulesSection />}
         {activeSection === "career_sites" && <CareerSitesSection />}
