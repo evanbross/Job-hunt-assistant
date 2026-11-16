@@ -64,6 +64,7 @@ from boto3.exceptions import S3UploadFailedError
 from boto3.s3.transfer import TransferConfig
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
+from dotenv import dotenv_values
 from psycopg2 import sql
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
@@ -573,6 +574,26 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
 # The programs a backup and a restore run.
 REQUIRED_PROGRAMS = ("pg_dump", "pg_restore", "age")
+
+# ai: claude-opus-5-5 | 2026-11-16
+# Where the BACKUP_* settings live: scripts/setup_backup_bucket.py writes it, a hosted
+# deployment hands it to the maintenance container (deploy/docker-compose.prod.yml), and
+# the desktop launcher (app.py) loads it into its own worker, which takes the maintenance
+# queue too. Kept out of .env so the bucket key stays in one file, not two.
+BACKUP_ENV_FILE = config.BASE_DIR / "deploy" / ".env.backup"
+
+
+def with_backup_settings(environ: Mapping[str, str], env_file: Path = BACKUP_ENV_FILE) -> dict[str, str]:
+    """`environ` plus the BACKUP_* lines of `env_file`, for a desktop worker. Only BACKUP_*
+    names are taken, so the file can't override anything else; a variable already set in
+    `environ` wins, as python-dotenv's own loading does. No file = `environ` unchanged."""
+    merged = dict(environ)
+    if not env_file.is_file():
+        return merged
+    for name, value in dotenv_values(env_file).items():
+        if name.startswith(_ENV_PREFIX) and value is not None and name not in merged:
+            merged[name] = value
+    return merged
 
 
 def check_config(environ: Mapping[str, str]) -> None:

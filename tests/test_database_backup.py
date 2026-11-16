@@ -486,3 +486,30 @@ def test_the_command_line_reports_a_configuration_error_and_exits_non_zero(
 
     assert backup.main(["check-config"]) == 1
     assert "Backups are not configured" in caplog.text
+
+
+# ai: claude-opus-5-5 | 2026-11-16
+class TestWithBackupSettings:
+    """The desktop worker's environment: deploy/.env.backup's BACKUP_* lines added on top."""
+
+    def test_adds_only_backup_names_from_the_file(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env.backup"
+        env_file.write_text("BACKUP_S3_BUCKET=jha-backups\nDATABASE_URL=postgresql://elsewhere\n", encoding="utf-8")
+
+        merged = backup.with_backup_settings({"PATH": "x"}, env_file)
+
+        assert merged == {"PATH": "x", "BACKUP_S3_BUCKET": "jha-backups"}
+
+    def test_a_variable_already_set_wins(self, tmp_path: Path) -> None:
+        env_file = tmp_path / ".env.backup"
+        env_file.write_text("BACKUP_S3_BUCKET=from-file\n", encoding="utf-8")
+
+        merged = backup.with_backup_settings({"BACKUP_S3_BUCKET": "from-env"}, env_file)
+
+        assert merged["BACKUP_S3_BUCKET"] == "from-env"
+
+    def test_no_file_leaves_the_environment_unchanged(self, tmp_path: Path) -> None:
+        assert backup.with_backup_settings({"PATH": "x"}, tmp_path / "missing") == {"PATH": "x"}
+
+    def test_default_file_is_the_one_the_setup_script_writes(self) -> None:
+        assert backup.BACKUP_ENV_FILE == config.BASE_DIR / "deploy" / ".env.backup"

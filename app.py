@@ -62,6 +62,7 @@ from backend.celery_app import (  # ai: claude-fable-5 | 2026-07-16
     worker_is_running,
 )
 from backend.db import AppRoleConfigError, migrate_database_with_retry
+from backend.db.backup import with_backup_settings
 from backend.logging_setup import configure_logging
 from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
@@ -323,6 +324,9 @@ def _start_celery_worker() -> None:
                 f"--queues={DEFAULT_QUEUE},{MAINTENANCE_QUEUE}",
             ],
             cwd=str(config.BASE_DIR),
+            # ai: claude-opus-5-5 | 2026-11-16 -- as the maintenance worker, it takes the
+            # scheduled database backup, configured in deploy/.env.backup.
+            env=with_backup_settings(os.environ),
         )
         atexit.register(_stop_celery_process, _celery_proc, "worker")
         logger.info("Celery worker started (PID %s)", _celery_proc.pid)

@@ -15,7 +15,8 @@ The export has no "this is you" column, so the account owner is the participant 
 the most conversations -- every conversation in the file includes them. A
 conversation is a candidate when someone else started it one-to-one, it isn't in
 the spam folder, and it was active recently; everything else is counted by reason
-and dropped before any AI sees it.
+and dropped before any AI sees it. A person's candidate conversations are merged
+into one candidate (one suggestion per person, not per conversation).
 
 Format checked against a real export (2026-09): columns CONVERSATION ID,
 CONVERSATION TITLE, FROM, SENDER PROFILE URL, TO, RECIPIENT PROFILE URLS
@@ -65,6 +66,12 @@ SKIP_GROUP = "group"
 SKIP_NO_PROFILE = "no_profile"
 SKIP_TOO_OLD = "too_old"
 
+# ai: claude-opus-5-5 | 2026-11-16 -- lead_suggestions.source for these rows (here, not in
+# lead_suggestions.py, so the DB migration can use it without importing the AI provider)
+SUGGESTION_SOURCE = "linkedin_messages"
+# Marks a person-keyed suggestion (suggestion_ref).
+SUGGESTION_REF_PREFIX = "person:"
+
 
 class MessagesFormatError(ValueError):
     """An upload this importer can't read."""
@@ -91,15 +98,29 @@ class ExportMessage:
         }
 
 
-# ai: claude-opus-5-5 | 2026-11-11
+# ai: claude-opus-5-5 | 2026-11-16
+def suggestion_ref(profile_url: str | None, name: str) -> str:
+    """A suggestion's key: the person, not the conversation. LinkedIn splits one
+    person's outreach across conversations (an InMail and a message, a pitch sent
+    twice), and those are one suggestion. Also how the 2026-11-16 migration
+    (backend/db/lead_suggestion_person_merge.py) re-keys rows stored per conversation."""
+    key = _participant_key(profile_url, name)
+    if key is None:
+        raise ValueError("a suggestion needs a profile URL or a name")
+    return f"{SUGGESTION_REF_PREFIX}{key}"
+
+
+# ai: claude-opus-5-5 | 2026-11-16 -- was one per conversation (CandidateConversation)
 @dataclass(frozen=True)
-class CandidateConversation:
-    conversation_id: str
-    title: str
+class SuggestionCandidate:
+    """Everyone's candidate conversations with one person, merged."""
+
+    ref: str  # suggestion_ref()
+    title: str  # the most recently active conversation's
     counterpart_name: str
     counterpart_profile_url: str | None
-    counterpart_key: str | None
-    messages: tuple[ExportMessage, ...]  # oldest first
+    conversation_ids: tuple[str, ...]
+    messages: tuple[ExportMessage, ...]  # oldest first, across the conversations
 
     @property
     def first_message_at(self) -> str:
@@ -113,7 +134,7 @@ class CandidateConversation:
 # ai: claude-opus-5-5 | 2026-11-11
 @dataclass
 class ExportScan:
-    candidates: list[CandidateConversation]
+    candidates: list[SuggestionCandidate]
     conversation_count: int
     skipped: Counter[str] = field(default_factory=Counter)
     unreadable_rows: int = 0
@@ -275,6 +296,7 @@ def scan_export(text: str, active_since: datetime | None) -> ExportScan:
         return scan
     owner = _owner_key(conversations)
 
+    by_person: dict[str, list[tuple[str, list[_Row]]]] = defaultdict(list)
     for conversation_id, convo_rows in conversations.items():
         convo_rows.sort(key=lambda r: r.sent_at)
         first = convo_rows[0]
@@ -291,20 +313,19 @@ def scan_export(text: str, active_since: datetime | None) -> ExportScan:
         elif active_since is not None and convo_rows[-1].sent_at < active_since:
             scan.skipped[SKIP_TOO_OLD] += 1
         else:
-            scan.candidates.append(_candidate(conversation_id, convo_rows, owner))
+            by_person[first.sender_key].append((conversation_id, convo_rows))  # ai: claude-opus-5-5 | 2026-11-16
+    scan.candidates = [_candidate(person, owner) for person in by_person.values()]
     scan.candidates.sort(key=lambda c: c.last_message_at, reverse=True)
     return scan
 
 
-def _candidate(conversation_id: str, rows: list[_Row], owner: str) -> CandidateConversation:
-    first = rows[0]
-    return CandidateConversation(
-        conversation_id=conversation_id,
-        title=first.title,
-        counterpart_name=first.sender_name or "Unknown",
-        counterpart_profile_url=first.sender_url,
-        counterpart_key=first.sender_key,
-        messages=tuple(
+# ai: claude-opus-5-5 | 2026-11-16 -- one candidate per person, from all their conversations
+def _candidate(person: list[tuple[str, list[_Row]]], owner: str) -> SuggestionCandidate:
+    """`person` is one sender's candidate conversations, each sorted oldest first."""
+    by_activity = sorted(person, key=lambda convo: (convo[1][-1].sent_at, convo[0]))
+    latest = by_activity[-1][1][0]  # the most recently active conversation's opening message
+    messages = sorted(
+        (
             ExportMessage(
                 external_ref=_external_ref(conversation_id, row),
                 sent_at=row.sent_at.isoformat(timespec="seconds"),
@@ -313,6 +334,16 @@ def _candidate(conversation_id: str, rows: list[_Row], owner: str) -> CandidateC
                 subject=row.subject,
                 text=row.text,
             )
+            for conversation_id, rows in by_activity
             for row in rows
         ),
+        key=lambda m: (m.sent_at, m.external_ref),
+    )
+    return SuggestionCandidate(
+        ref=suggestion_ref(latest.sender_url, latest.sender_name),
+        title=latest.title,
+        counterpart_name=latest.sender_name or "Unknown",
+        counterpart_profile_url=latest.sender_url,
+        conversation_ids=tuple(conversation_id for conversation_id, _rows in by_activity),
+        messages=tuple(messages),
     )

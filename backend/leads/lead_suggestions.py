@@ -41,13 +41,16 @@ from backend.leads.lead_service import (
     NewContact,
     NewLead,
 )
-from backend.leads.linkedin_messages import CandidateConversation, ExportScan
+from backend.leads.linkedin_messages import (
+    SUGGESTION_SOURCE,
+    ExportScan,
+    SuggestionCandidate,
+)
 from backend.utils.rich_text import plain_text_to_html, sanitize_rich_text
 
 logger = logging.getLogger(__name__)
 
 # ai: claude-opus-5-5 | 2026-11-11
-SUGGESTION_SOURCE = "linkedin_messages"
 # Small enough that one slow or failed reply loses little, large enough to keep
 # the number of provider calls down.
 AI_BATCH_SIZE = 12
@@ -113,7 +116,7 @@ class ContactIndex:
             names.setdefault((contact.get("full_name") or "").strip().lower(), []).append(contact)
         self._by_unique_name = {name: found[0] for name, found in names.items() if name and len(found) == 1}
 
-    def match(self, conversation: CandidateConversation) -> dict[str, Any] | None:
+    def match(self, conversation: SuggestionCandidate) -> dict[str, Any] | None:
         slug = linkedin_profile_slug(conversation.counterpart_profile_url)
         if slug and slug in self._by_slug:
             return self._by_slug[slug]
@@ -125,6 +128,7 @@ class ContactIndex:
 class ImportOutcome:
     conversations: int
     candidates: int
+    people: int  # ai: claude-opus-5-5 | 2026-11-16 -- the candidates' senders: one suggestion each
     added: int = 0
     refreshed: int = 0
     messages_logged: int = 0
@@ -166,13 +170,15 @@ def _log_messages(
 def import_conversations(
     user_id: int, repos: dict[str, Any], scan: ExportScan, now_iso: str
 ) -> ImportOutcome:
-    """Store each candidate conversation with what Contacts says about its sender.
-    A conversation already accepted gets any newer messages logged on its contact,
-    so re-importing a later export keeps the timeline current."""
+    """Store one suggestion per person, with what Contacts says about them. A person
+    already accepted gets any newer messages logged on their contact, so re-importing
+    a later export keeps the timeline current."""
     index = ContactIndex(repos["contacts"].get_all(user_id))
+    # ai: claude-opus-5-5 | 2026-11-16 -- candidates count conversations; people, suggestions
     outcome = ImportOutcome(
         conversations=scan.conversation_count,
-        candidates=len(scan.candidates),
+        candidates=sum(len(person.conversation_ids) for person in scan.candidates),
+        people=len(scan.candidates),
         skipped=dict(scan.skipped),
         unreadable_rows=scan.unreadable_rows,
     )
@@ -184,7 +190,7 @@ def import_conversations(
             user_id,
             {
                 "source": SUGGESTION_SOURCE,
-                "external_ref": conversation.conversation_id,
+                "external_ref": conversation.ref,  # ai: claude-opus-5-5 | 2026-11-16
                 "status": verdict.status,
                 "detection": verdict.detection,
                 "reason": verdict.reason,

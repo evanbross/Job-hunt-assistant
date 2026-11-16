@@ -192,9 +192,10 @@ interface SuggestionRowProps {
 
 function SuggestionRow({ suggestion, tab, expanded, busy, onToggle, onAccept, onMove }: SuggestionRowProps) {
   const opening = suggestion.messages.find((m) => !m.from_owner) ?? suggestion.messages[0];
-  const guesses = [suggestion.role_guess, suggestion.hiring_company_guess && `at ${suggestion.hiring_company_guess}`]
-    .filter(Boolean)
-    .join(" ");
+  // ai: claude-opus-5-5 | 2026-11-16 -- "at <company>" only after a role; a company alone stands on its own
+  const role = suggestion.role_guess;
+  const company = suggestion.hiring_company_guess;
+  const guesses = role && company ? `${role} at ${company}` : (role ?? company ?? "");
   return (
     <>
       <tr>

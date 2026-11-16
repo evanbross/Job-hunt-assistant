@@ -31,11 +31,11 @@ def profile_url(slug: str) -> str:
 
 def message_row(
     conversation: str, sender: str, sender_url: str, to_urls: str, date: str, content: str,
-    folder: str = "INBOX", subject: str = "",
+    folder: str = "INBOX", subject: str = "", title: str = "",
 ) -> dict[str, str]:
     """One messages.csv row; *date* is "YYYY-MM-DD HH:MM:SS" (UTC is appended)."""
     return {
-        "CONVERSATION ID": conversation, "CONVERSATION TITLE": "", "FROM": sender,
+        "CONVERSATION ID": conversation, "CONVERSATION TITLE": title, "FROM": sender,
         "SENDER PROFILE URL": sender_url, "TO": "", "RECIPIENT PROFILE URLS": to_urls,
         "DATE": f"{date} UTC", "SUBJECT": subject, "CONTENT": content, "FOLDER": folder, "ATTACHMENTS": "",
     }

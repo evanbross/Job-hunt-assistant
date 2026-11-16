@@ -63,7 +63,6 @@ const PrivacyPolicyPage = lazy(() => import("./components/public/PrivacyPolicyPa
 const TermsOfServicePage = lazy(() => import("./components/public/TermsOfServicePage.tsx"));
 const AcceptTermsPage = lazy(() => import("./components/public/AcceptTermsPage.tsx"));
 const SettingsPanel = lazy(() => import("./components/SettingsPanel.tsx"));
-const EmailsPanel = lazy(() => import("./components/EmailsPanel.tsx"));
 const HistoryPanel = lazy(() => import("./components/HistoryPanel.tsx"));
 const ApplicationSheetPanel = lazy(() => import("./components/ApplicationSheetPanel.tsx"));
 const ContactsPanel = lazy(() => import("./components/ContactsPanel.tsx"));
@@ -83,7 +82,6 @@ const TABS = [
   { key: "queue", label: "Job Queue" },
   { key: "applications", label: "Applications" },
   { key: "leads", label: "Leads" }, // ai: claude-opus-5-5 | 2026-11-11
-  { key: "emails", label: "Email History" },
   { key: "contacts", label: "Contacts" },
   { key: "phrasebook", label: "Phrase Book" },
   { key: "settings", label: "Settings" },
@@ -204,7 +202,8 @@ const styles = {
   } as CSSProperties,
 };
 
-const EMAILS_TAB_KEY = "emails";
+// ai: claude-opus-5-5 | 2026-11-16 -- the old "emails" tab; SettingsPanel's SETTINGS_TREE id
+const EMAIL_HISTORY_SETTINGS_SECTION = "email_history";
 const HISTORY_TAB_KEY = "history";
 
 interface FocusedJobCard {
@@ -290,8 +289,10 @@ export default function App() {
     return true;
   };
 
+  // ai: claude-opus-5-5 | 2026-11-16 -- Email History lives in Settings > Email now
   const navigateToEmails = (emailId: string) => {
-    if (!switchTab(EMAILS_TAB_KEY)) return;
+    if (!switchTab("settings")) return;
+    setSettingsInitialSection(EMAIL_HISTORY_SETTINGS_SECTION);
     setEmailFocusId(emailId);
   };
 
@@ -772,17 +773,16 @@ export default function App() {
         )}
         {activeTab === HISTORY_TAB_KEY && <HistoryPanel />}
         {activeTab === "applications" && <ApplicationSheetPanel onNavigateToJobCard={navigateToJobCard} />}
-        {activeTab === "emails" && (
-          <EmailsPanel
-            isAuthenticated={authStatus === true}
-            focusEmailId={emailFocusId}
-          />
-        )}
         {activeTab === "leads" && <LeadsPanel />}
         {activeTab === "contacts" && <ContactsPanel onUnsavedChangesChange={setUnsavedChanges} />}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (
-          <SettingsPanel initialSection={settingsInitialSection} onSetupComplete={handleSetupComplete} />
+          <SettingsPanel
+            initialSection={settingsInitialSection}
+            onSetupComplete={handleSetupComplete}
+            isGoogleAuthenticated={authStatus === true}
+            focusEmailId={emailFocusId}
+          />
         )}
         </Suspense>
       </main>

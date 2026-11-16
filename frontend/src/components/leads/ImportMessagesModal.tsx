@@ -87,7 +87,9 @@ export default function ImportMessagesModal({ onImported, onClose }: ImportMessa
       >
         <div className="form-stack">
           <p style={{ margin: 0 }}>
-            {result.candidates} of {result.conversations} conversations could be someone reaching out ({result.added} new,{" "}
+            {/* ai: claude-opus-5-5 | 2026-11-16 -- one suggestion per person, so count people too */}
+            {result.candidates} of {result.conversations} conversations could be someone reaching out, from{" "}
+            {result.people} {result.people === 1 ? "person" : "people"} ({result.added} new,{" "}
             {result.refreshed} already imported).
           </p>
           {skipped.length > 0 && <p className="lead-sub" style={{ margin: 0 }}>Left out: {skipped.join(", ")}.</p>}
@@ -100,8 +102,9 @@ export default function ImportMessagesModal({ onImported, onClose }: ImportMessa
           {result.waiting_for_ai > 0 && (
             <p style={{ margin: 0 }}>
               {result.check_started
-                ? `The AI is checking ${result.waiting_for_ai} conversation${result.waiting_for_ai === 1 ? "" : "s"} now; suggestions appear as it goes.`
-                : `${result.waiting_for_ai} conversation${result.waiting_for_ai === 1 ? " is" : "s are"} under “Not checked yet”.`}
+                ? // ai: claude-opus-5-5 | 2026-11-16 -- a suggestion is a person now, not a conversation
+                  `The AI is checking messages from ${result.waiting_for_ai} ${result.waiting_for_ai === 1 ? "person" : "people"} now; suggestions appear as it goes.`
+                : `${result.waiting_for_ai} ${result.waiting_for_ai === 1 ? "person is" : "people are"} under “Not checked yet”.`}
             </p>
           )}
         </div>

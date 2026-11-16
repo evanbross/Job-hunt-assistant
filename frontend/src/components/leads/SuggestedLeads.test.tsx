@@ -49,7 +49,7 @@ const LISTING: LeadSuggestionsResponse = {
 };
 
 const IMPORTED: MessagesImportResponse = {
-  conversations: 5, candidates: 4, added: 4, refreshed: 0, messages_logged: 0,
+  conversations: 5, candidates: 4, people: 3, added: 3, refreshed: 0, messages_logged: 0,
   skipped: { started_by_you: 1 }, unreadable_rows: 0, waiting_for_ai: 2, check_started: true,
 };
 
@@ -59,16 +59,18 @@ function jsonResponse(body: unknown, status = 200) {
 
 describe("SuggestedLeads", () => {
   let calls: { url: string; method: string; body: unknown }[];
+  let listing: LeadSuggestionsResponse;
 
   beforeEach(() => {
     calls = [];
+    listing = LISTING;
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, init?: RequestInit) => {
         const method = init?.method || "GET";
         const body = init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url, method, body });
-        if (url.startsWith("/api/lead-suggestions?")) return Promise.resolve(jsonResponse(LISTING));
+        if (url.startsWith("/api/lead-suggestions?")) return Promise.resolve(jsonResponse(listing));
         if (url === "/api/lead-suggestions/linkedin-messages") return Promise.resolve(jsonResponse(IMPORTED, 201));
         if (url === "/api/lead-suggestions/4/accept") {
           return Promise.resolve(jsonResponse({ contact_id: 9, job_id: 31, messages_logged: 2 }));
@@ -96,6 +98,15 @@ describe("SuggestedLeads", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(calls.some((c) => c.url === "/api/lead-suggestions/4/dismiss" && c.method === "POST")).toBe(true));
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-16
+  it("shows a company guess without a role as the company alone, not 'at <company>'", async () => {
+    listing = { ...LISTING, suggestions: [{ ...SUGGESTION, role_guess: null, hiring_company_guess: "ABEJA USA" }] };
+    render(<SuggestedLeads leads={[]} onAccepted={() => {}} />);
+
+    expect(await screen.findByText("ABEJA USA")).toBeInTheDocument();
+    expect(screen.queryByText("at ABEJA USA")).not.toBeInTheDocument();
   });
 
   it("accepts into a new lead with the guesses pre-filled", async () => {
@@ -128,9 +139,9 @@ describe("SuggestedLeads", () => {
     fireEvent.change(screen.getByLabelText("Conversations active in"), { target: { value: "180" } });
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
 
-    expect(await screen.findByText(/4 of 5 conversations could be someone reaching out/)).toBeInTheDocument();
+    expect(await screen.findByText(/4 of 5 conversations could be someone reaching out, from 3 people/)).toBeInTheDocument();
     expect(screen.getByText("Left out: 1 started by you.")).toBeInTheDocument();
-    expect(screen.getByText(/The AI is checking 2 conversations now/)).toBeInTheDocument();
+    expect(screen.getByText(/The AI is checking messages from 2 people now/)).toBeInTheDocument();
     const form = calls.find((c) => c.url === "/api/lead-suggestions/linkedin-messages")?.body as FormData;
     expect([form.get("active_within_days"), form.get("use_ai"), (form.get("file") as File).name]).toEqual([
       "180", "true", "export.zip",
