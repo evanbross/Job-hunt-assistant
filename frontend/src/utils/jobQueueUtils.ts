@@ -43,6 +43,8 @@ export function scoreDeltaLabel(
 
 export function dispositionLabel(status?: string | null): string {
   const labels: Record<string, string> = {
+    // ai: claude-opus-5-5 | 2026-11-15 -- scan report: recorded as a sighting, no new row
+    already_tracked: "Already tracked (sighting recorded)",
     applied: "Applied",
     pending_review: "In Job Queue",
     possible_duplicate: "Possible duplicate",
@@ -132,7 +134,9 @@ const IMPORT_WARNING_LABELS: Record<string, string> = {
   kforce_jd_capture_needs_recapture: "Job description was lost to an import bug — reopen this job in the browser extension to recapture it",
   missing_company: "Company name is missing",
   missing_job_title: "Job title is missing",
+  non_posting_url: "Captured link was a sign-in or search page, not the job's own page",
   page_title: "Title looks like a browser page title (contains \"|\")",
+  url_of_other_job: "Captured link belonged to a different job, so it was removed",
   scoring_failed: "Fit scoring failed when this job was imported — re-evaluate to score it",
 };
 

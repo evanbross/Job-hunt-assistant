@@ -58,7 +58,7 @@ import config
 from backend.active_tasks import get_active_tasks
 from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
-from backend.db import CaptureQueueOrigin, DuplicateJobUrlError
+from backend.db import CaptureQueueOrigin, DuplicateJobUrlError, SightingChannel
 from backend.db.job_columns import JobColumns
 from backend.db.job_queue_query import (
     COMPANY_GROUP_CURSOR_LISTING,
@@ -105,6 +105,7 @@ from backend.scanning.import_repair import (  # ai: claude-fable-5 | 2026-07-17
     post_repair_duplicate_check,
     wttj_title_repair_updates,
 )
+from backend.scanning.job_sightings import record_sighting_from_job_data
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
@@ -120,8 +121,10 @@ from backend.scoring.jd_enrichment import (  # ai: claude-opus-5-5 | 2026-11-13
 )
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
+    NON_POSTING_URL_WARNING,
     SCORING_FAILED_WARNING,
     TRACKING_LINK_JD_WARNING,
+    URL_OF_OTHER_JOB_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
     remove_import_warning,
@@ -492,6 +495,12 @@ def get_job_queue_page() -> ResponseReturnValue:
                     limit = min(max(limit, position + 1 + _JOB_QUEUE_FOCUS_LOOKAHEAD), _JOB_QUEUE_FOCUS_LIMIT_MAX)
             page = repos["jobs"].list_queue_page(user_id, query, limit, params.after)
             attach_company_summaries(repos, user_id, page.rows)  # ai: claude-opus-5-5 | 2026-10-24
+            # ai: claude-opus-5-5 | 2026-11-15 -- the card's "seen N more times" line
+            sighting_counts = repos["job_sightings"].counts_by_job(
+                user_id, [row["id"] for row in page.rows]
+            )
+            for row in page.rows:
+                row["sighting_count"] = sighting_counts.get(row["id"], 0)
     except psycopg2.DataError as exc:
         if params.after is None:
             raise  # not about a cursor; let the app's error handling report it
@@ -631,6 +640,19 @@ def delete_company_alias(alias_id: int) -> ResponseReturnValue:
     return jsonify({"status": "deleted"})
 
 
+# ai: claude-opus-5-5 | 2026-11-15
+@jobs_bp.route("/jobs/<int:job_id>/sightings", methods=["GET"])
+def get_job_sightings(job_id: int) -> ResponseReturnValue:
+    """Every later capture of this job's posting (backend/db/repositories/
+    job_sightings.py), newest first. The job's own source/date_found is the first."""
+    user_id = current_user_id()
+    with get_repos() as repos:
+        if repos["jobs"].get_by_id(user_id, job_id) is None:
+            return jsonify({"error": "Job not found"}), 404
+        sightings = repos["job_sightings"].list_for_job(user_id, job_id)
+    return jsonify({"sightings": sightings})
+
+
 # ai: claude-sonnet-4-6 | 2026-06-08
 @jobs_bp.route("/jobs/<int:job_id>", methods=["GET"])
 def get_job(job_id: int) -> ResponseReturnValue:
@@ -664,6 +686,11 @@ def create_manual_job() -> ResponseReturnValue:
                 company_override=body.company_override,
                 job_title_override=body.job_title_override,
             )
+            # ai: claude-opus-5-5 | 2026-11-15
+            if result.already_tracked and result.capture is not None:
+                record_sighting_from_job_data(
+                    repos, user_id, int(result.job["id"]), result.capture, SightingChannel.MANUAL
+                )
             repos["conn"].commit()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -685,6 +712,7 @@ def create_manual_job() -> ResponseReturnValue:
                     "job": existing_job,
                     "parsed_job_count": 1,
                     "duplicate": True,
+                    "already_tracked": True,  # ai: claude-opus-5-5 | 2026-11-15
                 }
             ),
             200,
@@ -696,6 +724,19 @@ def create_manual_job() -> ResponseReturnValue:
             500,
         )
 
+    # ai: claude-opus-5-5 | 2026-11-15 -- 200, not 201: nothing was created
+    if result.already_tracked:
+        return (
+            jsonify(
+                {
+                    "job": result.job,
+                    "parsed_job_count": result.parsed_job_count,
+                    "duplicate": True,
+                    "already_tracked": True,
+                }
+            ),
+            200,
+        )
     return (
         jsonify({"job": result.job, "parsed_job_count": result.parsed_job_count}),
         201,
@@ -2250,6 +2291,8 @@ IMPORT_REPAIR_TASK_KIND = "import_repair"
 # render the findings doc, not for behavior.
 _IMPORT_WARNING_LABELS = {
     "homepage_url": "URL is a homepage, not a job listing",
+    NON_POSTING_URL_WARNING: "Captured link was a sign-in or search page, not the job's own page",  # ai: claude-opus-5-5 | 2026-11-15
+    URL_OF_OTHER_JOB_WARNING: "Captured link belonged to a different job, so it was removed",  # ai: claude-opus-5-5 | 2026-11-15
     TRACKING_LINK_JD_WARNING: "Job description couldn't be fetched — only a tracking link was captured",
     "missing_company": "Company name is missing",
     "missing_job_title": "Job title is missing",
@@ -2284,7 +2327,7 @@ def _attempt_import_repair(
         if working.get("company") != before_company:
             updates["company"] = working["company"]
 
-    if "homepage_url" in warnings:
+    if {"homepage_url", NON_POSTING_URL_WARNING, URL_OF_OTHER_JOB_WARNING} & set(warnings):  # ai: claude-opus-5-5 | 2026-11-15
         candidate_url = fallback_job_url(working.get("raw_jd_snippet") or "")
         if candidate_url and candidate_url != working.get("url"):
             working["url"] = candidate_url
@@ -2316,6 +2359,14 @@ def _attempt_import_repair(
                 )
 
     _, remaining = normalize_and_validate(working)
+    # ai: claude-opus-5-5 | 2026-11-15 -- the dropped URL is already gone, so a
+    # re-validation can't re-detect it; keep the flag until a real link is found.
+    if not updates.get("url"):
+        remaining += [
+            code
+            for code in (NON_POSTING_URL_WARNING, URL_OF_OTHER_JOB_WARNING)
+            if code in warnings and code not in remaining
+        ]
     if updates or remaining != warnings:
         updates["import_warnings"] = import_warnings_to_json(remaining)
 

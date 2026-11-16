@@ -37,6 +37,7 @@ from typing import Any, Protocol, runtime_checkable
 from .job_queue_query import JobQueueQuery, RefreshCandidateKind
 from .keyset_pagination import CursorValues, KeysetPage
 from .repositories.browser_capture_queue import CaptureQueueOrigin
+from .repositories.job_sightings import SightingChannel
 
 
 # ai: claude-sonnet-5 | 2026-08-20 — every method gained a leading user_id
@@ -530,6 +531,25 @@ class IJobContactRepository(Protocol):
     def list_for_job(self, user_id: int, job_id: int) -> list[dict[str, Any]]: ...
     def list_for_contact(self, user_id: int, contact_id: int) -> list[dict[str, Any]]: ...
     def primary_names_by_job(self, user_id: int) -> dict[int, str]: ...
+
+
+# ai: claude-opus-5-5 | 2026-11-15
+@runtime_checkable
+class IJobSightingRepository(Protocol):
+    def record(
+        self,
+        user_id: int,
+        job_id: int,
+        *,
+        source: str,
+        channel: SightingChannel,
+        capture_label: str | None = None,
+        url: str | None = None,
+        sender_email: str | None = None,
+        seen_at: str | None = None,
+    ) -> bool: ...
+    def list_for_job(self, user_id: int, job_id: int) -> list[dict[str, Any]]: ...
+    def counts_by_job(self, user_id: int, job_ids: Collection[int]) -> dict[int, int]: ...
 
 
 # ai: claude-opus-5-5 | 2026-11-11

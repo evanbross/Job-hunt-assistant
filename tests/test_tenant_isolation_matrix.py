@@ -135,6 +135,7 @@ CASES: list[Case] = [
     _c("POST", "/api/lead-suggestions/<int:suggestion_id>/dismiss", suggestion_id="suggestion"),
     _c("POST", "/api/lead-suggestions/<int:suggestion_id>/restore", suggestion_id="dismissed_suggestion"),
     _c("GET", "/api/jobs/<int:job_id>", job_id="job"),
+    _c("GET", "/api/jobs/<int:job_id>/sightings", job_id="job"),  # ai: claude-opus-5-5 | 2026-11-15
     _c("PATCH", "/api/jobs/<int:job_id>", {"company": "x"}, job_id="job"),
     _c("POST", "/api/jobs/<int:job_id>/apply", job_id="job"),
     _c("POST", "/api/jobs/<int:job_id>/approve", {"subject_pattern": "x"}, job_id="job"),
@@ -370,6 +371,7 @@ class Tenants:
                 "INSERT INTO scanned_emails (user_id, email_id) VALUES (%s, %s)", (self.a_id, email_id)
             )
             ins(cur, "job_contacts", job_id=lead_id, contact_id=contact_id, created_at=_TS)  # ai: claude-opus-5-5 | 2026-11-11
+            ins(cur, "job_sightings", job_id=job_id, seen_at=_TS, source=_MARKER, channel="email")  # ai: claude-opus-5-5 | 2026-11-15
             # ai: claude-opus-5-5 | 2026-11-11 -- one suggestion per status the routes start from
             for kind, status in (("suggestion", "suggested"), ("dismissed_suggestion", "dismissed")):
                 self.ids[kind] = ins(

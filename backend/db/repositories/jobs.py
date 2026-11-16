@@ -701,16 +701,21 @@ class PostgresJobRepository(_BaseRepo):
             }
         columns = ["user_id", *job.keys()]
         placeholders = ", ".join(["%s"] * len(columns))
+        # ai: claude-opus-5-5 | 2026-11-15
+        # A savepoint scopes a unique-violation rollback to this one INSERT. A
+        # UniqueViolation aborts the whole Postgres transaction (every later
+        # statement fails with InFailedSqlTransaction until a rollback), and a full
+        # conn.rollback() here used to also discard the caller's earlier,
+        # uncommitted writes in the same transaction -- e.g. the sightings an email
+        # scan records before inserting its new jobs.
+        self._execute("SAVEPOINT jobs_insert")
         try:
             cur = self._execute(
                 f"INSERT INTO jobs ({', '.join(columns)}) VALUES ({placeholders}) RETURNING id",
                 [user_id, *job.values()],
             )
         except psycopg2.errors.UniqueViolation as exc:
-            # A UniqueViolation aborts the current Postgres transaction — every
-            # later statement on this connection would fail with
-            # InFailedSqlTransaction until this rollback runs.
-            self._conn.rollback()
+            self._execute("ROLLBACK TO SAVEPOINT jobs_insert")
             constraint = getattr(exc.diag, "constraint_name", "") or ""
             if constraint == JOBS_URL_UNIQUE_INDEX:
                 logger.info(
@@ -724,7 +729,9 @@ class PostgresJobRepository(_BaseRepo):
                 "insert(): unexpected unique violation on constraint=%s", constraint
             )
             raise
-        return cur.fetchone()["id"]
+        new_id = cur.fetchone()["id"]
+        self._execute("RELEASE SAVEPOINT jobs_insert")
+        return new_id
 
     def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
         if not fields:

@@ -80,6 +80,7 @@ export default function ScanSummaryPopup({ summary, onClose }: ScanSummaryPopupP
     triage_jobs = 0,
     possible_duplicate_jobs = 0,
     auto_skipped_duplicate_jobs = 0,
+    already_tracked_jobs = 0,
     auto_skipped_hybrid_jobs = 0, // ai: claude-fable-5 | 2026-07-16
     low_fit_score_jobs = 0,
     scoring_failed_jobs = 0,
@@ -107,6 +108,7 @@ export default function ScanSummaryPopup({ summary, onClose }: ScanSummaryPopupP
     { label: "Added to Triage", value: triage_jobs, tone: "yellow" },
     { label: "Possible Duplicates", value: possible_duplicate_jobs },
     { label: "Auto-Rejected Duplicates", value: auto_skipped_duplicate_jobs },
+    { label: "Already Tracked (sightings)", value: already_tracked_jobs },
     { label: "Auto-Rejected Hybrid (MongoDB)", value: auto_skipped_hybrid_jobs }, // ai: claude-fable-5 | 2026-07-16
     { label: "Low Fit Score", value: low_fit_score_jobs, tone: "yellow" },
     { label: "Scoring Failed", value: scoring_failed_jobs, tone: "red" },
@@ -295,7 +297,7 @@ export default function ScanSummaryPopup({ summary, onClose }: ScanSummaryPopupP
               <tfoot>
                 <tr>
                   <td style={{ ...emailReportCellStyle, background: "var(--surface2)", color: "var(--text)", fontWeight: 700 }} colSpan={8}>
-                    {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {auto_skipped_duplicate_jobs} auto-rejected duplicate{auto_skipped_duplicate_jobs === 1 ? "" : "s"} · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
+                    {new_jobs} job{new_jobs === 1 ? "" : "s"} · {non_job_emails + acknowledgement_emails + feedback_filtered_emails + source_filtered_emails} ignored · {duplicates} duplicate{duplicates === 1 ? "" : "s"} · {triage_jobs} triage · {possible_duplicate_jobs} possible duplicate{possible_duplicate_jobs === 1 ? "" : "s"} · {auto_skipped_duplicate_jobs} auto-rejected duplicate{auto_skipped_duplicate_jobs === 1 ? "" : "s"} · {already_tracked_jobs} already tracked · {parser_error_emails + fetch_error_emails} error{parser_error_emails + fetch_error_emails === 1 ? "" : "s"}
                   </td>
                 </tr>
               </tfoot>

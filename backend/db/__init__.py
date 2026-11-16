@@ -133,6 +133,10 @@ from .repositories.interactions import PostgresInteractionRepository
 from .repositories.jd_health_check_results import PostgresJdHealthCheckResultRepository
 from .repositories.jd_health_check_targets import PostgresJdHealthCheckTargetRepository
 from .repositories.job_contacts import PostgresJobContactRepository
+from .repositories.job_sightings import (  # ai: claude-opus-5-5 | 2026-11-15
+    PostgresJobSightingRepository,
+    SightingChannel,
+)
 from .repositories.job_status_history import PostgresJobStatusHistoryRepository
 
 # ai: claude-sonnet-5 | 2026-08-12
@@ -225,6 +229,8 @@ __all__ = [
     "PostgresInteractionRepository",
     "PostgresJobContactRepository",
     "PostgresLeadSuggestionRepository",
+    "PostgresJobSightingRepository",
+    "SightingChannel",
     "PostgresLeadRepository",
     "PostgresContactRepository",
     "PostgresExtensionTokenRepository",
@@ -451,6 +457,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "job_contacts": PostgresJobContactRepository(conn),
         "leads": PostgresLeadRepository(conn),
         "lead_suggestions": PostgresLeadSuggestionRepository(conn),  # ai: claude-opus-5-5 | 2026-11-11
+        "job_sightings": PostgresJobSightingRepository(conn),  # ai: claude-opus-5-5 | 2026-11-15
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),

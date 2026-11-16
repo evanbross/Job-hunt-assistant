@@ -103,11 +103,72 @@ def posting_identity(url: str) -> PostingIdentity | None:
     return PostingIdentity(host, m.group(1).upper(), is_requisition=True) if host else None
 
 
+# ai: claude-opus-5-5 | 2026-11-15
+# Pages a capture can land on that name no single posting: where a tracking link
+# bounced to a sign-in wall (wellfound.com/login, shared by four different
+# Wellfound jobs), or a search/browse page grabbed instead of the job's own page
+# (my.greenhouse.io/jobs?..., glassdoor.com/recruiter/link/matches?...).
+_SIGN_IN_PATH_SEGMENTS: frozenset[str] = frozenset(
+    {"login", "signin", "sign-in", "sign_in", "signup", "sign-up", "register", "logout", "sso"}
+)
+_LISTING_PATHS: frozenset[str] = frozenset(
+    {"/jobs", "/careers", "/search", "/jobs/search", "/job-search", "/opportunities"}
+)
+# A listing path still names one posting when one of these carries its ID
+# (wellfound.com/jobs?job_listing_slug=..., a Greenhouse embed's ?gh_jid=...,
+# a Glassdoor recruiter link's per-job ?matchId=...).
+_POSTING_ID_QUERY_PARAMS: frozenset[str] = frozenset(
+    {"job_listing_slug", "gh_jid", "jobid", "jobId", "ashby_jid", "currentJobId", "jk", "matchId"}
+)
+_GLASSDOOR_RECRUITER_LINK_RE = re.compile(r"^/recruiter/link/")
+
+
+def _parsed_with_host(url: str) -> tuple[str, str, set[str]] | None:
+    """(host, lowercased path without trailing slash, query keys), or None for a
+    URL with no host."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return None
+    if not parsed.netloc:
+        return None
+    host = parsed.netloc.lower().removeprefix("www.")
+    return host, parsed.path.rstrip("/").lower(), set(parse_qs(parsed.query))
+
+
+def is_sign_in_url(url: str) -> bool:
+    """True when *url* is a sign-in/sign-up wall: a page no job ever lives at."""
+    parts = _parsed_with_host(url)
+    return parts is not None and any(
+        segment in _SIGN_IN_PATH_SEGMENTS for segment in parts[1].split("/")
+    )
+
+
+def is_non_posting_url(url: str) -> bool:
+    """True when *url* is a sign-in wall or a search/browse page rather than one
+    posting's page, so it must never identify a job or match another job by URL."""
+    parts = _parsed_with_host(url)
+    if parts is None:
+        return False
+    host, path, query_keys = parts
+    if is_sign_in_url(url):
+        return True
+    names_one_posting = bool(query_keys & _POSTING_ID_QUERY_PARAMS)
+    if host.endswith("glassdoor.com") and _GLASSDOOR_RECRUITER_LINK_RE.match(path):
+        return not names_one_posting
+    if path in _LISTING_PATHS:
+        return not names_one_posting
+    return False
+
+
 def is_same_posting(url_a: str, url_b: str) -> bool:
     """True when both URLs are the same posting: identical (ignoring case and
-    surrounding whitespace), or naming the same site's same job ID."""
+    surrounding whitespace), or naming the same site's same job ID. Never for a
+    sign-in or search page (is_non_posting_url), however many jobs share it."""
     a, b = (url_a or "").strip(), (url_b or "").strip()
     if not a or not b:
+        return False
+    if is_non_posting_url(a) or is_non_posting_url(b):
         return False
     if a.lower() == b.lower():
         return True

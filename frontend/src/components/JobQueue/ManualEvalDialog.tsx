@@ -41,10 +41,12 @@ const EVAL_PHASES = [
 interface ManualEvalDialogProps {
   submitting: boolean;
   result: Job | null;
+  /** The pasted job was already tracked; `result` is that existing job. */
+  alreadyTracked?: boolean;
   onClose: () => void;
 }
 
-export default function ManualEvalDialog({ submitting, result, onClose }: ManualEvalDialogProps) {
+export default function ManualEvalDialog({ submitting, result, alreadyTracked = false, onClose }: ManualEvalDialogProps) {
   const [phaseIndex, setPhaseIndex] = useState(0);
 
   useEffect(() => {
@@ -63,14 +65,16 @@ export default function ManualEvalDialog({ submitting, result, onClose }: Manual
     : score >= 70 ? "var(--green)"
     : score >= 50 ? "var(--yellow)"
     : "var(--red)";
+  // ai: claude-opus-5-5 | 2026-11-15
   const statusLabel =
-    status === "pending_review" ? "In Job Queue"
+    alreadyTracked ? `Already tracked (${status || "unknown status"}) · sighting recorded`
+    : status === "pending_review" ? "In Job Queue"
     : status === "triage" ? "Added to triage"
     : status || "";
   const statusColor = status === "pending_review" ? "var(--green)" : "var(--yellow)";
   const statusBg = status === "pending_review" ? "rgba(76,175,129,0.15)" : "rgba(255,193,7,0.15)";
 
-  const title = submitting ? "Evaluating job" : result?.job_title || "Job evaluated";
+  const title = submitting ? "Evaluating job" : result?.job_title || (alreadyTracked ? "Job already tracked" : "Job evaluated");
   const subtitle = !submitting && result?.company ? result.company : undefined;
 
   return (

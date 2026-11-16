@@ -44,6 +44,7 @@ from pydantic import (
     model_validator,
 )
 
+from backend.db import SightingChannel
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_cleanup_service import EmailCleanupService
@@ -54,6 +55,11 @@ from backend.email.email_parser import (
 )
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
+from backend.scanning.job_sightings import (
+    email_sighting_capture,
+    insert_or_record_sighting,
+    record_sighting_from_job_data,
+)
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import (
     auto_duplicate_skip_feedback,
@@ -494,6 +500,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     unmatched_email_jobs: list[dict] = list(existing_email_jobs)
 
     jobs_to_write: list[dict] = []
+    sightings_to_record: list[tuple[int, dict]] = []  # ai: claude-opus-5-5 | 2026-11-15
     for parsed in parsed_jobs:
         matched_existing = find_existing_email_job_match(
             parsed, unmatched_email_jobs, dedup_checker
@@ -521,6 +528,20 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             known_jobs=known_jobs,
             dedup_checker=dedup_checker,
         )
+
+        # ai: claude-opus-5-5 | 2026-11-15
+        # Same posting as a job from another capture: a sighting of that job,
+        # never a row of its own (see routes/scan.py). A row this email created
+        # earlier for it (an old-style duplicate row, still in an active status
+        # so the user hasn't acted on it) goes back into the stale pool and is
+        # deleted with the others below.
+        if tracking_source == "db_url" and duplicate_of_id is not None:
+            sightings_to_record.append(
+                (duplicate_of_id, email_sighting_capture(parsed, sender, subject))
+            )
+            if matched_existing is not None:
+                unmatched_email_jobs.append(matched_existing)
+            continue
 
         # ai: claude-sonnet-4-6 | 2026-06-10
         if (
@@ -600,6 +621,11 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     updated: list[dict] = []
     with get_repos() as repos:
         job_repo = repos["jobs"]
+        # ai: claude-opus-5-5 | 2026-11-15
+        for tracked_job_id, sighting_data in sightings_to_record:
+            record_sighting_from_job_data(
+                repos, user_id, tracked_job_id, sighting_data, SightingChannel.EMAIL
+            )
         for job_idx, entry in enumerate(jobs_to_write):
             job_data = entry["job_data"]
             matched_existing = entry["matched_existing"]
@@ -614,8 +640,13 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 job_data[JobColumns.DEDUP_KEY] = _rescan_job_dedup_key(
                     job_repo, user_id, base_id, job_idx
                 )
-                new_id = job_repo.insert(user_id, job_data)
-                created.append(job_repo.get_by_id(user_id, new_id))
+                # ai: claude-opus-5-5 | 2026-11-15 -- a match the snapshot above
+                # missed (a concurrent import) becomes a sighting, not a 500.
+                new_id = insert_or_record_sighting(
+                    repos, user_id, job_data, SightingChannel.EMAIL
+                )
+                if new_id is not None:
+                    created.append(job_repo.get_by_id(user_id, new_id))
 
         # Active jobs from this email that no longer match anything in the
         # fresh parse (listing removed/replaced) — remove them.
@@ -638,7 +669,12 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             "jobs": created + updated,
             "message": (
                 f"Rescanned — {len(created)} new, {len(updated)} updated, "
-                f"{len(unmatched_email_jobs)} removed."
+                f"{len(unmatched_email_jobs)} removed"
+                + (  # ai: claude-opus-5-5 | 2026-11-15
+                    f", {len(sightings_to_record)} already tracked."
+                    if sightings_to_record
+                    else "."
+                )
             ),
         }
     )

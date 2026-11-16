@@ -329,6 +329,7 @@ function JobQueueContent({
   const [manualJobTitleOverride, setManualJobTitleOverride] = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
   const [manualResult, setManualResult] = useState<Job | null>(null);
+  const [manualResultAlreadyTracked, setManualResultAlreadyTracked] = useState(false); // ai: claude-opus-5-5 | 2026-11-15
   const [importContent, setImportContent] = useState("");
   const [importRecaptureIntervalDays, setImportRecaptureIntervalDays] = useState("4");
   const [importSubmitting, setImportSubmitting] = useState(false);
@@ -1364,6 +1365,7 @@ function JobQueueContent({
       }
 
       setManualResult(data.job);
+      setManualResultAlreadyTracked(!!data.already_tracked);
       setManualListingText("");
       setManualSourceUrl("");
       setManualSourceName("");
@@ -2315,6 +2317,7 @@ function JobQueueContent({
         <ManualEvalDialog
           submitting={manualSubmitting}
           result={manualResult}
+          alreadyTracked={manualResultAlreadyTracked}
           onClose={() => setManualResult(null)}
         />
       )}

@@ -106,6 +106,34 @@ export interface Job {
   company_application_statuses?: Record<string, number>;
   /** Contacts who work at this company. */
   company_contacts?: CompanyMapContact[];
+  // ai: claude-opus-5-5 | 2026-11-15
+  /** Later captures of this posting (GET /api/jobs/queue pages only). */
+  sighting_count?: number;
+}
+
+// ai: claude-opus-5-5 | 2026-11-15
+/** How a sighting arrived (backend/db/repositories/job_sightings.py's SightingChannel). */
+export type SightingChannel = "email" | "extension" | "manual" | "merged_duplicate";
+
+/**
+ * A later capture of a job's posting: GET /api/jobs/<id>/sightings, and the
+ * lead drawer's `sightings`. The job's own source/date_found is the first one.
+ */
+export interface JobSighting {
+  id: number;
+  job_id: number;
+  /** UTC ISO 8601; midnight for a row folded in by the 2026-11-15 merge. */
+  seen_at: string;
+  source: string;
+  channel: SightingChannel;
+  capture_label: string | null;
+  url: string | null;
+  sender_email: string | null;
+}
+
+/** GET /api/jobs/<id>/sightings. */
+export interface JobSightingsResponse {
+  sightings: JobSighting[];
 }
 
 // ai: claude-opus-5-5 | 2026-10-23 — the Job Queue page's server-side listing
@@ -360,6 +388,8 @@ export interface ManualJobCreateResponse {
   job: Job;
   parsed_job_count: number;
   duplicate?: boolean;
+  /** The posting was already tracked: `job` is the existing row, recorded as a new sighting. */
+  already_tracked?: boolean;
 }
 
 /**

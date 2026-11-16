@@ -682,7 +682,12 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
     """Onboarding a second user onto a database that predates this constraint
     (or that already has a duplicate row from before this fix) must not crash
     the app on startup. migrate_schema() should skip creating the index and retry on
-    a later startup, once the duplicate is gone."""
+    a later startup, once the duplicate is gone.
+
+    ai: claude-opus-5-5 | 2026-11-15 -- since the same-posting merge, migrate folds
+    untouched duplicates into sightings itself (tests/test_same_posting_merge.py);
+    what still blocks the index is two rows the user worked on, which it never
+    merges, so that's the duplicate this uses."""
     conn = get_connection(pg_dsn)
     try:
         # pg_dsn's migrate_database() already created the index (there was no legacy dirty
@@ -704,7 +709,8 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
                 "job_title": "Engineer",
                 "url": "https://example.com/jobs/legacy-dup",
                 "source": "manual",
-                "status": "pending_review",
+                "status": "applied",
+                "on_sheet": 1,
                 "date_found": "2026-08-12",
             },
         )
@@ -716,7 +722,8 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
                 "job_title": "Engineer (duplicate capture, predates the fix)",
                 "url": "https://example.com/jobs/legacy-dup",
                 "source": "manual",
-                "status": "pending_review",
+                "status": "applied",
+                "on_sheet": 1,
                 "date_found": "2026-08-12",
             },
         )
@@ -726,7 +733,7 @@ def test_migrate_skips_url_unique_index_when_legacy_duplicates_exist(
         migrate_schema(conn)
         assert not _index_exists(conn, JOBS_URL_UNIQUE_INDEX)
         # Both legacy rows are left alone -- migrate_schema() only skips the index,
-        # it never deletes data on the user's behalf.
+        # it never merges or deletes rows the user worked on.
         assert jobs.get_by_id(user_id, first_id) is not None
         assert jobs.get_by_id(user_id, second_id) is not None
 
