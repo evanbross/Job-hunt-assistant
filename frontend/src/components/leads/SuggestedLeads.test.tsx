@@ -49,7 +49,7 @@ const LISTING: LeadSuggestionsResponse = {
 };
 
 const IMPORTED: MessagesImportResponse = {
-  conversations: 5, candidates: 4, added: 4, refreshed: 0, messages_logged: 0,
+  conversations: 5, candidates: 4, people: 3, added: 3, refreshed: 0, messages_logged: 0,
   skipped: { started_by_you: 1 }, unreadable_rows: 0, waiting_for_ai: 2, check_started: true,
 };
 
@@ -139,9 +139,9 @@ describe("SuggestedLeads", () => {
     fireEvent.change(screen.getByLabelText("Conversations active in"), { target: { value: "180" } });
     fireEvent.click(screen.getByRole("button", { name: "Import" }));
 
-    expect(await screen.findByText(/4 of 5 conversations could be someone reaching out/)).toBeInTheDocument();
+    expect(await screen.findByText(/4 of 5 conversations could be someone reaching out, from 3 people/)).toBeInTheDocument();
     expect(screen.getByText("Left out: 1 started by you.")).toBeInTheDocument();
-    expect(screen.getByText(/The AI is checking 2 conversations now/)).toBeInTheDocument();
+    expect(screen.getByText(/The AI is checking messages from 2 people now/)).toBeInTheDocument();
     const form = calls.find((c) => c.url === "/api/lead-suggestions/linkedin-messages")?.body as FormData;
     expect([form.get("active_within_days"), form.get("use_ai"), (form.get("file") as File).name]).toEqual([
       "180", "true", "export.zip",

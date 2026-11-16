@@ -25,6 +25,19 @@ from ..connection import _row_to_dict
 # Mirrors the CHECK on lead_suggestions.status.
 SUGGESTION_STATUSES: tuple[str, ...] = ("unclassified", "suggested", "not_recruiter", "accepted", "dismissed")
 
+# ai: claude-opus-5-5 | 2026-11-16
+# The upsert's stored and incoming messages, one per external_ref, oldest first. A
+# message's ref is a hash of its conversation, time, sender and text
+# (linkedin_messages._external_ref), so the same ref is the same message.
+MERGED_MESSAGES_SQL = """(
+    SELECT COALESCE(jsonb_agg(m ORDER BY m->>'sent_at', m->>'external_ref'), '[]'::jsonb)
+    FROM (
+        SELECT DISTINCT ON (m->>'external_ref') m
+        FROM jsonb_array_elements(s.messages || EXCLUDED.messages) AS m
+        ORDER BY m->>'external_ref'
+    ) AS merged(m)
+)"""
+
 _LIST_FIELDS = (
     "id, source, external_ref, status, detection, reason, counterpart_name, counterpart_profile_url,"
     " contact_id, job_id, conversation_title, role_guess, hiring_company_guess, recruiter_company_guess,"
@@ -35,14 +48,18 @@ _LIST_FIELDS = (
 # ai: claude-opus-5-5 | 2026-11-11
 class PostgresLeadSuggestionRepository(_BaseRepo):
     def upsert(self, user_id: int, row: dict[str, Any], imported_at: str) -> dict[str, Any]:
-        """Insert a conversation, or refresh one imported before (newer messages,
-        the matched contact). Its status only moves when this import's verdict is
+        """Insert a person's conversations, or refresh a row imported before (newer
+        messages, the matched contact). Messages are added, never replaced: a later
+        import with a shorter "active within" window may leave out a conversation
+        the row already holds. Its status only moves when this import's verdict is
         stronger: an unchecked row takes whatever this import decided, and a row
         ruled out becomes suggested when a Contacts mark now says recruiter. An
         accepted or dismissed row keeps its status. Returns the row's id, status,
         contact_id, job_id and whether it was new."""
+        # ai: claude-opus-5-5 | 2026-11-16 -- messages merged by external_ref (one row per
+        # person now); title follows the most recently active conversation.
         cur = self._execute(
-            """
+            f"""
             INSERT INTO lead_suggestions AS s
                 (user_id, source, external_ref, status, detection, reason, counterpart_name,
                  counterpart_profile_url, contact_id, conversation_title, first_message_at,
@@ -52,11 +69,12 @@ class PostgresLeadSuggestionRepository(_BaseRepo):
                 counterpart_name = EXCLUDED.counterpart_name,
                 counterpart_profile_url = EXCLUDED.counterpart_profile_url,
                 contact_id = COALESCE(EXCLUDED.contact_id, s.contact_id),
-                conversation_title = EXCLUDED.conversation_title,
-                first_message_at = EXCLUDED.first_message_at,
-                last_message_at = EXCLUDED.last_message_at,
-                message_count = EXCLUDED.message_count,
-                messages = EXCLUDED.messages,
+                conversation_title = CASE WHEN EXCLUDED.last_message_at >= s.last_message_at
+                    THEN EXCLUDED.conversation_title ELSE s.conversation_title END,
+                first_message_at = LEAST(s.first_message_at, EXCLUDED.first_message_at),
+                last_message_at = GREATEST(s.last_message_at, EXCLUDED.last_message_at),
+                message_count = jsonb_array_length({MERGED_MESSAGES_SQL}),
+                messages = {MERGED_MESSAGES_SQL},
                 imported_at = EXCLUDED.imported_at,
                 status = CASE
                     WHEN s.status = 'unclassified' THEN EXCLUDED.status

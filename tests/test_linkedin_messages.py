@@ -65,7 +65,8 @@ def test_scan_keeps_inbound_one_to_one_recent_conversations() -> None:
         SKIP_STARTED_BY_YOU: 1, SKIP_SPAM: 1, SKIP_NO_PROFILE: 1, SKIP_GROUP: 1, SKIP_TOO_OLD: 1,
     }
     [candidate] = scan.candidates
-    assert (candidate.conversation_id, candidate.counterpart_name) == ("c-recruiter", "Rita Recruiter")
+    assert (candidate.ref, candidate.counterpart_name) == ("person:rita-r", "Rita Recruiter")
+    assert candidate.conversation_ids == ("c-recruiter",)
     assert candidate.counterpart_profile_url == profile_url("rita-r")
     assert (candidate.first_message_at, candidate.last_message_at) == (
         "2026-11-01T09:00:00+00:00", "2026-11-01T10:30:00+00:00",
@@ -78,7 +79,35 @@ def test_scan_keeps_inbound_one_to_one_recent_conversations() -> None:
 
 def test_no_cutoff_keeps_old_conversations_too() -> None:
     scan = scan_export(messages_csv(ROWS), None)
-    assert {c.conversation_id for c in scan.candidates} == {"c-recruiter", "c-old"}
+    assert {c.conversation_ids for c in scan.candidates} == {("c-recruiter",), ("c-old",)}
+
+
+# ai: claude-opus-5-5 | 2026-11-16
+def test_one_persons_conversations_are_one_candidate() -> None:
+    """LinkedIn can split one person's outreach (an InMail and a message) across
+    conversations; they are one candidate, messages interleaved oldest first, named
+    and titled after the most recently active conversation."""
+    rows = [
+        *ROWS,
+        message_row("c-recruiter-2", "Rita R. Recruiter", profile_url("rita-r"), ME, "2026-11-01 09:30:00",
+                    "Same role, via InMail", title="InMail"),
+    ]
+
+    scan = scan_export(messages_csv(rows), datetime(2026, 1, 1, tzinfo=UTC))
+
+    [rita] = scan.candidates
+    assert rita.ref == "person:rita-r"
+    assert rita.conversation_ids == ("c-recruiter-2", "c-recruiter")  # least recently active first
+    assert [m.text for m in rita.messages] == ["Hi Pat,\nA Staff role & more", "Same role, via InMail", "Sure, call me"]
+    assert (rita.counterpart_name, rita.title) == ("Rita Recruiter", "")
+    assert len({m.external_ref for m in rita.messages}) == 3
+
+
+def test_a_suggestion_ref_falls_back_to_the_name_without_a_profile() -> None:
+    assert linkedin_messages.suggestion_ref(profile_url("rita-r") + "/", "Rita") == "person:rita-r"
+    assert linkedin_messages.suggestion_ref(None, " Some Brand ") == "person:name:some brand"
+    with pytest.raises(ValueError):
+        linkedin_messages.suggestion_ref(None, " ")
 
 
 def test_message_refs_are_stable_across_exports() -> None:

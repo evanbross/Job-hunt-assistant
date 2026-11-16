@@ -266,6 +266,8 @@ export interface LeadSuggestionsResponse {
 export interface MessagesImportResponse {
   conversations: number;
   candidates: number;
+  /** The candidates' senders; one suggestion each (added + refreshed). */
+  people: number;
   added: number;
   refreshed: number;
   messages_logged: number;

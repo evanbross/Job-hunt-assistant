@@ -130,7 +130,7 @@ def test_import_rules_on_what_contacts_knows_and_leaves_the_rest(
 
     assert response.status_code == 201, response.get_json()
     body = response.get_json()
-    assert (body["conversations"], body["candidates"], body["added"], body["refreshed"]) == (5, 4, 4, 0)
+    assert (body["conversations"], body["candidates"], body["people"], body["added"], body["refreshed"]) == (5, 4, 4, 4, 0)
     assert body["skipped"] == {"started_by_you": 1}
     assert (body["waiting_for_ai"], body["check_started"]) == (1, False)
     listing = _tab(client)
@@ -144,6 +144,35 @@ def test_import_rules_on_what_contacts_knows_and_leaves_the_rest(
     assert (nora["contact_id"], nora["reason"]) == (contacts["nora"], "Marked as not a recruiter in Contacts")
     assert _by_name(client, "Sam Stranger", "unclassified")["contact_id"] is None
     assert (user_id, UserEventTopic.LEAD_SUGGESTIONS) in isolated_user_events.published
+
+
+# ai: claude-opus-5-5 | 2026-11-16
+def test_one_suggestion_per_person_across_their_conversations(client_and_user: tuple[Any, int]) -> None:
+    """LinkedIn splits one recruiter's outreach across conversations (an InMail and a
+    message); that is one suggestion, and a later import that leaves a conversation out
+    (a shorter "active within" window) never drops the messages already stored."""
+    client, _ = client_and_user
+    second = [
+        message_row("c-sam-2", "Sam Stranger", profile_url("sam-s"), ME, "2026-11-06 09:00:00",
+                    "Same role, via InMail", subject="Principal role (InMail)", title="Principal role (InMail)"),
+    ]
+
+    body = _upload(client, [*ROWS, *second]).get_json()
+
+    assert (body["conversations"], body["candidates"], body["people"], body["added"]) == (6, 5, 4, 4)
+    sam = _by_name(client, "Sam Stranger", "unclassified")
+    assert sam["external_ref"] == "person:sam-s"
+    assert [m["text"] for m in sam["messages"]] == ["We're hiring a Principal", "Interested", "Same role, via InMail"]
+    assert (sam["message_count"], sam["first_message_at"], sam["last_message_at"]) == (
+        3, "2026-11-04T09:00:00+00:00", "2026-11-06T09:00:00+00:00",
+    )
+    assert sam["conversation_title"] == "Principal role (InMail)"  # the most recently active conversation's
+
+    without_first = [r for r in ROWS if r["CONVERSATION ID"] != "c-sam"]
+    assert _upload(client, [*without_first, *second]).get_json()["refreshed"] == 4
+    sam = _by_name(client, "Sam Stranger", "unclassified")
+    assert sam["message_count"] == 3
+    assert sam["first_message_at"] == "2026-11-04T09:00:00+00:00"
 
 
 def test_import_with_ai_starts_one_background_check(
