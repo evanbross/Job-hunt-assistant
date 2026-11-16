@@ -44,10 +44,13 @@ from botocore.exceptions import ClientError
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backend.db.backup import BackupConfigError, BackupSettings  # noqa: E402
+from backend.db.backup import (  # noqa: E402
+    BACKUP_ENV_FILE,
+    BackupConfigError,
+    BackupSettings,
+)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-ENV_FILE = REPO_ROOT / "deploy" / ".env.backup"
+ENV_FILE = BACKUP_ENV_FILE  # ai: claude-opus-5-5 | 2026-11-16 -- one definition, shared with app.py
 DEFAULT_RETENTION_DAYS = 35
 DEFAULT_IDENTITY_FILE = Path.home() / "jha-backup-identity.txt"
 _UNSUPPORTED = {"NotImplemented", "NotImplementedError", "InvalidRequest", "MethodNotAllowed"}

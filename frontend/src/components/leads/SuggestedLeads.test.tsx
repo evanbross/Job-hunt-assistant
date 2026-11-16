@@ -59,16 +59,18 @@ function jsonResponse(body: unknown, status = 200) {
 
 describe("SuggestedLeads", () => {
   let calls: { url: string; method: string; body: unknown }[];
+  let listing: LeadSuggestionsResponse;
 
   beforeEach(() => {
     calls = [];
+    listing = LISTING;
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string, init?: RequestInit) => {
         const method = init?.method || "GET";
         const body = init?.body instanceof FormData ? init.body : init?.body ? JSON.parse(String(init.body)) : null;
         calls.push({ url, method, body });
-        if (url.startsWith("/api/lead-suggestions?")) return Promise.resolve(jsonResponse(LISTING));
+        if (url.startsWith("/api/lead-suggestions?")) return Promise.resolve(jsonResponse(listing));
         if (url === "/api/lead-suggestions/linkedin-messages") return Promise.resolve(jsonResponse(IMPORTED, 201));
         if (url === "/api/lead-suggestions/4/accept") {
           return Promise.resolve(jsonResponse({ contact_id: 9, job_id: 31, messages_logged: 2 }));
@@ -96,6 +98,15 @@ describe("SuggestedLeads", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(calls.some((c) => c.url === "/api/lead-suggestions/4/dismiss" && c.method === "POST")).toBe(true));
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-16
+  it("shows a company guess without a role as the company alone, not 'at <company>'", async () => {
+    listing = { ...LISTING, suggestions: [{ ...SUGGESTION, role_guess: null, hiring_company_guess: "ABEJA USA" }] };
+    render(<SuggestedLeads leads={[]} onAccepted={() => {}} />);
+
+    expect(await screen.findByText("ABEJA USA")).toBeInTheDocument();
+    expect(screen.queryByText("at ABEJA USA")).not.toBeInTheDocument();
   });
 
   it("accepts into a new lead with the guesses pre-filled", async () => {
