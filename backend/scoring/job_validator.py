@@ -27,7 +27,26 @@ from urllib.parse import urlparse
 
 from backend.db.job_columns import JobColumns
 from backend.email.email_parser import is_email_tracking_url
+
+# ai: claude-opus-5-5 | 2026-11-15 -- moved to a leaf module; re-exported here
+from backend.scoring.import_warning_codes import (
+    NON_POSTING_URL_WARNING,
+    SCORING_FAILED_WARNING,
+    TRACKING_LINK_JD_WARNING,
+    URL_OF_OTHER_JOB_WARNING,
+)
+from backend.scoring.posting_identity import is_non_posting_url
 from backend.utils.company_urls import company_from_ats_url
+
+__all__ = [
+    "NON_POSTING_URL_WARNING",
+    "SCORING_FAILED_WARNING",
+    "TRACKING_LINK_JD_WARNING",
+    "URL_OF_OTHER_JOB_WARNING",
+    "import_warnings_to_json",
+    "normalize_and_validate",
+    "remove_import_warning",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +112,17 @@ def normalize_and_validate(
     if "|" in job_title:
         warnings.append("page_title")
 
+    # ai: claude-opus-5-5 | 2026-11-15
+    # Auto-fix + flag: a sign-in wall or search page names no posting, and keeping
+    # it would make every job captured through the same page look like one job
+    # (posting_identity.is_non_posting_url). Drop it; import repair can still
+    # recover the real link from the snippet, same as for homepage_url.
+    if url and is_non_posting_url(url):
+        logger.info("Dropping non-posting URL %r from %r", url, job_title)
+        job["url"] = ""
+        url = ""
+        warnings.append(NON_POSTING_URL_WARNING)
+
     # Flag: URL has no meaningful path — likely an ATS or aggregator homepage
     if url:
         try:
@@ -113,18 +143,6 @@ def normalize_and_validate(
 
     return job, warnings
 
-
-# ai: claude-sonnet-5 | 2026-09-21
-# Set by insert-time scan paths when the fit scorer threw, so the job is routed
-# to triage as "needs scoring" instead of sitting in pending_review with a NULL
-# score. Every path that later scores the job successfully must clear it via
-# remove_import_warning().
-SCORING_FAILED_WARNING = "scoring_failed"
-
-# ai: claude-opus-5-5 | 2026-11-13
-# Set by normalize_and_validate when JD enrichment failed and the stored
-# snippet is only a tracking link. Cleared by any path that stores a real JD.
-TRACKING_LINK_JD_WARNING = "jd_body_is_tracking_link"
 
 
 # ai: claude-sonnet-5 | 2026-09-21

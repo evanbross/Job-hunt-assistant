@@ -80,6 +80,8 @@ export interface ScanSummary {
   triage_jobs: number;
   possible_duplicate_jobs: number;
   auto_skipped_duplicate_jobs: number;
+  /** Postings already tracked, recorded as sightings instead of new rows. */
+  already_tracked_jobs?: number; // ai: claude-opus-5-5 | 2026-11-15
   auto_skipped_hybrid_jobs: number;
   low_fit_score_jobs: number;
   scoring_failed_jobs: number;

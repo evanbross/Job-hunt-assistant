@@ -29,6 +29,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, RefObject } from "react";
 import StatusBadge from "./common/StatusBadge.tsx";
+import JobSightings from "./common/JobSightings.tsx";
 import CoverLetterModal from "./common/CoverLetterModal.tsx";
 import PitchModal from "./common/PitchModal.tsx";
 import ResumeTailorModal from "./common/ResumeTailorModal.tsx";
@@ -885,6 +886,8 @@ function JobCard({
               </span>
             )}
           </div>
+          {/* ai: claude-opus-5-5 | 2026-11-15 */}
+          <JobSightings jobId={job.id} count={job.sighting_count} />
           <div style={jobUrlEditRowStyle}>
             {editingUrl ? (
               <>

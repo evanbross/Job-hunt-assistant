@@ -312,7 +312,7 @@ def create_lead() -> ResponseReturnValue:
             repos["conn"].rollback()
             return jsonify({"error": "Contact not found"}), 404
         except DuplicateJobUrlError:
-            # insert() already rolled back; look up who holds the URL.
+            # insert() rolled back its own savepoint; look up who holds the URL.
             existing = repos["jobs"].get_by_url(user_id, body.url or "")
             return (
                 jsonify(

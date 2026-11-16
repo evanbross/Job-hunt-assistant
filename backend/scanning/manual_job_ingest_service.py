@@ -47,6 +47,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.scoring.posting_identity import is_same_posting
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.utils.company_urls import (
     company_from_ats_url,
@@ -90,6 +91,13 @@ class IPenaltyRuleRepository(Protocol):
 class ManualJobIngestResult:
     job: dict[str, Any]
     parsed_job_count: int
+    # ai: claude-opus-5-5 | 2026-11-15
+    # True when the capture was a posting already tracked (same URL or site job
+    # ID): `job` is that existing row, nothing was inserted, and `capture` holds
+    # the row that would have been, for the caller to record as a sighting
+    # (backend/scanning/job_sightings.py's record_sighting_from_job_data).
+    already_tracked: bool = False
+    capture: dict[str, Any] | None = None
 
 
 class ManualJobIngestService:
@@ -390,6 +398,18 @@ class ManualJobIngestService:
         if import_warnings and job_dict["status"] != "possible_duplicate":
             job_dict["status"] = "triage"
 
+        # ai: claude-opus-5-5 | 2026-11-15
+        # The same posting is already a job: hand that job back for the caller to
+        # record this capture as a sighting of, instead of inserting a second row.
+        tracked = self._same_posting_job(str(job_dict.get("url") or ""), live_sheet_jobs)
+        if tracked is not None:
+            return ManualJobIngestResult(
+                job=tracked,
+                parsed_job_count=max(1, len(parsed_jobs)),
+                already_tracked=True,
+                capture=job_dict,
+            )
+
         job_id = self._jobs_repo.insert(self._user_id, job_dict)
 
         created_job = self._jobs_repo.get_by_id(self._user_id, job_id)
@@ -455,6 +475,23 @@ class ManualJobIngestService:
         )
         matched_id = duplicate_match["row"].get("id")  # ai: claude-opus-5-5 | 2026-10-29
         return hint, (int(matched_id) if matched_id is not None else None)
+
+    # ai: claude-opus-5-5 | 2026-11-15
+    def _same_posting_job(
+        self, url: str, sheet_jobs: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """The tracked job that is the same posting as *url*, freshly loaded."""
+        if not url:
+            return None
+        match = next(
+            (
+                row
+                for row in sheet_jobs
+                if row.get("id") is not None and is_same_posting(row.get("url") or "", url)
+            ),
+            None,
+        )
+        return self._jobs_repo.get_by_id(self._user_id, int(match["id"])) if match else None
 
     @staticmethod
     def _manual_email_id() -> str:

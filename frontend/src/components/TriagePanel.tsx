@@ -29,6 +29,7 @@
 import { memo, useEffect, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import Modal from "./common/Modal.tsx";
+import JobSightings from "./common/JobSightings.tsx";
 import CoverLetterModal from "./common/CoverLetterModal.tsx";
 import PitchModal from "./common/PitchModal.tsx";
 import ResumeTailorModal from "./common/ResumeTailorModal.tsx";
@@ -570,6 +571,8 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
               </span>
             )}
           </div>
+          {/* ai: claude-opus-5-5 | 2026-11-15 */}
+          <JobSightings jobId={job.id} count={job.sighting_count} />
 
           <div style={compactOriginStyle}>
             {isManualPastedJob(job)
@@ -1581,6 +1584,8 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
               </span>
             )}
           </div>
+          {/* ai: claude-opus-5-5 | 2026-11-15 */}
+          <JobSightings jobId={job.id} count={job.sighting_count} />
           <div style={compactOriginStyle}>
             {isManualPastedJob(job)
               ? (job.capture_label || "Manual pasted job listing")

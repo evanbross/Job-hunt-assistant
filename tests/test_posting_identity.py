@@ -30,10 +30,16 @@ from backend.db.row_level_security import set_current_user
 from backend.scanning.import_repair import post_repair_duplicate_check
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import db_match_for_job
+from backend.scoring.job_validator import (
+    NON_POSTING_URL_WARNING,
+    normalize_and_validate,
+)
 from backend.scoring.posting_identity import (
     PostingIdentity,
     are_distinct_postings,
+    is_non_posting_url,
     is_same_posting,
+    is_sign_in_url,
     posting_identity,
 )
 
@@ -172,3 +178,55 @@ def test_recheck_clears_a_flag_between_two_requisitions(pg_dsn: str) -> None:
         assert cleared["duplicate_hint"] is None
     finally:
         conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-15
+# Pages a capture landed on that name no single posting. Four different Wellfound
+# jobs all stored wellfound.com/login (a tracking link that bounced to sign-in),
+# and three Greenhouse jobs shared one my.greenhouse.io search URL: matching on
+# those URLs would have made each set look like one job.
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://wellfound.com/login",
+        "https://careers.homedepot.com/profile/login/",
+        "https://www.linkedin.com/signup/cold-join?source=jobs_registration",
+        "https://my.greenhouse.io/jobs?country_short_name=US&date_posted=past_thirty_days",
+        "https://www.glassdoor.com/recruiter/link/matches?utm_medium=email&utm_source=sup",
+        "https://www.randstadusa.com/jobs/",
+        "https://pantograph.com/careers",
+    ],
+)
+def test_non_posting_urls_never_match_each_other(url: str) -> None:
+    assert is_non_posting_url(url)
+    assert not is_same_posting(url, url)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://wellfound.com/jobs?job_listing_slug=4446105-senior-engineer",
+        "https://clickup.com/careers?gh_jid=12345",
+        "https://www.glassdoor.com/recruiter/link/matches?matchId=6447db9e-de8e",
+        "https://www.linkedin.com/jobs/view/4418557525/",
+        "https://boards.greenhouse.io/acme/jobs/12345",
+        "https://jobs.lever.co/acme/0f0e-4b1c",
+    ],
+)
+def test_posting_urls_are_not_flagged(url: str) -> None:
+    assert not is_non_posting_url(url)
+    assert is_same_posting(url, url)
+
+
+def test_only_sign_in_walls_are_sign_in_urls() -> None:
+    assert is_sign_in_url("https://wellfound.com/login")
+    assert not is_sign_in_url("https://pantograph.com/careers")
+    assert not is_sign_in_url("not a url")
+
+
+def test_validator_drops_a_non_posting_url_and_flags_it() -> None:
+    job, warnings = normalize_and_validate(
+        {"company": "rustLabs", "job_title": "Senior Python Developer", "url": "https://wellfound.com/login"}
+    )
+    assert job["url"] == ""
+    assert warnings == [NON_POSTING_URL_WARNING]

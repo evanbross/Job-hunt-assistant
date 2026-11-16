@@ -60,7 +60,7 @@ from googleapiclient.errors import HttpError
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
-from backend.db import DuplicateJobUrlError
+from backend.db import DuplicateJobUrlError, SightingChannel
 from backend.email import smtp_sender
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.email.notification_recipient import notification_recipient
@@ -76,6 +76,10 @@ from backend.scanning.import_repair import (
     post_repair_duplicate_check,
     repair_ats_url_company,
     repair_existing_job_company,
+)
+from backend.scanning.job_sightings import (
+    extension_sighting_capture,
+    record_sighting_from_job_data,
 )
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 from backend.scanning.platform_detection import (
@@ -646,6 +650,20 @@ def run_import_task(
                             existing_desc_len,
                             url,
                         )
+                # ai: claude-opus-5-5 | 2026-11-15
+                # A capture of a job already tracked is a sighting of it -- unless
+                # this is the extension re-capturing a queued URL for the app's own
+                # JD fetch (queue_url set), which says nothing about where the job
+                # turned up.
+                if body_queue_url is None:
+                    record_sighting_from_job_data(
+                        repos,
+                        user_id,
+                        int(existing_job["id"]),
+                        extension_sighting_capture(url_row, _source_name),
+                        SightingChannel.EXTENSION,
+                    )
+                    repos["conn"].commit()
                 skipped += 1
                 skipped_details.append(
                     _import_outcome_detail(
@@ -733,6 +751,29 @@ def run_import_task(
                     prefetched_jd=prefetched_jd,  # ai: claude-sonnet-5 | 2026-08-26
                 )
                 new_job = ingest_result.job
+                # ai: claude-opus-5-5 | 2026-11-15 -- same posting as a tracked job
+                # under a different URL (e.g. another LinkedIn tracking link): a
+                # sighting of that job; ingest inserted nothing.
+                if ingest_result.already_tracked and ingest_result.capture is not None:
+                    if body_queue_url is None:
+                        record_sighting_from_job_data(
+                            repos,
+                            user_id,
+                            int(new_job["id"]),
+                            ingest_result.capture,
+                            SightingChannel.EXTENSION,
+                        )
+                    repos["conn"].commit()
+                    skipped += 1
+                    skipped_details.append(
+                        _import_outcome_detail(
+                            url_row,
+                            "Same posting as a job already tracked; recorded as a sighting of it.",
+                            "skipped",
+                            new_job,
+                        )
+                    )
+                    continue
                 logger.info(
                     "run_import_task [%d/%d]: ingest done in %.1fs status=%s job_id=%s title=%s",
                     i + 1,

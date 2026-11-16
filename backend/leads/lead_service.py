@@ -145,7 +145,8 @@ class LeadService:
 
     def detail(self, user_id: int, job_id: int) -> dict[str, Any] | None:
         """One lead's drawer: the job, its people, its timeline (interactions newest
-        first) and its stage history (oldest first, as everywhere else)."""
+        first), its stage history (oldest first, as everywhere else) and every later
+        capture of its posting (sightings, newest first)."""
         lead = self._repos["leads"].get_lead(user_id, job_id)
         if lead is None:
             return None
@@ -156,6 +157,7 @@ class LeadService:
             "people": self._repos["job_contacts"].list_for_job(user_id, job_id),
             "interactions": self._repos["interactions"].list_for_job(user_id, job_id),
             "stages": stages,
+            "sightings": self._repos["job_sightings"].list_for_job(user_id, job_id),  # ai: claude-opus-5-5 | 2026-11-15
         }
 
     def create_contact(

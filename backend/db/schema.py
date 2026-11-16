@@ -57,6 +57,7 @@ from backend.db.repositories.user_accounts import (
     bootstrap_password_problem,
     generate_bootstrap_password,
 )
+from backend.db.same_posting_merge import merge_same_posting_job_rows
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.scoring.company_matching import normalize_company_name
 from backend.settings_registry import SETTINGS
@@ -496,6 +497,69 @@ def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
                 " ON CONFLICT (user_id, key) DO NOTHING",
                 (admin_user_id, key, value),
             )
+
+
+# ai: claude-opus-5-5 | 2026-11-15 -- moved out of create_tables' statement list
+# so _align_application_stages_job_id can recreate the view after changing the
+# column type underneath it (Postgres refuses to retype a column a view selects,
+# and CREATE OR REPLACE VIEW can't change a view column's type either).
+LATEST_APPLICATION_STAGE_VIEW_SQL = """
+    CREATE OR REPLACE VIEW latest_application_stage AS
+    SELECT DISTINCT ON (job_id)
+        job_id, status AS latest_status, date AS latest_status_date,
+        notes, created_at
+    FROM application_stages
+    ORDER BY job_id, date DESC, created_at DESC, id DESC
+"""
+
+APPLICATION_STAGES_JOB_FK = "application_stages_job_id_fkey"
+# A second, older status FK some databases carry next to
+# application_stages_status_fkey. It lacks ON UPDATE CASCADE, so it would block
+# a catalog key rename (_rename_application_stage_statuses) the other allows.
+_REDUNDANT_APPLICATION_STAGES_STATUS_FK = "fk_stage_status"
+
+
+# ai: claude-opus-5-5 | 2026-11-15
+def _align_application_stages_job_id(conn: Any) -> None:
+    """Bring application_stages.job_id in line with what create_tables builds:
+    INTEGER REFERENCES jobs(id) ON DELETE CASCADE. Idempotent.
+
+    The live database's table predates that definition (job_id BIGINT, no foreign
+    key), so deleting a job left its stages behind -- 2 orphaned rows by
+    2026-11-15 (applied stages for jobs 19 and 32, long gone). Orphans can't be
+    reached from anywhere (every stage read goes through its job), so they're
+    deleted before the constraint goes on."""
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM application_stages s"
+        " WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = s.job_id)"
+    )
+    if cur.rowcount:
+        logger.info("Deleted %d application_stages row(s) whose job no longer exists.", cur.rowcount)
+    cur.execute(
+        "SELECT data_type FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND table_name = 'application_stages'"
+        " AND column_name = 'job_id'"
+    )
+    if cur.fetchone()["data_type"] != "integer":
+        cur.execute("DROP VIEW IF EXISTS latest_application_stage")
+        cur.execute("ALTER TABLE application_stages ALTER COLUMN job_id TYPE INTEGER")
+        cur.execute(LATEST_APPLICATION_STAGE_VIEW_SQL)
+    cur.execute(
+        "SELECT 1 FROM pg_constraint WHERE conrelid = 'application_stages'::regclass"
+        " AND contype = 'f' AND confrelid = 'jobs'::regclass"
+    )
+    if cur.fetchone() is None:
+        cur.execute(
+            f"ALTER TABLE application_stages ADD CONSTRAINT {APPLICATION_STAGES_JOB_FK}"
+            " FOREIGN KEY (job_id) REFERENCES jobs(id) ON DELETE CASCADE"
+        )
+    if _has_unique(cur, "application_stages", "application_stages_status_fkey"):
+        cur.execute(
+            "ALTER TABLE application_stages DROP CONSTRAINT IF EXISTS "
+            + _REDUNDANT_APPLICATION_STAGES_STATUS_FK
+        )
+    conn.commit()
 
 
 def migrate_schema(conn: Any) -> None:
@@ -1425,23 +1489,28 @@ def migrate_schema(conn: Any) -> None:
     # per-user instead of globally.
     cur.execute("DROP INDEX IF EXISTS jobs_url_unique_idx")  # old, pre-multi-tenant name
     if not _has_index(cur, "jobs", JOBS_URL_UNIQUE_INDEX):
+        # ai: claude-opus-5-5 | 2026-11-15 -- second rows for one posting are
+        # sightings now; fold the old ones in so the index can be created.
+        merge_same_posting_job_rows(conn)
+        # ai: claude-opus-5-5 | 2026-11-15 -- counted in full: this used to
+        # report min(n, 5) groups (its own LIMIT 5) as if it were the total.
         cur.execute(
-            "SELECT user_id, url, COUNT(*) AS cnt FROM jobs"
+            "SELECT user_id, url, COUNT(*) AS cnt, COUNT(*) OVER () AS n_groups FROM jobs"
             " WHERE url IS NOT NULL AND url <> ''"
             " GROUP BY user_id, url HAVING COUNT(*) > 1"
-            " ORDER BY cnt DESC LIMIT 5"
+            " ORDER BY cnt DESC LIMIT 1"
         )
-        dup_rows = cur.fetchall()
-        if dup_rows:
+        worst = cur.fetchone()
+        if worst:
             logger.warning(
                 "Skipping jobs.url uniqueness index: %d duplicate URL group(s) "
-                "already exist for the same user (e.g. %r used %d times). Merge "
-                "or delete the duplicate rows, then restart the app — the index "
-                "is created automatically on the next successful startup once no "
-                "duplicates remain.",
-                len(dup_rows),
-                dup_rows[0]["url"],
-                dup_rows[0]["cnt"],
+                "still exist for the same user after the same-posting merge (e.g. "
+                "%r used %d times). Merge or delete the duplicate rows, then restart "
+                "the app — the index is created automatically on the next successful "
+                "startup once no duplicates remain.",
+                worst["n_groups"],
+                worst["url"],
+                worst["cnt"],
             )
         else:
             cur.execute(
@@ -1469,6 +1538,7 @@ def migrate_schema(conn: Any) -> None:
             " REFERENCES application_stage_statuses(key) ON UPDATE CASCADE"
         )
     conn.commit()
+    _align_application_stages_job_id(conn)  # ai: claude-opus-5-5 | 2026-11-15
 
     # ai: claude-sonnet-5 | 2026-09-28 -- recruiter_type replaces the is_recruiter
     # checkbox with a graded scale (see docs/contacts-recruiter-classification-plan.md).
@@ -2105,14 +2175,7 @@ def create_tables(conn: Any) -> None:
         # (backend/sql_guard.py's table allowlist): gives the LLM a plain filter
         # to write instead of requiring it to freehand a DISTINCT ON window
         # query. CREATE OR REPLACE is idempotent on its own, no guard needed.
-        """
-        CREATE OR REPLACE VIEW latest_application_stage AS
-        SELECT DISTINCT ON (job_id)
-            job_id, status AS latest_status, date AS latest_status_date,
-            notes, created_at
-        FROM application_stages
-        ORDER BY job_id, date DESC, created_at DESC, id DESC
-        """,
+        LATEST_APPLICATION_STAGE_VIEW_SQL,  # ai: claude-opus-5-5 | 2026-11-15 -- shared, see its comment
         """
         CREATE TABLE IF NOT EXISTS user_settings (
             key   TEXT PRIMARY KEY,
@@ -2446,6 +2509,35 @@ def create_tables(conn: Any) -> None:
         """
         CREATE INDEX IF NOT EXISTS idx_lead_suggestions_user_status
             ON lead_suggestions (user_id, status, last_message_at DESC)
+        """,
+        # ai: claude-opus-5-5 | 2026-11-15
+        # Repeat sightings of a tracked job (backend/db/repositories/job_sightings.py):
+        # a capture naming a posting already in jobs records a row here instead of
+        # inserting a second jobs row. seen_at is UTC ISO 8601 text like the other
+        # timestamps here. channel is mirrored by SightingChannel. The unique index
+        # keeps at most one sighting per job, source and UTC day (left(seen_at, 10)
+        # is the date part), so a recurring scan of one page can't flood it.
+        """
+        CREATE TABLE IF NOT EXISTS job_sightings (
+            id             SERIAL PRIMARY KEY,
+            user_id        INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            job_id         INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+            seen_at        TEXT NOT NULL,
+            source         TEXT NOT NULL,
+            channel        TEXT NOT NULL
+                CHECK (channel IN ('email', 'extension', 'manual', 'merged_duplicate')),
+            capture_label  TEXT,
+            url            TEXT,
+            sender_email   TEXT
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_job_sightings_job_source_day
+            ON job_sightings (job_id, source, (left(seen_at, 10)))
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_job_sightings_user_job
+            ON job_sightings (user_id, job_id)
         """,
         # ai: claude-sonnet-5 | 2026-10-15
         # One row per employment stint a contact has had (not just their

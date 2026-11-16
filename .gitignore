@@ -83,3 +83,8 @@ deploy/rehearsal/secrets/
 
 # Local helper script holding a GitLab token -- never commit
 /cleaner.ps1
+
+# Local database dumps/backups (pg_dump output) must never be committed.
+neon.db.*
+*.dump
+*.pgdump

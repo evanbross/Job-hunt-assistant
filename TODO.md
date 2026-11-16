@@ -208,6 +208,29 @@ Neon-backed install currently needs.
 
 ## Data quality / known issues
 
+- [x] **Repeat captures are sightings, not second job rows.** Done 2026-11-15
+      (branch `evan-job-sightings`). A capture naming a posting already tracked
+      (same URL or site job ID) now records a `job_sightings` row on that job
+      (email scan/rescan, manual paste, extension capture) instead of inserting
+      an auto-skipped/possible-duplicate copy; cards and the lead drawer show
+      "Seen N more times". Sign-in/search-page URLs are dropped at capture
+      (`non_posting_url` warning). `jobs.insert()` now rolls back to a savepoint
+      on a lost race instead of discarding the caller's transaction.
+      One-time migration (`backend/db/same_posting_merge.py`, runs on the next
+      migrate while `JOBS_URL_UNIQUE_INDEX` is missing): dry run against the live
+      DB on 2026-11-15 found 671 copies to fold into sightings, 36 stale
+      `company_normalized='unitedstatesremote'` values to repair, 14 sign-in/
+      shared-search URLs and 4 other-company URLs to drop. Take a backup first.
+      - [ ] After it runs: review the 3 pairs it leaves alone (same LinkedIn
+        posting on the sheet twice, both applied): Orkes 1528/1632,
+        Cresta 791/1425, ByteHire 925/1453. The index stays uncreated (with a
+        startup warning) only if one of those shares an exact URL.
+      - [x] Live DB schema drift fixed in the same branch: `application_stages.job_id`
+        was `bigint` with no FK to `jobs`, so deleting a job orphaned its stages
+        (2 rows, jobs 19/32). `_align_application_stages_job_id` (schema.py) deletes
+        orphans, retypes to `INTEGER` (dropping/recreating `latest_application_stage`
+        around it), adds the `ON DELETE CASCADE` FK, and drops the redundant
+        `fk_stage_status` that lacked `ON UPDATE CASCADE`.
 - [x] **Duplicate `(user_id, url)` job rows cleaned up.** Done 2026-09-30.
       217 of 221 duplicate-URL groups merged (445 rows deleted), reassigning
       `application_stages`/`job_status_history`/`browser_capture_queue` rows

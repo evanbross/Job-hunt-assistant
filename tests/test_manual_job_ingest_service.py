@@ -677,3 +677,44 @@ def test_ingest_treats_failed_prefetch_as_no_enrichment() -> None:
 
     assert scanner.call_count == 0
     assert result.job["raw_jd_snippet"] == short_text[:6000]
+
+
+# ai: claude-opus-5-5 | 2026-11-15
+def test_ingest_returns_the_tracked_job_for_the_same_posting_without_inserting() -> None:
+    """The same LinkedIn job ID under another tracking URL is the job already
+    tracked: ingest hands it back (for the caller to record a sighting) and
+    inserts nothing."""
+    job_repo = StubJobRepo()
+    tracked_id = job_repo.insert(
+        _TEST_USER_ID,
+        {"company": "Acme", "job_title": "Staff Engineer", "url": "https://www.linkedin.com/jobs/view/4455555555/", "status": "applied"},
+    )
+    captured_url = "https://www.linkedin.com/jobs/view/4455555555/?trackingId=abc"
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        job_repo,
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=StubParser(
+            [
+                {
+                    "company": "Acme",
+                    "job_title": "Staff Engineer",
+                    "url": captured_url,
+                    "source": "LinkedIn",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "",
+                }
+            ]
+        ),
+        scorer=StubScorer(),
+        career_site_scanner=StubCareerSiteScanner(),
+    )
+
+    result = service.ingest("Staff Engineer at Acme, a long enough listing body " * 20)
+
+    assert result.already_tracked is True
+    assert result.job["id"] == tracked_id
+    assert result.capture is not None and result.capture["url"] == captured_url
+    assert len(job_repo.inserted) == 1

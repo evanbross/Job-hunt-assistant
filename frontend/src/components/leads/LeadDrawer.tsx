@@ -12,6 +12,7 @@
 // (with a note in the user's own words), the people on it, the call/message/note
 // timeline, a rich-text running summary, and the job description.
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import JobSightings from "../common/JobSightings.tsx";
 import Modal from "../common/Modal.tsx";
 import RichTextEditor from "../common/RichTextEditor.tsx";
 import RichTextView from "../common/RichTextView.tsx";
@@ -472,6 +473,14 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
           )}
         </ul>
       </section>
+
+      {/* ai: claude-opus-5-5 | 2026-11-15 */}
+      {detail.sightings.length > 0 && (
+        <section className="lead-drawer-section">
+          <h4>Where else this job turned up</h4>
+          <JobSightings jobId={jobId} sightings={detail.sightings} />
+        </section>
+      )}
 
       <section className="lead-drawer-section">
         <h4>Job description</h4>

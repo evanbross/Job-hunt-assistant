@@ -43,7 +43,7 @@ from backend.active_tasks import get_active_tasks
 from backend.ai_provider import AIProviderClient
 from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
-from backend.db import CaptureQueueOrigin
+from backend.db import CaptureQueueOrigin, SightingChannel
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_parser import (
@@ -55,6 +55,11 @@ from backend.email.email_source_filters import email_matches_source_filters
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.scanning.board_url_expansion import expand_board_url_parsed_jobs
 from backend.scanning.career_site_scanner import CareerSiteScanner
+from backend.scanning.job_sightings import (
+    email_sighting_capture,
+    insert_or_record_sighting,
+    record_sighting_from_job_data,
+)
 from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
     canonical_wellfound_job_url,
@@ -277,9 +282,9 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         # every AI scoring call happened inside one `with get_repos()` block. Now,
         # per email: a brief DB check (already scanned?) -> release -> Gmail fetch
         # (no DB) -> release -> filtering/parsing/AI work (no DB) -> reopen briefly
-        # just to write that email's results. known_jobs is a static snapshot for
-        # the whole scan (never appended to mid-run, even in the original code),
-        # so unlike career_sites.py there's no in-run dedup ordering to preserve.
+        # just to write that email's results. known_jobs is loaded once here;
+        # each email's write phase appends the jobs it inserted (ai: claude-opus-5-5
+        # | 2026-11-15) so a later email in the same scan sees them as tracked.
         with get_repos(user_id) as repos:
             # ai: claude-sonnet-5 | 2026-08-30 — per-user settings, formerly
             # the shared data/runtime_config.json (a multi-tenancy gap).
@@ -347,6 +352,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
         triage_jobs: int = 0
         possible_duplicate_jobs: int = 0
         auto_skipped_duplicate_jobs: int = 0
+        already_tracked_jobs: int = 0  # ai: claude-opus-5-5 | 2026-11-15 -- recorded as sightings
         auto_skipped_hybrid_jobs: int = 0  # ai: claude-fable-5 | 2026-07-16
         low_fit_score_jobs: int = 0
         scoring_failed_jobs: int = 0
@@ -642,6 +648,9 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
             # below, so this email's JD fetches and AI scoring calls run with no
             # DB connection held.
             jobs_to_insert: list[dict] = []
+            # ai: claude-opus-5-5 | 2026-11-15 -- (job_id, job_data) for postings
+            # already tracked: recorded as sightings, never inserted.
+            sightings_to_record: list[tuple[int, dict]] = []
 
             for job_idx, parsed in enumerate(parsed_jobs):
                 _update_scan(
@@ -691,6 +700,37 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     known_jobs=known_jobs,
                     dedup_checker=dup_checker,
                 )
+
+                # ai: claude-opus-5-5 | 2026-11-15
+                # The same posting (URL or site job ID) is already a job: record
+                # this email as a sighting of it and stop -- no second row, and no
+                # JD fetch or scoring for a job that's already been through both.
+                if tracking_source == "db_url" and duplicate_of_id is not None:
+                    sightings_to_record.append(
+                        (duplicate_of_id, email_sighting_capture(parsed, sender, subject))
+                    )
+                    already_tracked_jobs += 1
+                    job_title = str(parsed.get("job_title") or "").strip()
+                    if job_title:
+                        job_titles.append(job_title)
+                    job_details.append(
+                        {
+                            "company": parsed.get("company", ""),
+                            "job_title": parsed.get("job_title", ""),
+                            "source": parsed.get("source", ""),
+                            "url": parsed.get("url", ""),
+                            "status": "already_tracked",
+                            "outcome": "already tracked (sighting recorded)",
+                            "fit_score": None,
+                            "duplicate_hint": duplicate_hint,
+                            "duplicate_source": tracking_source,
+                            "certainty_level": confidence,
+                            "certainty_score": parsed.get("certainty_score", 50),
+                            "certainty_reason": parsed.get("certainty_reason", ""),
+                            "scoring_error": "",
+                        }
+                    )
+                    continue
 
                 # ai: claude-sonnet-4-6 | 2026-06-10
                 if (
@@ -946,9 +986,22 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
 
             # ── Write this email's results (DB reopened only for this fast phase) ─
             with get_repos(user_id) as repos:
-                job_repo = repos["jobs"]
+                # ai: claude-opus-5-5 | 2026-11-15
+                for tracked_job_id, sighting_data in sightings_to_record:
+                    record_sighting_from_job_data(
+                        repos, user_id, tracked_job_id, sighting_data, SightingChannel.EMAIL
+                    )
                 for item in jobs_to_insert:
-                    job_repo.insert(user_id, item["job_data"])
+                    # ai: claude-opus-5-5 | 2026-11-15 -- known_jobs is loaded once
+                    # per scan, so a new job arriving in two emails of one scan
+                    # can still meet itself here, at the unique index.
+                    new_job_id = insert_or_record_sighting(
+                        repos, user_id, item["job_data"], SightingChannel.EMAIL
+                    )
+                    if new_job_id is None:
+                        continue
+                    # Later emails in this scan see it as tracked, by URL or job ID.
+                    known_jobs.append({**item["job_data"], "id": new_job_id})
                     if item["capture_url"]:
                         try:
                             repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
@@ -1041,6 +1094,7 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 "triage_jobs": triage_jobs,
                 "possible_duplicate_jobs": possible_duplicate_jobs,
                 "auto_skipped_duplicate_jobs": auto_skipped_duplicate_jobs,
+                "already_tracked_jobs": already_tracked_jobs,  # ai: claude-opus-5-5 | 2026-11-15
                 "auto_skipped_hybrid_jobs": auto_skipped_hybrid_jobs,  # ai: claude-fable-5 | 2026-07-16
                 "low_fit_score_jobs": low_fit_score_jobs,
                 "scoring_failed_jobs": scoring_failed_jobs,

@@ -7,6 +7,8 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+import type { JobSighting } from "./jobs.ts";
+
 // ai: claude-opus-5-5 | 2026-11-11
 // Recruiter lead tracking (routes/leads.py). The unions mirror backend/db/schema.py's
 // CHECK constraints on interactions, job_contacts and jobs.origin, as routes/leads.py's
@@ -131,6 +133,8 @@ export interface LeadDetail {
   people: LeadPerson[];
   interactions: Interaction[];
   stages: LeadStage[];
+  /** Later captures of this posting, newest first. */
+  sightings: JobSighting[]; // ai: claude-opus-5-5 | 2026-11-15
 }
 
 /** A job a contact is attached to (GET /api/contacts/<id>/activity). */
