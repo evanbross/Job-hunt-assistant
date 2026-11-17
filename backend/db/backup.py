@@ -37,6 +37,9 @@ age-encrypted pg_dump archive -- so a restore never depends on this code working
     python -m backend.db.backup check-config            # the maintenance worker's start-up check
 
 Scheduled runs come from beat via backend/db/scheduled_backup.py.
+
+On a desktop install the CLI, like app.py's worker, also takes the BACKUP_* lines of
+deploy/.env.backup (with_backup_settings); variables already set win.
 """
 
 from __future__ import annotations
@@ -678,4 +681,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # ai: claude-opus-5-5 | 2026-11-17 -- the CLI reads deploy/.env.backup like the desktop worker;
+    # here rather than in main() so callers passing argv (tests) keep their own environment.
+    os.environ.update(with_backup_settings(os.environ))
     sys.exit(main())

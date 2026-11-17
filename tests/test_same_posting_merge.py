@@ -27,6 +27,7 @@ from backend.db.same_posting_merge import (
     JOB_ID_REFERENCES,
     JOB_ID_REFERENCES_MERGED_SEPARATELY,
     merge_same_posting_job_rows,
+    merge_worked_on_pair,
 )
 from backend.db.schema import migrate_schema
 from backend.scoring.duplicate_matching import auto_duplicate_skip_feedback
@@ -240,3 +241,46 @@ def test_migrate_merges_then_creates_the_url_index(dirty_db: Any) -> None:
         "SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = %s",
         (JOBS_URL_UNIQUE_INDEX,),
     ) == 1
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_merge_worked_on_pair_keeps_both_application_timelines(dirty_db: Any) -> None:
+    repos, user_id, ids = dirty_db
+    s = _Seeder(repos, user_id)
+    s.stage(ids["worked_on"], "applied", "2026-10-15")
+    s.stage(ids["worked_on"], "ghosted", "2026-11-20")
+    repos["conn"].commit()
+
+    merge_worked_on_pair(repos["conn"], kept_id=ids["kept"], other_id=ids["worked_on"])
+    repos["conn"].commit()
+
+    assert _job(repos, ids["worked_on"]) is None
+    cur = repos["conn"].cursor()
+    cur.execute("SELECT status, date FROM application_stages WHERE job_id = %s ORDER BY date", (ids["kept"],))
+    assert [(r["status"], r["date"]) for r in cur.fetchall()] == [
+        ("applied", "2026-10-02"),
+        ("applied", "2026-10-15"),
+        ("ghosted", "2026-11-20"),
+    ]
+    # The combined timeline's latest stage is the job's current one.
+    assert _scalar(repos, "SELECT latest_status FROM latest_application_stage WHERE job_id = %s", (ids["kept"],)) == "ghosted"
+    sightings = repos["job_sightings"].list_for_job(user_id, ids["kept"])
+    assert [(x["channel"], x["url"]) for x in sightings] == [("merged_duplicate", _ANOTHER_COPY)]
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.mark.parametrize(
+    ("other_key", "message"),
+    [
+        ("other_company", "different companies"),
+        ("other_user", "different accounts"),
+        ("github_kept", "not the same posting"),
+        ("kept", "two existing, distinct jobs"),
+    ],
+)
+def test_merge_worked_on_pair_refuses_rows_that_are_not_one_job(dirty_db: Any, other_key: str, message: str) -> None:
+    repos, _, ids = dirty_db
+    with pytest.raises(ValueError, match=message):
+        merge_worked_on_pair(repos["conn"], kept_id=ids["kept"], other_id=ids[other_key])
+    repos["conn"].rollback()
+    assert _job(repos, ids[other_key]) is not None

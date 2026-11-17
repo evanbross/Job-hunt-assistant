@@ -221,10 +221,14 @@ Neon-backed install currently needs.
       DB on 2026-11-15 found 671 copies to fold into sightings, 36 stale
       `company_normalized='unitedstatesremote'` values to repair, 14 sign-in/
       shared-search URLs and 4 other-company URLs to drop. Take a backup first.
-      - [ ] After it runs: review the 3 pairs it leaves alone (same LinkedIn
-        posting on the sheet twice, both applied): Orkes 1528/1632,
-        Cresta 791/1425, ByteHire 925/1453. The index stays uncreated (with a
-        startup warning) only if one of those shares an exact URL.
+      - [x] Reviewed the 3 pairs it left alone (same LinkedIn posting on the
+        sheet twice, both applied) on 2026-11-17. Cresta 791/1425 kept as two
+        real applications (re-applied 4 months later, duplicate flag dismissed).
+        Orkes 1632 → 1528 and ByteHire 1453 → 925 merged with
+        `scripts/merge_worked_on_pair.py` (both application timelines kept on
+        one row); Orkes's auto "ghosted 08-04" stage on 1632 dropped so the
+        07-06 rejection stays current, plus a misattributed history row (328).
+        Backup taken first (R2 `jha-20261117T164146Z`).
       - [x] Live DB schema drift fixed in the same branch: `application_stages.job_id`
         was `bigint` with no FK to `jobs`, so deleting a job orphaned its stages
         (2 rows, jobs 19/32). `_align_application_stages_job_id` (schema.py) deletes

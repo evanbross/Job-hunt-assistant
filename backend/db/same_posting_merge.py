@@ -32,7 +32,9 @@ the exact URL:
   never change the kept row's current stage; otherwise they're deleted with it.
 - **Rows the user worked on are never merged**: on the sheet, applied, or with
   contacts/interactions. Two of those for one posting is the user's call; they're
-  left as they are and listed in the report (and the log) for review.
+  left as they are and listed in the report (and the log) for review; a pair the
+  user decides is one job is folded together by merge_worked_on_pair
+  (scripts/merge_worked_on_pair.py), keeping both application timelines.
 - **Rows for a different company** sharing that exact URL got another job's link
   (a digest email pairing a job with the wrong URL). Their URL is dropped and
   flagged URL_OF_OTHER_JOB_WARNING; the rows themselves are left alone.
@@ -155,6 +157,44 @@ def merge_same_posting_job_rows(conn: Any) -> MergeReport:
     return report
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+def merge_worked_on_pair(conn: Any, *, kept_id: int, other_id: int) -> None:
+    """Fold *other_id* into *kept_id* when the user decides two worked-on rows for one
+    posting (MergeReport.left_for_review) are one job.
+
+    Unlike the automatic merge, both rows hold the user's own application history, so
+    *other_id*'s application stages move onto *kept_id* -- one combined timeline,
+    whose latest stage becomes the job's current one -- instead of being deleted.
+    Everything else is _merge_into's: a sighting for the folded row, its status
+    history, contacts, queue rows and sightings move over, and the row is deleted.
+
+    Raises ValueError, changing nothing, unless both rows exist, belong to one
+    account, name the same posting and the same company. Does not commit: the
+    caller commits, or rolls back for a dry run."""
+    cur = conn.cursor()
+    cur.execute(_JOB_ROW_SELECT + " WHERE j.id = ANY(%s)", ([kept_id, other_id],))
+    rows = {row["id"]: dict(row) for row in cur.fetchall()}
+    if kept_id == other_id or set(rows) != {kept_id, other_id}:
+        raise ValueError(f"Jobs {kept_id} and {other_id} must be two existing, distinct jobs")
+    kept, other = rows[kept_id], rows[other_id]
+    if kept["user_id"] != other["user_id"]:
+        raise ValueError(f"Jobs {kept_id} and {other_id} belong to different accounts")
+    if not kept["url"] or not other["url"] or _posting_key(kept["url"]) != _posting_key(other["url"]):
+        raise ValueError(f"Jobs {kept_id} and {other_id} are not the same posting")
+    if not _same_company(other, kept):
+        raise ValueError(f"Jobs {kept_id} and {other_id} are for different companies")
+    cur.execute("UPDATE application_stages SET job_id = %s WHERE job_id = %s", (kept_id, other_id))
+    kept["n_stages"] += other["n_stages"]
+    other["n_stages"] = 0
+    _merge_into(cur, loser=other, kept=kept)
+    logger.info("Merged worked-on job %d into job %d (same posting).", other_id, kept_id)
+
+
+def _posting_key(url: str) -> Any:
+    stripped = url.strip()
+    return posting_identity(stripped) or stripped.lower()
+
+
 def _repair_stale_company_normalized(cur: Any) -> int:
     """Re-derive company_normalized the way the jobs repository does on every
     write (normalize_company_name, then the user's company aliases) wherever it
@@ -203,26 +243,26 @@ def _drop_non_posting_urls(cur: Any) -> int:
     return dropped
 
 
+# Every jobs column _merge_into and the keep/worked-on rules read, plus the counts
+# they rank by. One copy, shared by the grouping pass and merge_worked_on_pair.
+_JOB_ROW_SELECT = """
+    SELECT j.id, j.user_id, j.url, j.company, j.company_normalized, j.status,
+           j.skip_reason, j.skip_feedback, j.on_sheet, j.source,
+           j.capture_label, j.sender_email, j.date_found, j.import_warnings,
+           j.duplicate_of_id,
+           (j.job_description IS NOT NULL AND j.job_description <> '') AS has_description,
+           (SELECT COUNT(*) FROM application_stages s WHERE s.job_id = j.id) AS n_stages,
+           (SELECT COUNT(*) FROM job_contacts c WHERE c.job_id = j.id)
+             + (SELECT COUNT(*) FROM interactions i WHERE i.job_id = j.id) AS n_people
+    FROM jobs j
+"""
+
+
 def _same_posting_groups(cur: Any) -> list[list[dict[str, Any]]]:
-    cur.execute(
-        """
-        SELECT j.id, j.user_id, j.url, j.company, j.company_normalized, j.status,
-               j.skip_reason, j.skip_feedback, j.on_sheet, j.source,
-               j.capture_label, j.sender_email, j.date_found, j.import_warnings,
-               j.duplicate_of_id,
-               (j.job_description IS NOT NULL AND j.job_description <> '') AS has_description,
-               (SELECT COUNT(*) FROM application_stages s WHERE s.job_id = j.id) AS n_stages,
-               (SELECT COUNT(*) FROM job_contacts c WHERE c.job_id = j.id)
-                 + (SELECT COUNT(*) FROM interactions i WHERE i.job_id = j.id) AS n_people
-        FROM jobs j
-        WHERE j.url IS NOT NULL AND j.url <> ''
-        """
-    )
+    cur.execute(_JOB_ROW_SELECT + " WHERE j.url IS NOT NULL AND j.url <> ''")
     groups: dict[tuple[int, Any], list[dict[str, Any]]] = defaultdict(list)
     for row in cur.fetchall():
-        url = row["url"].strip()
-        key = posting_identity(url) or url.lower()
-        groups[(row["user_id"], key)].append(dict(row))
+        groups[(row["user_id"], _posting_key(row["url"]))].append(dict(row))
     return [rows for rows in groups.values() if len(rows) > 1]
 
 
