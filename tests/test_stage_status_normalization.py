@@ -17,11 +17,13 @@ from backend.utils.stage_status_normalization import normalize_stage_status
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("Interview 1 - HR Screen", "interview_1"),
-        ("HR Screen", "interview_1"),
+        ("Interview 1 - HR Screen", "hr_screen_done"),
+        ("HR Screen Scheduled", "hr_screen_scheduled"),
+        ("HR Screen Done", "hr_screen_done"),
+        ("HR Screen", "hr_screen_done"),
         ("Interview 4", "interview_4"),
         ("Code Eval", "code_eval"),
-        ("Eval 1", "interview_1"),
+        ("Eval 1", "hr_screen_done"),
         ("eval_3", "interview_3"),
         ("Eval / Test", "code_eval"),
         ("Need to do Eval", "code_eval"),

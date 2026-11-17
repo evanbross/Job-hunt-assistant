@@ -75,14 +75,19 @@ logger = logging.getLogger(__name__)
 # ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead stages (before Applied) and
 # offer outcomes added. Each key is its label run through normalize_stage_status(),
 # so a stage picked by label resolves to its key with no alias entry.
-_SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
+# ai: claude-opus-5-5 | 2026-11-17 -- public so the voice-query prompt lists the
+# stage keys from here instead of keeping its own copy.
+SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
     ("recruiter_reached_out", "Recruiter Reached Out", 2, False, False),
     ("recruiter_screen", "Recruiter Screen", 4, False, False),
     ("submitted_to_client", "Submitted to Client", 6, True, False),
     ("applied", "Applied", 10, True, False),
     ("waiting_call", "Waiting for Call", 20, True, False),
     ("waiting_second", "Waiting for 2nd", 30, True, False),
-    ("interview_1", "Interview 1 - HR Screen", 40, False, False),
+    # ai: claude-opus-5-5 | 2026-11-17 -- interview_1 ("Interview 1 - HR Screen")
+    # split in two; see _RENAMED_STAGE_STATUSES.
+    ("hr_screen_scheduled", "HR Screen Scheduled", 35, False, False),
+    ("hr_screen_done", "HR Screen Done", 40, False, False),
     ("interview_2", "Interview 2", 50, False, False),
     ("interview_3", "Interview 3", 60, False, False),
     ("interview_4", "Interview 4", 70, False, False),
@@ -103,8 +108,13 @@ _SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
 # _rename_application_stage_statuses(). eval_1..3 were the interview rounds;
 # eval_test ("Eval / Test", which older installs still carry from before it
 # left the seed list) was the coding test.
+# ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into hr_screen_scheduled
+# and hr_screen_done. Every interview_1 stage on the live database was already in
+# the past when this ran, so they all become "done" (and eval_1 goes straight
+# there, rather than through the retired interview_1).
 _RENAMED_STAGE_STATUSES: dict[str, str] = {
-    "eval_1": "interview_1",
+    "interview_1": "hr_screen_done",
+    "eval_1": "hr_screen_done",
     "eval_2": "interview_2",
     "eval_3": "interview_3",
     "eval_test": "code_eval",
@@ -2753,7 +2763,7 @@ def seed_data(conn: Any) -> None:
             ghost_eligible = EXCLUDED.ghost_eligible,
             is_terminal = EXCLUDED.is_terminal
         """,
-        _SEED_STAGE_STATUSES,
+        SEED_STAGE_STATUSES,
     )
 
     cur.execute("SELECT COUNT(*) AS cnt FROM jd_health_check_targets")

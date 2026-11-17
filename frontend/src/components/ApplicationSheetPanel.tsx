@@ -67,9 +67,11 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
   rejected:           { background: "var(--red-light)", color: "var(--red)" },
   waiting_call:       { background: "var(--accent-light)", color: "var(--accent)" },
   waiting_second:     { background: "var(--orange-light)", color: "var(--orange)" },
+  // ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into the two HR screen stages
+  hr_screen_scheduled: { background: "var(--green-light)", color: "var(--green)" },
+  hr_screen_done:      { background: "var(--green-light)", color: "var(--green)" },
   // ai: claude-opus-5-5 | 2026-10-27 -- were eval_1..3
-  interview_1:        { background: "var(--green-light)", color: "var(--green)" },
-  interview_2:        { background: "var(--green-light)", color: "var(--green)" },
+  interview_2:       { background: "var(--green-light)", color: "var(--green)" },
   interview_3:        { background: "var(--green-light)", color: "var(--green)" },
   interview_4:        { background: "var(--green-light)", color: "var(--green)" },
   code_eval:          { background: "var(--green-light)", color: "var(--green)" },
@@ -93,7 +95,7 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
 };
 
 // Fallback option list shown before the DB loads (or if the table is empty).
-// ai: claude-opus-5-5 | 2026-10-27 -- matches backend/db/schema.py's _SEED_STAGE_STATUSES labels
+// ai: claude-opus-5-5 | 2026-10-27 -- matches backend/db/schema.py's SEED_STAGE_STATUSES labels
 // ai: claude-opus-5-5 | 2026-11-11 -- recruiter-lead and offer stages added, in seed order
 const DEFAULT_STATUS_OPTIONS = [
   "Recruiter Reached Out",
@@ -102,7 +104,8 @@ const DEFAULT_STATUS_OPTIONS = [
   "Applied",
   "Waiting for Call",
   "Waiting for 2nd",
-  "Interview 1 - HR Screen",
+  "HR Screen Scheduled", // ai: claude-opus-5-5 | 2026-11-17
+  "HR Screen Done",
   "Interview 2",
   "Interview 3",
   "Interview 4",
@@ -179,8 +182,10 @@ function getStatusStyle(value?: string | null, colorMap: Record<string, StatusSt
     return STATUS_FALLBACKS.waiting_second;
   }
   if (normalizedValue.includes("waiting")) return STATUS_FALLBACKS.waiting_call;
-  // ai: claude-opus-5-5 | 2026-10-27 -- was eval_1, now gone
-  if (normalizedValue.includes("eval") || normalizedValue.includes("interview")) return STATUS_FALLBACKS.interview_1;
+  // ai: claude-opus-5-5 | 2026-11-17 -- was interview_1, now split
+  if (normalizedValue.includes("eval") || normalizedValue.includes("interview") || normalizedValue.includes("screen")) {
+    return STATUS_FALLBACKS.interview_2;
+  }
   if (normalizedValue.includes("filled")) return STATUS_FALLBACKS.job_filled;
   if (normalizedValue.includes("applied")) return STATUS_FALLBACKS.applied;
   if (normalizedValue.includes("ghost")) return STATUS_FALLBACKS.ghosted;

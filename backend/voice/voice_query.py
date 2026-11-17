@@ -26,6 +26,7 @@ import re
 from typing import Any
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.db.schema import SEED_STAGE_STATUSES
 from backend.voice.voice_actions import VOICE_ACTIONS
 
 logger = logging.getLogger(__name__)
@@ -33,16 +34,18 @@ logger = logging.getLogger(__name__)
 _TAG = "VOICE_INTENT"
 _TAG_RE = re.compile(rf"<{_TAG}>(.*?)</{_TAG}>", re.DOTALL)
 
-_SCHEMA_SUMMARY = """
+# ai: claude-opus-5-5 | 2026-11-17 -- the stage keys come from the seed list; the
+# hand-typed copy here had fallen behind it (no recruiter or offer stages).
+_STAGE_STATUS_KEYS = ", ".join(key for key, *_ in SEED_STAGE_STATUSES)
+
+_SCHEMA_SUMMARY = f"""
 Tables/views you may query (read-only):
 - jobs(id, status, company, job_title, fit_score, url, source, date_found, on_sheet,
   duplicate_hint, duplicate_of_id, skip_reason, salary_min, salary_max)
   status is one of: pending_review (in the job queue awaiting review), triage,
   possible_duplicate, applied, skipped.
 - application_stages(id, job_id, status, date, notes, created_at) -- one row per
-  application-stage transition. status is one of: applied, waiting_call,
-  waiting_second, interview_1 (HR screen), interview_2, interview_3, interview_4,
-  code_eval, rejected, job_filled, req_closed, ghosted.
+  application-stage transition. status is one of: {_STAGE_STATUS_KEYS}.
 - application_stage_statuses(key, label, sort_order, ghost_eligible, is_terminal) -- lookup
   table describing the application_stages.status values above.
 - latest_application_stage(job_id, latest_status, latest_status_date, notes,

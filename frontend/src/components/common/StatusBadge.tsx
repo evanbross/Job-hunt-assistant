@@ -37,7 +37,7 @@ export default function StatusBadge({ status, label, tone }: StatusBadgeProps) {
 function statusLabel(status: string): string {
   // ai: claude-opus-5-5 | 2026-10-27 -- eval_1..3 replaced by the interview
   // and code-eval stages; job-queue labels now come from the shared map.
-  // Stage labels mirror backend/db/schema.py's _SEED_STAGE_STATUSES for
+  // Stage labels mirror backend/db/schema.py's SEED_STAGE_STATUSES for
   // callers that don't load the catalog; pass `label` when you have it.
   const labels: Record<string, string> = {
     ...JOB_QUEUE_STATUS_LABELS,
@@ -53,7 +53,8 @@ function statusLabel(status: string): string {
     applied: "Applied",
     code_eval: "Code Eval",
     ghosted: "Ghosted",
-    interview_1: "Interview 1 - HR Screen",
+    hr_screen_scheduled: "HR Screen Scheduled", // ai: claude-opus-5-5 | 2026-11-17
+    hr_screen_done: "HR Screen Done",
     interview_2: "Interview 2",
     interview_3: "Interview 3",
     interview_4: "Interview 4",

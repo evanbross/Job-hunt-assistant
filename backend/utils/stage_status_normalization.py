@@ -62,12 +62,14 @@ _STAGE_STATUS_ALIASES: dict[str, str] = {
     "eval": "code_eval",
     "eval_test": "code_eval",
     "code_eval": "code_eval",
-    "eval_1": "interview_1",
     "eval_2": "interview_2",
     "eval_3": "interview_3",
-    "hr_screen": "interview_1",
-    "interview_1_hr_screen": "interview_1",
-    "interview_1": "interview_1",
+    # ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into
+    # hr_screen_scheduled/hr_screen_done; its old names mean the screen happened.
+    "eval_1": "hr_screen_done",
+    "hr_screen": "hr_screen_done",
+    "interview_1_hr_screen": "hr_screen_done",
+    "interview_1": "hr_screen_done",
     "interview_2": "interview_2",
     "interview_3": "interview_3",
     "interview_4": "interview_4",

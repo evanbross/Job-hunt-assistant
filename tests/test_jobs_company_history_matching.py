@@ -168,7 +168,7 @@ def test_get_outreach_company_relevance_through_the_latest_stage_view_and_tenant
             owner_id, {"company": "Acme", "job_title": "Via Stage", "status": "applied"}
         )
         stages_repo.insert(
-            owner_id, {"job_id": active_via_stage_id, "status": "interview_1", "date": "2026-10-01"}
+            owner_id, {"job_id": active_via_stage_id, "status": "hr_screen_done", "date": "2026-10-01"}
         )
 
         # NOT active: job.status isn't active AND its latest stage is terminal.
