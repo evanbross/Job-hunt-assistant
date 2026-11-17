@@ -30,9 +30,9 @@
 // TriagePanel card variants that independently wire useLazyJobDetail's retry
 // UI by hand (see JobCard.test.tsx for the shared-logic coverage) -- this
 // confirms the wiring in *this* file is correct too, not just the hook.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TriageCard } from "./TriagePanel.tsx";
+import { DuplicateCard, TriageCard } from "./TriagePanel.tsx";
 import type { Job } from "../types/jobs.ts";
 
 function baseJob(overrides: Partial<Job> = {}): Job {
@@ -100,5 +100,62 @@ describe("TriageCard lazy reasoning", () => {
     await waitFor(() => expect(screen.getByText(/Reasonable fit for the role\./)).toBeInTheDocument());
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ai: claude-opus-5-5 | 2026-11-17
+// Both Triage cards use JobCard's layout: the description, cover letter,
+// resume and pitch actions live in the right-click menu, not as a row of
+// separate buttons.
+const duplicateNoop = {
+  onSameJob: () => Promise.resolve(),
+  onDifferentJob: () => Promise.resolve(),
+  onMarkApplied: () => Promise.resolve(),
+  onSkip: () => Promise.resolve(),
+  onReEvaluate: () => Promise.resolve(undefined),
+  onReprocessed: () => {},
+};
+
+function openCardMenu(jobId: number): HTMLElement {
+  const card = document.getElementById(`triage-card-${jobId}`);
+  if (!card) throw new Error(`card ${jobId} not rendered`);
+  fireEvent.contextMenu(card, { clientX: 40, clientY: 40 });
+  const historyItem = screen.getByRole("button", { name: "Show Company History" });
+  return historyItem.parentElement as HTMLElement;
+}
+
+describe.each([
+  ["DuplicateCard", () => render(<DuplicateCard job={baseJob({ status: "possible_duplicate" })} {...duplicateNoop} />)],
+  ["TriageCard", () => render(<TriageCard job={baseJob()} {...noop} />)],
+])("%s card layout", (_name, renderCard) => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the pitch and resume actions out of the card body", () => {
+    renderCard();
+    expect(screen.queryByRole("button", { name: "Why I want to work here" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Why I'd be good for this job" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Tailor Resume" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-evaluate Fit" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cover Letter" })).toBeInTheDocument();
+  });
+
+  it("offers them in the right-click menu, which runs the action and closes", () => {
+    renderCard();
+    const menu = openCardMenu(1);
+    for (const name of ["Cover Letter", "Tailor Resume", "Why I want to work here", "Why I'd be good for this job"]) {
+      expect(within(menu).getByRole("button", { name })).toBeInTheDocument();
+    }
+    expect(within(menu).getByRole("button", { name: /^(Update|Add) Description$/ })).toBeInTheDocument();
+
+    fireEvent.click(within(menu).getByRole("button", { name: "Cover Letter" }));
+
+    expect(fetch).toHaveBeenCalledWith("/api/jobs/1/cover-letter", { method: "POST" });
+    expect(screen.queryByRole("button", { name: "Show Company History" })).not.toBeInTheDocument();
   });
 });

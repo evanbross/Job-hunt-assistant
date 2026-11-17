@@ -42,6 +42,7 @@ import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import UndoEditNotice from "./common/UndoEditNotice.tsx";
 import LazyDetailLoadError from "./LazyDetailLoadError.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
+import JobCardContextMenu from "./common/JobCardContextMenu.tsx";
 import { useCompanyHistoryLookup } from "../hooks/useCompanyHistoryLookup.ts";
 import { useLazyJobDetail } from "../hooks/useLazyJobDetail.ts";
 import { scoreTone, reasoningWithoutPenaltySummary, fitReasoningBullets } from "../utils/fitScoringUtils.ts";
@@ -144,7 +145,7 @@ function JobCard({
   const [coverLetterOpen, setCoverLetterOpen] = useState(false);
   const companyHistory = useCompanyHistoryLookup(job);
   const companyHistoryAvailable = hasCompanyHistoryAvailable(job);
-  const { contextMenu, setContextMenu, runContextAction } = useCardContextMenu();
+  const { contextMenu, openContextMenu, runContextAction } = useCardContextMenu();
 
   const descriptionTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -291,15 +292,10 @@ function JobCard({
     );
   };
 
-  const openContextMenu = (event: ReactMouseEvent) => {
-    const target = event.target as HTMLElement;
-    if (target.closest("a,button,input,textarea,select")) return;
-    event.preventDefault();
-    setContextMenu({
-      x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 300)),
-    });
+  // ai: claude-opus-5-5 | 2026-11-17 -- the hook's handler now leaves room for the full menu
+  const handleCardContextMenu = (event: ReactMouseEvent) => {
     setShowSkipMenu(false);
+    openContextMenu(event);
   };
 
   const startDescriptionEdit = async () => {
@@ -692,81 +688,30 @@ function JobCard({
   const busy = loading !== null;
 
   return (
-    <div id={`job-card-${job.id}`} style={cardStyle} onContextMenu={openContextMenu}>
+    <div id={`job-card-${job.id}`} style={cardStyle} onContextMenu={handleCardContextMenu}>
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- shared with the Triage cards */}
       {contextMenu && (
-        <div
-          style={{
-            ...contextMenuStyle,
-            left: contextMenu.x,
-            top: contextMenu.y,
-          }}
-          onClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.preventDefault()}
-        >
-          {hasDescription && !descriptionUnavailable && (
-            <button
-              type="button"
-              style={contextMenuItemStyle}
-              onClick={() => runContextAction(() => {
-                ensureLazyDetailLoaded();
-                setDescriptionOpen((open) => !open);
-              })}
-            >
-              {descriptionOpen ? "Hide Description" : "Job Description"}
-            </button>
-          )}
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(startDescriptionEdit)}
-            disabled={descriptionSaving || busy}
-          >
-            Update Description
-          </button>
-          <div style={contextMenuSeparatorStyle} />
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(handleCoverLetter)}
-            disabled={busy}
-          >
-            {coverLetter ? "Show Cover Letter" : "Cover Letter"}
-          </button>
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(handleResumeTailor)}
-            disabled={busy}
-          >
-            {resumeTailor ? "Show Resume Tailoring" : "Tailor Resume"}
-          </button>
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(() => handlePitch("why_company"))}
-            disabled={busy}
-          >
-            Why I want to work here
-          </button>
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(() => handlePitch("why_fit"))}
-            disabled={busy}
-          >
-            Why I'd be good for this job
-          </button>
-          <div style={contextMenuSeparatorStyle} />
-          <button
-            type="button"
-            style={contextMenuItemStyle}
-            onClick={() => runContextAction(companyHistory.open)}
-            disabled={!companyHistoryAvailable}
-            title={companyHistoryAvailable ? undefined : "No other jobs on record for this company"}
-          >
-            Show Company History
-          </button>
-        </div>
+        <JobCardContextMenu
+          position={contextMenu}
+          busy={busy || descriptionSaving}
+          runAction={runContextAction}
+          descriptionToggle={hasDescription && !descriptionUnavailable ? {
+            open: descriptionOpen,
+            onToggle: () => {
+              ensureLazyDetailLoaded();
+              setDescriptionOpen((open) => !open);
+            },
+          } : null}
+          descriptionEditLabel="Update Description"
+          onEditDescription={startDescriptionEdit}
+          coverLetterReady={Boolean(coverLetter)}
+          onCoverLetter={handleCoverLetter}
+          resumeTailorReady={Boolean(resumeTailor)}
+          onTailorResume={handleResumeTailor}
+          onPitch={handlePitch}
+          historyAvailable={companyHistoryAvailable}
+          onShowCompanyHistory={companyHistory.open}
+        />
       )}
       {/* Header row */}
       <div style={{ display: "flex", alignItems: "flex-start", gap: "12px" }}>
@@ -1766,36 +1711,6 @@ const cardStyle: CSSProperties = {
   marginBottom: "12px",
   boxShadow: "var(--shadow-sm)",
   transition: "box-shadow 0.2s, border-color 0.2s",
-};
-
-const contextMenuStyle: CSSProperties = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  boxShadow: "var(--shadow-lg)",
-  display: "flex",
-  flexDirection: "column",
-  minWidth: "220px",
-  padding: "4px",
-  position: "fixed",
-  zIndex: 1000,
-};
-
-const contextMenuItemStyle: CSSProperties = {
-  background: "transparent",
-  border: "none",
-  borderRadius: "4px",
-  color: "var(--text)",
-  cursor: "pointer",
-  fontSize: "13px",
-  padding: "8px 10px",
-  textAlign: "left",
-  width: "100%",
-};
-
-const contextMenuSeparatorStyle: CSSProperties = {
-  borderTop: "1px solid var(--border)",
-  margin: "4px 0",
 };
 
 const sourceSummaryStyle: CSSProperties = {

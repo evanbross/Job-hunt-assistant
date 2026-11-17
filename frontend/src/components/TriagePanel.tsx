@@ -47,6 +47,7 @@ import LazyDetailLoadError from "./LazyDetailLoadError.tsx";
 import SalaryBadge from "./common/SalaryBadge.tsx";
 import LinkedInInsightBadge from "./common/LinkedInInsightBadge.tsx";
 import { useCardContextMenu } from "../hooks/useCardContextMenu.ts";
+import JobCardContextMenu from "./common/JobCardContextMenu.tsx";
 import { fitReasoningBullets } from "../utils/fitScoringUtils.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts"; // ai: claude-fable-5 | 2026-07-15
 import {
@@ -108,40 +109,6 @@ function companyTrackedSummary(job: Job): CompanyTrackedSummary | null {
     title: entries.map(([status, n]) => `${n}× ${status.trim() || "No status"}`).join(" · "),
     badgeClass,
   };
-}
-
-interface CardContextMenuProps {
-  contextMenu: { x: number; y: number };
-  historyAvailable: boolean;
-  onShowCompanyHistory: () => void;
-}
-
-function CardContextMenu({ contextMenu, historyAvailable, onShowCompanyHistory }: CardContextMenuProps) {
-  return (
-    <div
-      style={{
-        ...contextMenuStyle,
-        left: contextMenu.x,
-        top: contextMenu.y,
-      }}
-      onClick={(event) => event.stopPropagation()}
-      onContextMenu={(event) => event.preventDefault()}
-    >
-      <button
-        type="button"
-        style={{
-          ...contextMenuItemStyle,
-          cursor: historyAvailable ? "pointer" : "not-allowed",
-          opacity: historyAvailable ? 1 : 0.5,
-        }}
-        onClick={onShowCompanyHistory}
-        disabled={!historyAvailable}
-        title={historyAvailable ? undefined : "No other jobs on record for this company"}
-      >
-        Show Company History
-      </button>
-    </div>
-  );
 }
 
 interface CompanyNameEditorProps {
@@ -480,17 +447,39 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
     }
   };
 
+  // ai: claude-opus-5-5 | 2026-11-17
+  const handleCardContextMenu = (event: React.MouseEvent) => {
+    setShowSkipMenu(false);
+    openContextMenu(event);
+  };
+
+  const openDescriptionPaste = () => {
+    setPastedDescription("");
+    setDescriptionPasteOpen(true);
+    setReEvaluateError(null);
+  };
+
   return (
     <div
       id={`triage-card-${job.id}`}
       style={{ ...cardStyle, borderColor: "rgba(180,83,9,0.4)", background: "rgba(180,83,9,0.04)" }}
-      onContextMenu={openContextMenu}
+      onContextMenu={handleCardContextMenu}
     >
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- JobCard's menu; these were separate buttons */}
       {contextMenu && (
-        <CardContextMenu
-          contextMenu={contextMenu}
+        <JobCardContextMenu
+          position={contextMenu}
+          busy={loadingAction !== null}
+          runAction={runContextAction}
+          descriptionEditLabel={hasDescriptionDuplicate ? "Update Description" : "Add Description"}
+          onEditDescription={openDescriptionPaste}
+          coverLetterReady={Boolean(coverLetter)}
+          onCoverLetter={handleGenerateCoverLetter}
+          resumeTailorReady={Boolean(resumeTailor)}
+          onTailorResume={handleResumeTailor}
+          onPitch={handlePitch}
           historyAvailable={companyHistoryAvailable}
-          onShowCompanyHistory={() => runContextAction(companyHistory.open)}
+          onShowCompanyHistory={companyHistory.open}
         />
       )}
       {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
@@ -630,22 +619,6 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           <ContactsBadge company={job.company} contacts={job.company_contacts} />
           <SalaryBadge job={effectiveJobForSalaryDuplicate} />
           <LinkedInInsightBadge job={job} />
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
-            onClick={handleReEvaluateClick}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "reevaluate" ? (
-              <span style={buttonSpinnerContentStyle}>
-                <span className="inline-spinner" />
-                Re-evaluating...
-              </span>
-            ) : (
-              "Re-evaluate Fit"
-            )}
-          </button>
         </div>
       </div>
 
@@ -696,10 +669,12 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         </div>
       )}
 
-      <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- reasoning toggle on its own row, as on
+          JobCard; description/cover letter/resume/pitch moved to the right-click menu */}
+      <div style={{ marginTop: "10px" }}>
         <button
           className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
+          style={{ fontSize: "12px", padding: "4px 10px" }}
           type="button"
           onClick={() => {
             ensureLazyDuplicateDetailLoaded();
@@ -707,78 +682,6 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           }}
         >
           {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
-          type="button"
-          onClick={() => {
-            setPastedDescription("");
-            setDescriptionPasteOpen(true);
-            setReEvaluateError(null);
-          }}
-          disabled={loadingAction !== null}
-        >
-          {hasDescriptionDuplicate ? "Update description" : "Add description"}
-        </button>
-        {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
-          type="button"
-          onClick={handleGenerateCoverLetter}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "cover" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Cover Letter"
-          )}
-        </button>
-        {/* ai: claude-sonnet-5 | 2026-07-27 */}
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
-          type="button"
-          onClick={() => handlePitch("why_company")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "pitch" && pitchType === "why_company" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Why I want to work here"
-          )}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
-          type="button"
-          onClick={() => handlePitch("why_fit")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "pitch" && pitchType === "why_fit" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Why I'd be good for this job"
-          )}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "5px 11px" }}
-          type="button"
-          onClick={handleResumeTailor}
-          disabled={loadingAction !== null}
-        >
-          Tailor Resume
         </button>
       </div>
 
@@ -805,44 +708,61 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- JobCard's action row: utility
+          buttons left, decision buttons right */}
+      <div style={actionRowStyle}>
         <button
-          className="btn-danger btn-sm"
-          onClick={() => act(onSameJob, "same")}
+          className="btn-secondary btn-sm"
+          onClick={handleReEvaluateClick}
           disabled={loadingAction !== null}
         >
-          {loadingAction === "same" ? "Removing…" : "Yes, same job — skip it"}
+          {loadingAction === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
+        </button>
+        <button
+          className="btn-secondary btn-sm"
+          onClick={handleGenerateCoverLetter}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "cover" ? "Generating..." : "Cover Letter"}
+        </button>
+
+        <div style={{ flex: 1 }} />
+
+        <button
+          className="btn-secondary btn-sm"
+          onClick={() => act(onSameJob, "same")}
+          disabled={loadingAction !== null}
+          title="It's the same posting as the one already tracked — skip this copy"
+        >
+          {loadingAction === "same" ? "Removing…" : "Same job — skip it"}
         </button>
         <button
           className="btn-success btn-sm"
           onClick={() => act(onDifferentJob, "different")}
           disabled={loadingAction !== null}
+          title="It's a different role — move it into the queue"
         >
-          {loadingAction === "different" ? "Moving…" : "No, it's a different role"}
+          {loadingAction === "different" ? "Moving…" : "Different role"}
         </button>
-        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
-          className="btn-primary btn-sm"
+          className="btn-primary"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
-        {/* ai: claude-sonnet-5 | 2026-09-14 */}
         <button
           className="btn-secondary btn-sm"
-          onClick={() => setSnoozeOpen((open) => !open)}
+          onClick={() => { setSnoozeOpen((open) => !open); setShowSkipMenu(false); }}
           disabled={loadingAction !== null}
           title="Hide this job for a few days, then show it again"
         >
           {loadingAction === "snooze" ? "Snoozing…" : "Snooze"}
         </button>
-        {/* ai: claude-sonnet-4-6 | 2026-06-24 */}
         <div style={{ position: "relative" }}>
           <button
-            className="btn-danger btn-sm"
-            onClick={() => setShowSkipMenu((open) => !open)}
+            className="btn-danger"
+            onClick={() => { setShowSkipMenu((open) => !open); setSnoozeOpen(false); }}
             disabled={loadingAction !== null}
             style={{ display: "flex", alignItems: "center", gap: "5px" }}
           >
@@ -851,7 +771,7 @@ function DuplicateCardImpl({ job, onSameJob, onDifferentJob, onMarkApplied, onSk
           </button>
 
           {showSkipMenu && (
-            <div style={skipMenuStyle}>
+            <div style={rightAlignedSkipMenuStyle}>
               {SKIP_REASONS.filter((reason) => reason.key !== "duplicate").map((reason) => (
                 <button
                   key={reason.key}
@@ -1494,11 +1414,32 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
 
   return (
     <div id={`triage-card-${job.id}`} style={cardStyle} onContextMenu={handleCardContextMenu}>
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- JobCard's menu; these were separate buttons */}
       {contextMenu && (
-        <CardContextMenu
-          contextMenu={contextMenu}
+        <JobCardContextMenu
+          position={contextMenu}
+          busy={loadingAction !== null}
+          runAction={runContextAction}
+          descriptionToggle={hasDescriptionTriage && !descriptionUnavailable ? {
+            open: descriptionOpen,
+            onToggle: () => {
+              ensureLazyTriageDetailLoaded();
+              setDescriptionOpen((open) => !open);
+            },
+          } : null}
+          descriptionEditLabel={hasDescriptionTriage ? "Update Description" : "Add Description"}
+          onEditDescription={() => {
+            setPastedDescription("");
+            setDescriptionPasteOpen(true);
+            setReprocessError(null);
+          }}
+          coverLetterReady={Boolean(coverLetter)}
+          onCoverLetter={handleGenerateCoverLetter}
+          resumeTailorReady={Boolean(resumeTailor)}
+          onTailorResume={handleResumeTailor}
+          onPitch={handlePitch}
           historyAvailable={companyHistoryAvailable}
-          onShowCompanyHistory={() => runContextAction(companyHistory.open)}
+          onShowCompanyHistory={companyHistory.open}
         />
       )}
       {/* ai: claude-sonnet-4-6 | 2026-06-09 */}
@@ -1716,22 +1657,6 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
               {companyTracked.count} tracked
             </span>
           )}
-          <button
-            type="button"
-            className="btn-secondary"
-            style={{ fontSize: "12px", padding: "5px 11px", whiteSpace: "nowrap" }}
-            onClick={handleReEvaluateClick}
-            disabled={loadingAction !== null}
-          >
-            {loadingAction === "reevaluate" ? (
-              <span style={buttonSpinnerContentStyle}>
-                <span className="inline-spinner" />
-                Re-evaluating...
-              </span>
-            ) : (
-              "Re-evaluate Fit"
-            )}
-          </button>
         </div>
       </div>
 
@@ -1785,6 +1710,9 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         </div>
       )}
 
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- laid out like JobCard: reasoning
+          toggle alone here; description, cover letter, resume and pitches in the
+          right-click menu; fit chat, re-evaluate and cover letter in the action row */}
       <div style={{ marginBottom: "10px" }}>
         <button
           className="btn-secondary"
@@ -1795,76 +1723,6 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           }}
         >
           {reasoningOpen ? "Hide reasoning" : "Show reasoning"}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
-          onClick={() => {
-            setChatOpen((open) => !open);
-            setChatMessages([]);
-            setChatReclassification(null);
-          }}
-        >
-          {chatOpen ? "Close AI chat" : "Chat with AI about fit"}
-        </button>
-        {/* ai: claude-sonnet-4-6 | 2026-06-20 */}
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
-          type="button"
-          onClick={handleGenerateCoverLetter}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "cover" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Cover Letter"
-          )}
-        </button>
-        {/* ai: claude-sonnet-5 | 2026-07-27 */}
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
-          type="button"
-          onClick={() => handlePitch("why_company")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "pitch" && pitchType === "why_company" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Why I want to work here"
-          )}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
-          type="button"
-          onClick={() => handlePitch("why_fit")}
-          disabled={loadingAction !== null}
-        >
-          {loadingAction === "pitch" && pitchType === "why_fit" ? (
-            <span style={buttonSpinnerContentStyle}>
-              <span className="inline-spinner" />
-              Generating...
-            </span>
-          ) : (
-            "Why I'd be good for this job"
-          )}
-        </button>
-        <button
-          className="btn-secondary"
-          style={{ fontSize: "12px", padding: "4px 10px", marginLeft: "8px" }}
-          type="button"
-          onClick={handleResumeTailor}
-          disabled={loadingAction !== null}
-        >
-          Tailor Resume
         </button>
         {reasoningOpen && lazyTriageDetailError && (
           <LazyDetailLoadError label="reasoning" onRetry={ensureLazyTriageDetailLoaded} />
@@ -1890,55 +1748,16 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         )}
       </div>
 
-      {chatOpen && (
-        <FitChatPanel
-          chatInput={chatInput}
-          chatMessages={chatMessages}
-          chatMessagesRef={chatMessagesRef}
-          chatSending={chatSending}
-          reclassification={chatReclassification}
-          accepting={chatAccepting}
-          onInputChange={setChatInput}
-          onSend={handleChatSend}
-          onAccept={handleAcceptReclassification}
-        />
-      )}
-
       {/* Job description */}
       {hasDescriptionTriage && (
         <div>
-          <div style={descriptionActionRowStyle}>
-            {!descriptionUnavailable && (
-              <button
-                className="btn-secondary"
-                style={{ fontSize: "12px", padding: "4px 10px" }}
-                onClick={() => {
-                  ensureLazyTriageDetailLoaded();
-                  setDescriptionOpen((open) => !open);
-                }}
-              >
-                {descriptionOpen ? "Hide Description" : "Job Description"}
-              </button>
-            )}
-            <button
-              className="btn-secondary"
-              style={{ fontSize: "12px", padding: "4px 10px" }}
-              type="button"
-              onClick={() => {
-                setPastedDescription("");
-                setDescriptionPasteOpen(true);
-                setReprocessError(null);
-              }}
-              disabled={loadingAction !== null}
-            >
-              {hasDescriptionTriage ? "Update detailed description" : "Add detailed description"}
-            </button>
-            {descriptionUnavailable && (
+          {descriptionUnavailable && (
+            <div style={descriptionActionRowStyle}>
               <span style={{ fontSize: "12px", color: "var(--orange)" }}>
                 No description loaded — only a tracking link was captured.
               </span>
-            )}
-          </div>
+            </div>
+          )}
           {descriptionOpen && !jobDescription && lazyTriageDetailError && (
             <LazyDetailLoadError label="description" onRetry={ensureLazyTriageDetailLoaded} />
           )}
@@ -1958,70 +1777,72 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
         </div>
       )}
 
-      {/* Actions */}
-      <div style={{ display: "flex", gap: "8px", marginTop: "12px", flexWrap: "wrap" }}>
-        {job.url && (
-          <a
-            href={job.url}
-            target="_blank"
-            rel="noreferrer"
-            className="btn-secondary"
-            style={{ display: "inline-flex", alignItems: "center", padding: "6px 14px", fontSize: "13px", textDecoration: "none", flexShrink: 0 }}
-          >
-            View Job ↗
-          </a>
-        )}
-        {!job.url && !editingUrl && (
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={startUrlEdit}
-            disabled={loadingAction !== null}
-            style={{ fontSize: "13px", flexShrink: 0 }}
-          >
-            Add Job URL
-          </button>
-        )}
+      {/* Actions — utility buttons left, decision buttons right (as on JobCard) */}
+      <div style={actionRowStyle}>
         <button
-          className="btn-success"
+          className="btn-secondary btn-sm"
+          onClick={() => {
+            setChatOpen((open) => !open);
+            setChatMessages([]);
+            setChatReclassification(null);
+          }}
+          disabled={loadingAction !== null}
+        >
+          {chatOpen ? "Close Fit Chat" : "Review Fit with AI"}
+        </button>
+        <button
+          className="btn-secondary btn-sm"
+          onClick={handleReEvaluateClick}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "reevaluate" ? "Re-evaluating..." : "Re-evaluate Fit"}
+        </button>
+        <button
+          className="btn-secondary btn-sm"
+          onClick={handleGenerateCoverLetter}
+          disabled={loadingAction !== null}
+        >
+          {loadingAction === "cover" ? "Generating..." : "Cover Letter"}
+        </button>
+
+        <div style={{ flex: 1 }} />
+
+        <button
+          className="btn-success btn-sm"
           onClick={() => act(onApprove, "approve")}
           disabled={loadingAction !== null}
-          style={{ flex: 1 }}
+          title="It's a real job posting — move it into the queue"
         >
           {loadingAction === "approve" ? "Moving…" : "It's a Job Posting"}
         </button>
-        {/* ai: claude-fable-5 | 2026-07-14 */}
         <button
           className="btn-primary"
           onClick={() => act(onMarkApplied, "applied")}
           disabled={loadingAction !== null}
-          style={{ flexShrink: 0 }}
         >
           {loadingAction === "applied" ? "Saving…" : "Mark Applied"}
         </button>
-        {/* ai: claude-sonnet-5 | 2026-09-14 */}
         <button
-          className="btn-secondary"
-          onClick={() => setSnoozeOpen((open) => !open)}
+          className="btn-secondary btn-sm"
+          onClick={() => { setSnoozeOpen((open) => !open); setShowSkipMenu(false); }}
           disabled={loadingAction !== null}
-          style={{ flexShrink: 0 }}
           title="Hide this job for a few days, then show it again"
         >
           {loadingAction === "snooze" ? "Snoozing…" : "Snooze"}
         </button>
-        <div style={{ position: "relative", flex: 1 }}>
+        <div style={{ position: "relative" }}>
           <button
             className="btn-danger"
-            onClick={() => setShowSkipMenu((open) => !open)}
+            onClick={() => { setShowSkipMenu((open) => !open); setSnoozeOpen(false); }}
             disabled={loadingAction !== null}
-            style={{ alignItems: "center", display: "flex", gap: "5px", justifyContent: "center", width: "100%" }}
+            style={{ alignItems: "center", display: "flex", gap: "5px" }}
           >
             {String(loadingAction || "").startsWith("skip:") ? "Skipping…" : "Not Relevant"}
             {loadingAction === null && <span style={{ fontSize: "10px", opacity: 0.7 }}>▾</span>}
           </button>
 
           {showSkipMenu && (
-            <div style={skipMenuStyle}>
+            <div style={rightAlignedSkipMenuStyle}>
               {SKIP_REASONS.map((reason) => (
                 <button
                   key={reason.key}
@@ -2046,6 +1867,21 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
           )}
         </div>
       </div>
+
+      {/* ai: claude-opus-5-5 | 2026-11-17 -- below the action row that opens it */}
+      {chatOpen && (
+        <FitChatPanel
+          chatInput={chatInput}
+          chatMessages={chatMessages}
+          chatMessagesRef={chatMessagesRef}
+          chatSending={chatSending}
+          reclassification={chatReclassification}
+          accepting={chatAccepting}
+          onInputChange={setChatInput}
+          onSend={handleChatSend}
+          onAccept={handleAcceptReclassification}
+        />
+      )}
 
       {snoozeOpen && (
         <SnoozeModal
@@ -2599,31 +2435,6 @@ const cardStyle: CSSProperties = {
   transition: "box-shadow 0.2s, border-color 0.2s",
 };
 
-const contextMenuStyle: CSSProperties = {
-  background: "var(--surface)",
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  boxShadow: "var(--shadow-lg)",
-  display: "flex",
-  flexDirection: "column",
-  minWidth: "220px",
-  padding: "4px",
-  position: "fixed",
-  zIndex: 1000,
-};
-
-const contextMenuItemStyle: CSSProperties = {
-  background: "transparent",
-  border: "none",
-  borderRadius: "4px",
-  color: "var(--text)",
-  cursor: "pointer",
-  fontSize: "13px",
-  padding: "8px 10px",
-  textAlign: "left",
-  width: "100%",
-};
-
 const triageHeaderStyle: CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
@@ -2770,6 +2581,24 @@ const skipMenuStyle: CSSProperties = {
   padding: "5px",
   position: "absolute",
   zIndex: 10,
+};
+
+// ai: claude-opus-5-5 | 2026-11-17 -- Skip sits at the right end of the action
+// row now, so its menu opens leftward instead of past the card's edge.
+const rightAlignedSkipMenuStyle: CSSProperties = {
+  ...skipMenuStyle,
+  left: "auto",
+  right: 0,
+};
+
+// The action row both Triage cards share with JobCard: utility buttons on the
+// left, a flex spacer, decision buttons on the right.
+const actionRowStyle: CSSProperties = {
+  alignItems: "center",
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "8px",
+  marginTop: "12px",
 };
 
 const skipMenuItemStyle: CSSProperties = {

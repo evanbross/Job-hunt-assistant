@@ -63,7 +63,7 @@ function getActiveMenuSnapshot(): ActiveMenu | null {
 
 /**
  * Manages right-click context menu state and global dismiss listeners.
- * Returns contextMenu state, a default openContextMenu handler (y-offset 120px),
+ * Returns contextMenu state, a default openContextMenu handler (y-offset 300px),
  * setContextMenu for custom open logic, and runContextAction for menu item clicks.
  * Menu state is shared across all cards so opening one closes any other that
  * was already open.
@@ -99,7 +99,9 @@ export function useCardContextMenu() {
     event.preventDefault();
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX, window.innerWidth - 240)),
-      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 120)),
+      // ai: claude-opus-5-5 | 2026-11-17 -- room for JobCardContextMenu's full
+      // item list (was 120, sized for the Triage cards' one-item menu).
+      y: Math.max(8, Math.min(event.clientY, window.innerHeight - 300)),
     });
   };
 
