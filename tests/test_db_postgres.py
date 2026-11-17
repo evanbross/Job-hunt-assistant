@@ -905,7 +905,6 @@ def test_migrate_renames_eval_stages_to_interview_and_code_eval(pg_dsn: str) -> 
         catalog = {row["key"]: row for row in cur.fetchall()}
         assert "eval_1" not in catalog
         assert "eval_test" not in catalog
-        assert "interview_1" not in catalog
         assert catalog["hr_screen_done"]["label"] == "HR Screen Done"
         assert catalog["hr_screen_done"]["color_bg"] == "#111111"
         assert catalog["code_eval"]["label"] == "Code Eval"
@@ -925,39 +924,83 @@ def test_migrate_renames_eval_stages_to_interview_and_code_eval(pg_dsn: str) -> 
 
 
 # ai: claude-opus-5-5 | 2026-11-17
-def test_migrate_splits_interview_1_into_hr_screen_stages(pg_dsn: str) -> None:
-    """An install from before the HR screen split: interview_1 is in the
-    catalog (with the user's colors) and hr_screen_done isn't yet. interview_1
-    is renamed in place to hr_screen_done -- keeping its colors and carrying its
-    stages along -- and the seed adds hr_screen_scheduled just before it."""
+# The catalog keys an install on the old interview numbering carries, beyond
+# the stages unrelated to the change: before the HR screen split, interview_1
+# is the HR screen; after it (commit fda4cef), hr_screen_done is.
+_PRE_SPLIT_INTERVIEW_KEYS = ("interview_1", "interview_2", "interview_3", "interview_4")
+_POST_SPLIT_INTERVIEW_KEYS = ("hr_screen_scheduled", "hr_screen_done", "interview_2", "interview_3", "interview_4")
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.mark.parametrize(
+    ("old_keys", "old_stage_to_new"),
+    [
+        (
+            _PRE_SPLIT_INTERVIEW_KEYS,
+            {
+                "interview_1": "hr_screen_done",
+                "interview_2": "interview_1",
+                "interview_3": "interview_2",
+                "interview_4": "interview_3",
+            },
+        ),
+        (
+            _POST_SPLIT_INTERVIEW_KEYS,
+            {
+                "hr_screen_done": "hr_screen_done",
+                "interview_2": "interview_1",
+                "interview_3": "interview_2",
+                "interview_4": "interview_3",
+            },
+        ),
+    ],
+    ids=["before-hr-screen-split", "after-hr-screen-split"],
+)
+def test_migrate_renumbers_interview_stages(
+    pg_dsn: str, old_keys: tuple[str, ...], old_stage_to_new: dict[str, str]
+) -> None:
+    """An install on the old interview numbering (interview_2..4 after the HR
+    screen) moves to the new one (interview_1..3), each key renamed in place
+    so it keeps its colors and carries its stages along. Migrating again --
+    e.g. an app restart -- must leave the new interview_1 alone: on the old
+    numbering that key meant the HR screen, and it's still how one is spelled
+    on a database that hasn't been renumbered."""
     conn = get_connection(pg_dsn)
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM application_stage_statuses WHERE key = 'hr_screen_done'")
         cur.execute(
-            "INSERT INTO application_stage_statuses"
-            " (key, label, sort_order, ghost_eligible, is_terminal, color_bg, color_fg)"
-            " VALUES ('interview_1', 'Interview 1 - HR Screen', 40, FALSE, FALSE, '#222222', '#dddddd')"
+            "DELETE FROM application_stage_statuses WHERE key IN"
+            " ('hr_screen_scheduled', 'hr_screen_done', 'interview_1', 'interview_2', 'interview_3')"
         )
+        for sort_order, key in enumerate(old_keys, start=35):
+            cur.execute(
+                "INSERT INTO application_stage_statuses"
+                " (key, label, sort_order, ghost_eligible, is_terminal, color_bg, color_fg)"
+                " VALUES (%s, %s, %s, FALSE, FALSE, %s, '#ffffff')",
+                (key, key, sort_order, f"#{sort_order:06d}"),
+            )
+        old_colors = {key: f"#{sort_order:06d}" for sort_order, key in enumerate(old_keys, start=35)}
         user_id = PostgresUserAccountRepository(conn).create_pending(
-            "hr-split@example.com", "seed-hr-split@example.com", "2099-01-01"
+            "renumber@example.com", "seed-renumber@example.com", "2099-01-01"
         )["id"]
         set_current_user(conn.cursor(), user_id)
         job_id = PostgresJobRepository(conn).insert(
             user_id,
             {
-                "dedup_key": "hr-split",
+                "dedup_key": "renumber",
                 "company": "Acme",
                 "job_title": "Engineer",
-                "url": "https://example.com/jobs/hr-split",
+                "url": "https://example.com/jobs/renumber",
                 "source": "manual",
                 "status": "applied",
                 "date_found": "2026-10-01",
             },
         )
-        stage_id = PostgresApplicationStageRepository(conn).insert(
-            user_id, {"job_id": job_id, "status": "interview_1", "date": "2026-10-02"}
-        )
+        stages = PostgresApplicationStageRepository(conn)
+        stage_ids = {
+            old_key: stages.insert(user_id, {"job_id": job_id, "status": old_key, "date": f"2026-10-{day:02d}"})
+            for day, old_key in enumerate(old_stage_to_new, start=2)
+        }
         conn.commit()
 
         migrate_database(pg_dsn, runtime_database_url(pg_dsn))
@@ -965,17 +1008,28 @@ def test_migrate_splits_interview_1_into_hr_screen_stages(pg_dsn: str) -> None:
 
         cur.execute("SELECT key, label, sort_order, color_bg FROM application_stage_statuses")
         catalog = {row["key"]: row for row in cur.fetchall()}
-        assert "interview_1" not in catalog
-        assert catalog["hr_screen_done"]["label"] == "HR Screen Done"
-        assert catalog["hr_screen_done"]["color_bg"] == "#222222"
+        assert "interview_4" not in catalog
+        assert [catalog[key]["label"] for key in ("interview_1", "interview_2", "interview_3")] == [
+            "Interview 1",
+            "Interview 2",
+            "Interview 3",
+        ]
         assert catalog["hr_screen_scheduled"]["label"] == "HR Screen Scheduled"
         assert (
             catalog["waiting_second"]["sort_order"]
             < catalog["hr_screen_scheduled"]["sort_order"]
             < catalog["hr_screen_done"]["sort_order"]
+            < catalog["interview_1"]["sort_order"]
             < catalog["interview_2"]["sort_order"]
+            < catalog["interview_3"]["sort_order"]
+            < catalog["code_eval"]["sort_order"]
         )
-        cur.execute("SELECT status FROM application_stages WHERE id = %s", (stage_id,))
-        assert cur.fetchone()["status"] == "hr_screen_done"
+        for old_key, new_key in old_stage_to_new.items():
+            assert catalog[new_key]["color_bg"] == old_colors[old_key]
+
+        cur.execute("SELECT id, status FROM application_stages WHERE job_id = %s", (job_id,))
+        assert {row["id"]: row["status"] for row in cur.fetchall()} == {
+            stage_ids[old_key]: new_key for old_key, new_key in old_stage_to_new.items()
+        }
     finally:
         conn.close()

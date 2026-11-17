@@ -70,10 +70,10 @@ const STATUS_FALLBACKS: Record<string, StatusStyle> = {
   // ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into the two HR screen stages
   hr_screen_scheduled: { background: "var(--green-light)", color: "var(--green)" },
   hr_screen_done:      { background: "var(--green-light)", color: "var(--green)" },
-  // ai: claude-opus-5-5 | 2026-10-27 -- were eval_1..3
-  interview_2:       { background: "var(--green-light)", color: "var(--green)" },
+  // ai: claude-opus-5-5 | 2026-11-17 -- renumbered from interview_2..4
+  interview_1:        { background: "var(--green-light)", color: "var(--green)" },
+  interview_2:        { background: "var(--green-light)", color: "var(--green)" },
   interview_3:        { background: "var(--green-light)", color: "var(--green)" },
-  interview_4:        { background: "var(--green-light)", color: "var(--green)" },
   code_eval:          { background: "var(--green-light)", color: "var(--green)" },
   job_filled:         { background: "var(--red-light)", color: "var(--red)" },
   req_closed:         { background: "var(--red-light)", color: "var(--red)" },
@@ -106,9 +106,9 @@ const DEFAULT_STATUS_OPTIONS = [
   "Waiting for 2nd",
   "HR Screen Scheduled", // ai: claude-opus-5-5 | 2026-11-17
   "HR Screen Done",
+  "Interview 1", // ai: claude-opus-5-5 | 2026-11-17 -- renumbered from 2..4
   "Interview 2",
   "Interview 3",
-  "Interview 4",
   "Code Eval",
   "Offer",
   "Counter-offer",
@@ -184,7 +184,7 @@ function getStatusStyle(value?: string | null, colorMap: Record<string, StatusSt
   if (normalizedValue.includes("waiting")) return STATUS_FALLBACKS.waiting_call;
   // ai: claude-opus-5-5 | 2026-11-17 -- was interview_1, now split
   if (normalizedValue.includes("eval") || normalizedValue.includes("interview") || normalizedValue.includes("screen")) {
-    return STATUS_FALLBACKS.interview_2;
+    return STATUS_FALLBACKS.interview_1;
   }
   if (normalizedValue.includes("filled")) return STATUS_FALLBACKS.job_filled;
   if (normalizedValue.includes("applied")) return STATUS_FALLBACKS.applied;

@@ -62,17 +62,19 @@ _STAGE_STATUS_ALIASES: dict[str, str] = {
     "eval": "code_eval",
     "eval_test": "code_eval",
     "code_eval": "code_eval",
-    "eval_2": "interview_2",
-    "eval_3": "interview_3",
-    # ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into
-    # hr_screen_scheduled/hr_screen_done; its old names mean the screen happened.
+    # ai: claude-opus-5-5 | 2026-11-17 -- the old interview_1 (the HR screen)
+    # split into hr_screen_scheduled/hr_screen_done; its old names mean the
+    # screen happened. The rounds after it were renumbered from 1, so
+    # interview_1..3 are the real interviews now (see schema.py's
+    # _RENUMBERED_INTERVIEW_STAGES).
     "eval_1": "hr_screen_done",
+    "eval_2": "interview_1",
+    "eval_3": "interview_2",
     "hr_screen": "hr_screen_done",
     "interview_1_hr_screen": "hr_screen_done",
-    "interview_1": "hr_screen_done",
+    "interview_1": "interview_1",
     "interview_2": "interview_2",
     "interview_3": "interview_3",
-    "interview_4": "interview_4",
     "job_was_filled": "job_filled",
     "job_filled": "job_filled",
     "filled": "job_filled",

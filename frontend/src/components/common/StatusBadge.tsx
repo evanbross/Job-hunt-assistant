@@ -55,9 +55,9 @@ function statusLabel(status: string): string {
     ghosted: "Ghosted",
     hr_screen_scheduled: "HR Screen Scheduled", // ai: claude-opus-5-5 | 2026-11-17
     hr_screen_done: "HR Screen Done",
+    interview_1: "Interview 1", // ai: claude-opus-5-5 | 2026-11-17 -- renumbered from 2..4
     interview_2: "Interview 2",
     interview_3: "Interview 3",
-    interview_4: "Interview 4",
     job_filled: "Job Filled",
     rejected: "Rejected",
     req_closed: "Req Closed",

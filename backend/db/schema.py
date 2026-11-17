@@ -84,13 +84,14 @@ SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
     ("applied", "Applied", 10, True, False),
     ("waiting_call", "Waiting for Call", 20, True, False),
     ("waiting_second", "Waiting for 2nd", 30, True, False),
-    # ai: claude-opus-5-5 | 2026-11-17 -- interview_1 ("Interview 1 - HR Screen")
-    # split in two; see _RENAMED_STAGE_STATUSES.
+    # ai: claude-opus-5-5 | 2026-11-17 -- the old interview_1 ("Interview 1 - HR
+    # Screen") split in two, and the interview rounds after it renumbered from 1;
+    # see _RENUMBERED_INTERVIEW_STAGES.
     ("hr_screen_scheduled", "HR Screen Scheduled", 35, False, False),
     ("hr_screen_done", "HR Screen Done", 40, False, False),
-    ("interview_2", "Interview 2", 50, False, False),
-    ("interview_3", "Interview 3", 60, False, False),
-    ("interview_4", "Interview 4", 70, False, False),
+    ("interview_1", "Interview 1", 50, False, False),
+    ("interview_2", "Interview 2", 60, False, False),
+    ("interview_3", "Interview 3", 70, False, False),
     ("code_eval", "Code Eval", 80, False, False),
     ("offer", "Offer", 82, False, False),
     ("counter_offer", "Counter-offer", 84, False, False),
@@ -108,17 +109,31 @@ SEED_STAGE_STATUSES: list[tuple[str, str, int, bool, bool]] = [
 # _rename_application_stage_statuses(). eval_1..3 were the interview rounds;
 # eval_test ("Eval / Test", which older installs still carry from before it
 # left the seed list) was the coding test.
-# ai: claude-opus-5-5 | 2026-11-17 -- interview_1 split into hr_screen_scheduled
-# and hr_screen_done. Every interview_1 stage on the live database was already in
-# the past when this ran, so they all become "done" (and eval_1 goes straight
-# there, rather than through the retired interview_1).
+# ai: claude-opus-5-5 | 2026-11-17 -- eval_1 was the HR screen, so it goes to
+# hr_screen_done; eval_2/3 go to the renumbered interview keys directly.
 _RENAMED_STAGE_STATUSES: dict[str, str] = {
-    "interview_1": "hr_screen_done",
     "eval_1": "hr_screen_done",
-    "eval_2": "interview_2",
-    "eval_3": "interview_3",
+    "eval_2": "interview_1",
+    "eval_3": "interview_2",
     "eval_test": "code_eval",
 }
+
+# ai: claude-opus-5-5 | 2026-11-17
+# The old numbering (interview_1 = the HR screen, then interview_2..4) -> the
+# new one, applied in this order. Unlike _RENAMED_STAGE_STATUSES this can't run
+# on every migration: interview_1 is a live key again, so mapping it to
+# hr_screen_done unconditionally would sweep up every real first interview. It
+# runs only while interview_4 is in the catalog, which marks a database still on
+# the old numbering (the catalog is written only by migrations, and the seed no
+# longer has interview_4). Every old interview_1 stage on the live database was
+# already in the past, so they all become "done".
+_RENUMBERED_INTERVIEW_STAGES: tuple[tuple[str, str], ...] = (
+    ("interview_1", "hr_screen_done"),
+    ("interview_2", "interview_1"),
+    ("interview_3", "interview_2"),
+    ("interview_4", "interview_3"),
+)
+_OLD_NUMBERING_MARKER = "interview_4"
 
 _SEED_SOURCES: list[tuple[str, str, str]] = [
     ("LinkedIn Jobs", "sender_domain", "linkedin.com"),
@@ -1886,35 +1901,54 @@ def _rename_application_stage_statuses(conn: Any) -> None:
     old row deleted. Labels and sort orders are then set by seed_data().
     jobs.status and job_status_history aren't tied to the catalog by a foreign
     key, so they're updated directly.
+
+    Also applies _RENUMBERED_INTERVIEW_STAGES, once, to a database still on the
+    old interview numbering. In order, each rename-in-place frees the key the
+    next one moves onto.
     """
     cur = conn.cursor()
+    # ai: claude-opus-5-5 | 2026-11-17
+    cur.execute(
+        "SELECT 1 FROM application_stage_statuses WHERE key = %s", (_OLD_NUMBERING_MARKER,)
+    )
+    if cur.fetchone() is not None:
+        for old_key, new_key in _RENUMBERED_INTERVIEW_STAGES:
+            _move_application_stage_status(cur, old_key, new_key)
     for old_key, new_key in _RENAMED_STAGE_STATUSES.items():
-        cur.execute(
-            "SELECT key FROM application_stage_statuses WHERE key IN (%s, %s)",
-            (old_key, new_key),
-        )
-        present = {row["key"] for row in cur.fetchall()}
-        if old_key in present and new_key not in present:
-            cur.execute(
-                "UPDATE application_stage_statuses SET key = %s WHERE key = %s",
-                (new_key, old_key),
-            )
-        # A no-op after the cascade above; needed when both rows existed, or on
-        # a database that predates the foreign key.
-        cur.execute(
-            "UPDATE application_stages SET status = %s WHERE status = %s", (new_key, old_key)
-        )
-        cur.execute("DELETE FROM application_stage_statuses WHERE key = %s", (old_key,))
-        cur.execute("UPDATE jobs SET status = %s WHERE status = %s", (new_key, old_key))
-        cur.execute(
-            "UPDATE job_status_history SET from_status = %s WHERE from_status = %s",
-            (new_key, old_key),
-        )
-        cur.execute(
-            "UPDATE job_status_history SET to_status = %s WHERE to_status = %s",
-            (new_key, old_key),
-        )
+        _move_application_stage_status(cur, old_key, new_key)
     conn.commit()
+
+
+# ai: claude-opus-5-5 | 2026-11-17 -- extracted from
+# _rename_application_stage_statuses() for the interview renumbering's reuse.
+def _move_application_stage_status(cur: Any, old_key: str, new_key: str) -> None:
+    """Move every use of stage key *old_key* onto *new_key* and drop the old
+    catalog row (see _rename_application_stage_statuses). Doesn't commit."""
+    cur.execute(
+        "SELECT key FROM application_stage_statuses WHERE key IN (%s, %s)",
+        (old_key, new_key),
+    )
+    present = {row["key"] for row in cur.fetchall()}
+    if old_key in present and new_key not in present:
+        cur.execute(
+            "UPDATE application_stage_statuses SET key = %s WHERE key = %s",
+            (new_key, old_key),
+        )
+    # A no-op after the cascade above; needed when both rows existed, or on
+    # a database that predates the foreign key.
+    cur.execute(
+        "UPDATE application_stages SET status = %s WHERE status = %s", (new_key, old_key)
+    )
+    cur.execute("DELETE FROM application_stage_statuses WHERE key = %s", (old_key,))
+    cur.execute("UPDATE jobs SET status = %s WHERE status = %s", (new_key, old_key))
+    cur.execute(
+        "UPDATE job_status_history SET from_status = %s WHERE from_status = %s",
+        (new_key, old_key),
+    )
+    cur.execute(
+        "UPDATE job_status_history SET to_status = %s WHERE to_status = %s",
+        (new_key, old_key),
+    )
 
 
 # ai: claude-sonnet-5 | 2026-08-26

@@ -159,8 +159,8 @@ migration-runner tool, unless the project grows enough to need one.
 | `cover_letter_phrases` | The reusable, tagged "phrase book" paragraphs described in §4.4. |
 
 Seed `application_stage_statuses` with an ordered pipeline like: `applied` →
-`waiting_call` → `waiting_second` → `hr_screen_scheduled` → `hr_screen_done` → `interview_2`
-→ `interview_3` → `interview_4` → `code_eval`, with
+`waiting_call` → `waiting_second` → `hr_screen_scheduled` → `hr_screen_done` → `interview_1`
+→ `interview_2` → `interview_3` → `code_eval`, with
 terminal statuses `rejected`, `job_filled`, `req_closed`, and `ghosted`.
 Flag which non-terminal statuses are eligible to auto-transition to
 `ghosted` after enough time with no response, and which statuses count as
