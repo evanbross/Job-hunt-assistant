@@ -190,3 +190,31 @@ def are_distinct_postings(url_a: str, url_b: str) -> bool:
         and a.site == b.site
         and a.job_id != b.job_id
     )
+
+
+# ai: claude-fable-5 | 2026-07-14
+# ai: claude-opus-5-5 | 2026-11-16 -- moved here from wellfound_scraper so the
+# email parser can canonicalize at parse time (wellfound_scraper imports the parser).
+def canonical_wellfound_job_url(url: str) -> str:
+    """Normalize a Wellfound listing URL to https://wellfound.com/jobs/{slug}.
+
+    Handles both URL shapes Wellfound uses:
+      - https://wellfound.com/jobs?job_listing_slug=4446105-senior-engineer
+      - https://wellfound.com/jobs/4446105-senior-engineer
+    Returns "" when no listing slug can be extracted (e.g. an unresolved
+    links.wellfound.com tracking URL, or a non-listing Wellfound page).
+    """
+    parsed = urlparse(url)
+    host = parsed.netloc.lower()
+    if host not in ("wellfound.com", "www.wellfound.com"):
+        return ""
+    slug = (parse_qs(parsed.query).get("job_listing_slug") or [""])[0]
+    if not slug:
+        path = parsed.path.rstrip("/")
+        if path.startswith("/jobs/"):
+            slug = path[len("/jobs/") :]
+    slug = slug.strip("/")
+    # Real listing slugs start with the numeric listing ID.
+    if not slug or not slug[0].isdigit() or "/" in slug:
+        return ""
+    return f"https://wellfound.com/jobs/{slug}"

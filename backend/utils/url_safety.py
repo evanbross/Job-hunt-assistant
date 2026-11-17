@@ -119,12 +119,18 @@ def validate_outbound_url(
 class _ValidatingRedirectHandler(HTTPRedirectHandler):
     """Re-validates every redirect target before following it."""
 
+    # ai: claude-opus-5-5 | 2026-11-16 -- redirect_log
     def __init__(
-        self, *, allow_loopback: bool, allowed_ports: frozenset[int] | None
+        self,
+        *,
+        allow_loopback: bool,
+        allowed_ports: frozenset[int] | None,
+        redirect_log: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._allow_loopback = allow_loopback
         self._allowed_ports = allowed_ports
+        self._redirect_log = redirect_log
 
     def redirect_request(
         self,
@@ -140,6 +146,8 @@ class _ValidatingRedirectHandler(HTTPRedirectHandler):
             allow_loopback=self._allow_loopback,
             allowed_ports=self._allowed_ports,
         )
+        if self._redirect_log is not None:
+            self._redirect_log.append(newurl)  # ai: claude-opus-5-5 | 2026-11-16
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -151,12 +159,18 @@ def safe_urlopen(
     allow_loopback: bool = False,
     allowed_ports: frozenset[int] | None = None,
     verify_ssl: bool = True,
+    redirect_log: list[str] | None = None,
 ) -> addinfourl:
     """Validate *request*'s URL (and every redirect hop) before fetching it.
 
     Raises UnsafeUrlError before issuing any network request if the URL fails
     validation. Callers should catch UnsafeUrlError alongside the usual
     (URLError, HTTPError, TimeoutError, socket.error) network exceptions.
+
+    Pass a list as redirect_log to have every validated redirect target appended
+    to it in order -- for callers that need an intermediate hop, not just the
+    final URL (e.g. the page a sign-in redirect was guarding). It is filled even
+    when the request ends in an HTTPError.
 
     Pass verify_ssl=False to skip SSL certificate verification (e.g. when a
     site's cert has expired). SSRF protection via IP-range validation is applied
@@ -167,7 +181,9 @@ def safe_urlopen(
     )
     handlers: list = [
         _ValidatingRedirectHandler(
-            allow_loopback=allow_loopback, allowed_ports=allowed_ports
+            allow_loopback=allow_loopback,
+            allowed_ports=allowed_ports,
+            redirect_log=redirect_log,
         ),
     ]
     # ai: gpt-5 | 2026-10-04
