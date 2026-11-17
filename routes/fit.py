@@ -58,6 +58,7 @@ from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import scoring_text_for_job
 from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
 from backend.scoring.job_validator import SCORING_FAILED_WARNING, remove_import_warning
+from backend.task_progress import failure_reason
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     FIT_PANEL_STATUSES,
@@ -368,7 +369,7 @@ def re_evaluate_status() -> ResponseReturnValue:
         {
             "running": False,
             "progress": 0,
-            "message": f"Re-evaluation failed unexpectedly: {result.result or 'unknown error'}",
+            "message": f"Re-evaluation failed unexpectedly: {failure_reason(result)}",  # ai: claude-opus-5-5 | 2026-11-17
             "result": None,
         }
     )

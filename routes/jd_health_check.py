@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 
+from celery import states
 from celery.result import AsyncResult
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
@@ -53,6 +54,8 @@ from backend.scanning.schedulers import (
     jd_health_check_should_run_now,
 )
 from backend.security.task_ownership import get_task_ownership
+from backend.task_liveness import get_worker_liveness
+from backend.task_progress import WORKER_STOPPED_MESSAGE
 from backend.tasks import run_jd_health_check_task
 from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import (
@@ -293,6 +296,14 @@ def jd_health_check_run_status(task_id: str) -> ResponseReturnValue:
     if not get_task_ownership().owns(task_id, current_user_id()):
         return jsonify({"error": "Task not found"}), 404
     result = AsyncResult(task_id, app=celery_app)
+    # ai: claude-opus-5-5 | 2026-11-17 -- a worker killed mid-run leaves STARTED/PROGRESS
+    # stored for a day, and the panel polls until SUCCESS or FAILURE; report it failed.
+    if (
+        result.state not in states.READY_STATES
+        and result.state != states.PENDING
+        and not get_worker_liveness().run_is_alive(task_id)
+    ):
+        return jsonify({"state": states.FAILURE, "error": WORKER_STOPPED_MESSAGE})
     payload: dict[str, object] = {"state": result.state}
     if result.state == "SUCCESS":
         payload["result"] = result.result

@@ -31,6 +31,10 @@ class RecordedDelays:
 def install_everything_running_registry() -> ActiveTasks:
     """A registry (shared, as Redis is) whose every recorded task is still running.
     conftest's isolated_active_tasks fixture clears it after the test."""
-    active_tasks = ActiveTasks(MemoryActiveTaskStore(), task_state=lambda task_id: "STARTED")
+    active_tasks = ActiveTasks(
+        MemoryActiveTaskStore(),
+        task_state=lambda task_id: "STARTED",
+        worker_alive=lambda task_id: True,  # ai: claude-opus-5-5 | 2026-11-17
+    )
     set_active_tasks(active_tasks)
     return active_tasks

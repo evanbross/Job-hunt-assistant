@@ -78,6 +78,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.task_progress import failure_reason
 from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import (
     current_user_id,
@@ -1508,8 +1509,9 @@ def career_scan_status() -> ResponseReturnValue:
     return jsonify(
         {
             **_idle,
-            "message": f"Career-site scan failed unexpectedly: {result.result or 'unknown error'}",
-            "errors": [str(result.result or "unknown error")],
+            # ai: claude-opus-5-5 | 2026-11-17
+            "message": f"Career-site scan failed unexpectedly: {failure_reason(result)}",
+            "errors": [failure_reason(result)],
         }
     )
 

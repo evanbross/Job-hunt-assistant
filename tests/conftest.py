@@ -238,8 +238,11 @@ def isolated_import_progress() -> Iterator[ImportProgress]:
 def isolated_active_tasks() -> Iterator[ActiveTasks]:
     """The "which run did each account last start" registry in memory, so a test's
     dispatches never land in (or get blocked by) the developer's real Redis. Task
-    state still comes from Celery's result backend, as in the app."""
-    active_tasks = ActiveTasks(MemoryActiveTaskStore())
+    state still comes from Celery's result backend, as in the app; no test has a real
+    worker heartbeat, so the worker that took a task counts as alive
+    (tests/test_task_liveness.py covers that check)."""
+    # ai: claude-opus-5-5 | 2026-11-17 -- worker_alive
+    active_tasks = ActiveTasks(MemoryActiveTaskStore(), worker_alive=lambda task_id: True)
     set_active_tasks(active_tasks)
     yield active_tasks
     set_active_tasks(None)

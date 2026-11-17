@@ -15,12 +15,20 @@ via safe_urlopen, as routes/career_sites.py's career sites)."""
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
 import pytest
+import redis
 from flask import Flask
 
+import config
+from backend.celery_app import celery_app
+from backend.security.task_ownership import TaskOwnership
+from backend.task_liveness import WorkerLiveness, set_worker_liveness
+from backend.task_progress import WORKER_STOPPED_MESSAGE
 from routes.jd_health_check import jd_health_check_bp
 
 _TEST_USER_ID = 1
@@ -171,3 +179,60 @@ def test_update_target_404_for_unknown_id(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     assert response.status_code == 404
+
+
+# ─── run status: a run whose worker died ──────────────────────────────────────
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.fixture
+def liveness() -> Iterator[WorkerLiveness]:
+    """Real Redis (the result backend too) under a throwaway prefix."""
+    client = redis.Redis.from_url(config.REDIS_URL, socket_connect_timeout=1, socket_timeout=1)
+    try:
+        client.ping()
+    except (redis.RedisError, OSError):
+        pytest.skip("no Redis reachable at REDIS_URL")
+    prefix = f"jha:test-liveness:{uuid.uuid4().hex}"
+    worker_liveness = WorkerLiveness(client, key_prefix=prefix)
+    set_worker_liveness(worker_liveness)
+    yield worker_liveness
+    set_worker_liveness(None)
+    for key in client.scan_iter(f"{prefix}*"):
+        client.delete(key)
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.fixture
+def run_in_progress(isolated_task_ownership: TaskOwnership) -> Iterator[str]:
+    """A run of this account's stored as PROGRESS in Celery's result backend."""
+    task_id = f"test-{uuid.uuid4().hex}"
+    celery_app.backend.store_result(task_id, {"checked": 2}, "PROGRESS")
+    isolated_task_ownership.record(task_id, _TEST_USER_ID)
+    yield task_id
+    celery_app.backend.forget(task_id)
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_a_run_whose_worker_died_reports_failure(
+    monkeypatch: pytest.MonkeyPatch, liveness: WorkerLiveness, run_in_progress: str
+) -> None:
+    """The panel polls until SUCCESS or FAILURE; a killed worker's run must end it."""
+    client = _make_app(monkeypatch, FakeTargetsRepo()).test_client()
+
+    response = client.get(f"/api/jd-health-check/run/{run_in_progress}/status")
+
+    assert response.get_json() == {"state": "FAILURE", "error": WORKER_STOPPED_MESSAGE}
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_a_run_its_worker_still_holds_reports_progress(
+    monkeypatch: pytest.MonkeyPatch, liveness: WorkerLiveness, run_in_progress: str
+) -> None:
+    liveness.heartbeat("celery@test-host", "boot-1")
+    liveness.record_run(run_in_progress, "celery@test-host")
+    client = _make_app(monkeypatch, FakeTargetsRepo()).test_client()
+
+    response = client.get(f"/api/jd-health-check/run/{run_in_progress}/status")
+
+    assert response.get_json() == {"state": "PROGRESS", "info": {"checked": 2}}

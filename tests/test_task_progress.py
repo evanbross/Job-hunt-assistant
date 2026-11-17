@@ -34,7 +34,7 @@ from backend.active_tasks import (
     set_active_tasks,
 )
 from backend.celery_app import celery_app
-from backend.task_progress import TaskProgress, run_status
+from backend.task_progress import WORKER_STOPPED_MESSAGE, TaskProgress, run_status
 
 _KIND = "test_run"
 
@@ -87,7 +87,7 @@ def records() -> MemoryActiveTaskStore:
     """The registry the status routes read (task state from Celery, as in the app);
     conftest's autouse registry fixture clears it afterwards."""
     store = MemoryActiveTaskStore()
-    set_active_tasks(ActiveTasks(store))
+    set_active_tasks(ActiveTasks(store, worker_alive=lambda task_id: True))  # ai: claude-opus-5-5 | 2026-11-17
     return store
 
 
@@ -160,6 +160,23 @@ def test_a_task_that_died_reports_the_error(
 
     assert status["running"] is False
     assert "worker lost" in status["error"]
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_a_run_whose_worker_died_is_reported_stopped_not_running(
+    backend_task_ids: list[str],
+) -> None:
+    """A worker killed mid-run leaves PROGRESS stored for a day. The status must not
+    show that last progress as still running, nor print it as the error."""
+    store = MemoryActiveTaskStore()
+    set_active_tasks(ActiveTasks(store, worker_alive=lambda task_id: False))
+    _started(store, backend_task_ids, 1, "PROGRESS",
+             {**_IDLE, "running": True, "progress": 35, "message": "email 2/5"})
+
+    status = run_status(_KIND, 1, _IDLE)
+
+    assert status["running"] is False
+    assert status["error"] == WORKER_STOPPED_MESSAGE
 
 
 def test_an_expired_result_is_idle(records: MemoryActiveTaskStore) -> None:

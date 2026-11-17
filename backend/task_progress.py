@@ -23,13 +23,18 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Generic, TypeVar
 
-from celery import Task
+from celery import Task, states
 from celery.result import AsyncResult
 
 from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 
 S = TypeVar("S")
+
+# ai: claude-opus-5-5 | 2026-11-17
+WORKER_STOPPED_MESSAGE = (
+    "the worker running it stopped before it finished (was the app restarted?). Start it again."
+)
 
 
 class TaskProgress(Generic[S]):
@@ -56,6 +61,16 @@ class TaskProgress(Generic[S]):
         self._publish(asdict(self.state))  # type: ignore[call-overload]
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+def failure_reason(result: AsyncResult) -> str:
+    """Why a run that is no longer running didn't succeed. A run still stored as
+    STARTED/PROGRESS got here because its worker died: its info is the last progress
+    published, not an error, so say what happened instead of printing that."""
+    if result.state not in states.READY_STATES:
+        return WORKER_STOPPED_MESSAGE
+    return str(result.result or "unknown error")
+
+
 def run_status(kind: str, user_id: int, idle: dict[str, Any]) -> dict[str, Any]:
     """The account's last run of *kind*, as a status payload shaped like *idle*.
 
@@ -78,5 +93,5 @@ def run_status(kind: str, user_id: int, idle: dict[str, Any]) -> dict[str, Any]:
     if state == "SUCCESS":
         final = result.result if isinstance(result.result, dict) else {}
         return {**idle, **final, "running": False}
-    error = str(result.result or "unknown error")
+    error = failure_reason(result)  # ai: claude-opus-5-5 | 2026-11-17
     return {**idle, "running": False, "error": error, "message": f"Failed unexpectedly: {error}"}
