@@ -49,6 +49,7 @@ from backend.scoring.job_validator import (
     import_warnings_to_json,
     normalize_and_validate,
 )
+from backend.task_progress import failure_reason
 from backend.utils.utils import (
     current_user_id,
     get_candidate_profile,
@@ -485,7 +486,8 @@ def board_search_status() -> ResponseReturnValue:
     return jsonify(
         {
             **_idle,
-            "message": f"Board search failed unexpectedly: {result.result or 'unknown error'}",
-            "errors": [str(result.result or "unknown error")],
+            # ai: claude-opus-5-5 | 2026-11-17
+            "message": f"Board search failed unexpectedly: {failure_reason(result)}",
+            "errors": [failure_reason(result)],
         }
     )

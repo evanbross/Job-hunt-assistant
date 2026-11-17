@@ -66,14 +66,19 @@ def make_store(request: pytest.FixtureRequest) -> Callable[[], ActiveTaskStore]:
 
 
 class _Celery:
-    """Task states as Celery's result backend would report them."""
+    """Task states as Celery's result backend would report them, and which tasks'
+    workers have since died (backend/task_liveness.py)."""
 
     def __init__(self) -> None:
         self.states: dict[str, str] = {}
         self.dispatched: list[str] = []
+        self.dead_workers: set[str] = set()  # ai: claude-opus-5-5 | 2026-11-17
 
     def state(self, task_id: str) -> str:
         return self.states.get(task_id, "PENDING")
+
+    def worker_alive(self, task_id: str) -> bool:
+        return task_id not in self.dead_workers
 
     def dispatch(self, state: str = "STARTED") -> str:
         task_id = f"task-{len(self.dispatched) + 1}"
@@ -84,7 +89,7 @@ class _Celery:
 
 def test_nothing_recorded_dispatches(make_store: Callable[[], ActiveTaskStore]) -> None:
     celery = _Celery()
-    tasks = ActiveTasks(make_store(), celery.state)
+    tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
 
     task_id = tasks.submit_unless_running(_KIND, _USER, celery.dispatch)
 
@@ -97,8 +102,8 @@ def test_a_running_task_started_by_another_process_blocks_a_second(
     make_store: Callable[[], ActiveTaskStore],
 ) -> None:
     celery = _Celery()
-    web_worker = ActiveTasks(make_store(), celery.state)
-    celery_worker = ActiveTasks(make_store(), celery.state)
+    web_worker = ActiveTasks(make_store(), celery.state, celery.worker_alive)
+    celery_worker = ActiveTasks(make_store(), celery.state, celery.worker_alive)
     web_worker.submit_unless_running(_KIND, _USER, celery.dispatch)
 
     assert celery_worker.submit_unless_running(_KIND, _USER, celery.dispatch) is None
@@ -107,16 +112,45 @@ def test_a_running_task_started_by_another_process_blocks_a_second(
 
 def test_a_finished_task_does_not_block(make_store: Callable[[], ActiveTaskStore]) -> None:
     celery = _Celery()
-    tasks = ActiveTasks(make_store(), celery.state)
+    tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
     tasks.submit_unless_running(_KIND, _USER, celery.dispatch)
     celery.states["task-1"] = "SUCCESS"
 
     assert tasks.submit_unless_running(_KIND, _USER, celery.dispatch) == "task-2"
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.mark.parametrize("state", ["STARTED", "PROGRESS", "RETRY"])
+def test_a_run_whose_worker_died_does_not_block(
+    make_store: Callable[[], ActiveTaskStore], state: str
+) -> None:
+    """A worker killed mid-run never stores a final state; the run it held must not
+    block the next one for the day that stale state lives."""
+    celery = _Celery()
+    tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
+    tasks.submit_unless_running(_KIND, _USER, lambda: celery.dispatch(state))
+    celery.dead_workers.add("task-1")
+
+    assert tasks.submit_unless_running(_KIND, _USER, celery.dispatch) == "task-2"
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_a_queued_run_blocks_before_any_worker_has_it(
+    make_store: Callable[[], ActiveTaskStore],
+) -> None:
+    """Freshly queued (PENDING within the pickup grace) no worker has recorded taking
+    it yet, so liveness says nothing about it."""
+    celery = _Celery()
+    tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
+    tasks.submit_unless_running(_KIND, _USER, lambda: celery.dispatch("PENDING"))
+    celery.dead_workers.add("task-1")
+
+    assert tasks.submit_unless_running(_KIND, _USER, celery.dispatch) is None
+
+
 def test_runs_are_tracked_per_account_and_per_kind(make_store: Callable[[], ActiveTaskStore]) -> None:
     celery = _Celery()
-    tasks = ActiveTasks(make_store(), celery.state)
+    tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
     tasks.submit_unless_running(_KIND, _USER, celery.dispatch)
 
     assert tasks.submit_unless_running(_KIND, _USER + 1, celery.dispatch) == "task-2"
@@ -128,7 +162,7 @@ def test_pending_is_running_only_within_the_pickup_grace(make_store: Callable[[]
     submit time (wall clock, since it crosses processes) tells them apart."""
     celery = _Celery()
     store = make_store()
-    tasks = ActiveTasks(store, celery.state)
+    tasks = ActiveTasks(store, celery.state, celery.worker_alive)
 
     store.set(_KIND, _USER, TaskRecord(task_id="queued", submitted_at=time.time()))
     assert tasks.submit_unless_running(_KIND, _USER, celery.dispatch) is None
@@ -148,7 +182,7 @@ def test_two_processes_racing_dispatch_exactly_once(make_store: Callable[[], Act
         return celery.dispatch()
 
     def submit() -> None:
-        tasks = ActiveTasks(make_store(), celery.state)
+        tasks = ActiveTasks(make_store(), celery.state, celery.worker_alive)
         gate.wait()
         task_id = tasks.submit_unless_running(_KIND, _USER, slow_dispatch)
         with lock:
@@ -178,7 +212,7 @@ def test_redis_records_expire(redis_prefix: str) -> None:
 def test_an_unreachable_redis_raises_instead_of_dispatching_unchecked() -> None:
     celery = _Celery()
     dead = unreachable_redis()
-    tasks = ActiveTasks(RedisActiveTaskStore(dead), celery.state)
+    tasks = ActiveTasks(RedisActiveTaskStore(dead), celery.state, celery.worker_alive)
 
     with pytest.raises(redis.RedisError):
         tasks.submit_unless_running(_KIND, _USER, celery.dispatch)

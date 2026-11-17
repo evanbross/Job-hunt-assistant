@@ -17,6 +17,10 @@ that for the process it lives in, so the record lives in Redis instead, keyed
 `jha:task:<kind>:<user_id>`, and the check-then-dispatch runs under a Redis lock so two
 processes can't both see "nothing running" and both dispatch.
 
+ai: claude-opus-5-5 | 2026-11-17 -- a stored STARTED/PROGRESS state only counts while
+the worker that took the task is alive (backend/task_liveness.py): a worker killed
+mid-task never writes a final state, which used to block new runs for a day.
+
 Errors reaching Redis are logged and re-raised: the caller decides what the user sees.
 (Dispatching without the check is exactly the double run this exists to prevent, and
 Celery's broker is the same Redis, so the dispatch would fail anyway.)
@@ -38,6 +42,7 @@ from celery.result import AsyncResult
 
 from backend.celery_app import celery_app
 from backend.security.redis_tls import app_redis_client
+from backend.task_liveness import get_worker_liveness
 from backend.utils.utils import is_celery_task_active
 
 logger = logging.getLogger(__name__)
@@ -117,12 +122,21 @@ def _celery_state(task_id: str) -> str:
     return AsyncResult(task_id, app=celery_app).state
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+def _worker_still_running(task_id: str) -> bool:
+    return get_worker_liveness().run_is_alive(task_id)
+
+
 class ActiveTasks:
     def __init__(
-        self, store: ActiveTaskStore, task_state: Callable[[str], str] = _celery_state
+        self,
+        store: ActiveTaskStore,
+        task_state: Callable[[str], str] = _celery_state,
+        worker_alive: Callable[[str], bool] = _worker_still_running,  # ai: claude-opus-5-5 | 2026-11-17
     ) -> None:
         self._store = store
         self._task_state = task_state
+        self._worker_alive = worker_alive
 
     def latest(self, kind: str, user_id: int) -> TaskRecord | None:
         """The last task of this kind the account started, running or not."""
@@ -133,7 +147,14 @@ class ActiveTasks:
         """Whether *record*'s task is still going. Pass *state* when the caller has
         already read it (a status route reading the task's progress anyway)."""
         current_state = self._task_state(record.task_id) if state is None else state
-        return is_celery_task_active(current_state, record.submitted_at)
+        if not is_celery_task_active(current_state, record.submitted_at):
+            return False
+        # ai: claude-opus-5-5 | 2026-11-17 -- PENDING inside the pickup grace: no worker
+        # has it yet. Any other active state is only true while the worker that took
+        # the task is alive (backend/task_liveness.py); a killed one never updates it.
+        if current_state == "PENDING":
+            return True
+        return self._worker_alive(record.task_id)
 
     def submit_unless_running(
         self, kind: str, user_id: int, dispatch: Callable[[], str]

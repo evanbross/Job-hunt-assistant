@@ -83,6 +83,7 @@ from backend.scoring.job_validator import (
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
 from backend.settings_service import get_setting, get_setting_bool, get_setting_int
+from backend.task_progress import failure_reason
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     current_user_id,
@@ -1209,15 +1210,14 @@ def scan_status() -> ResponseReturnValue:
 
     # FAILURE or REVOKED -- the task body catches its own exceptions and
     # returns normally (see run_scan_task), so reaching this branch means
-    # something escaped that (e.g. the worker process itself died).
+    # something escaped that, or the worker process itself died mid-run.
+    reason = failure_reason(result)  # ai: claude-opus-5-5 | 2026-11-17
     return jsonify(
         {
             **_idle,
             "failed": True,
-            "message": f"Scan failed unexpectedly: {result.result or 'unknown error'}",
-            "errors": [
-                {"message": str(result.result or "unknown error"), "email_id": None}
-            ],
+            "message": f"Scan failed unexpectedly: {reason}",
+            "errors": [{"message": reason, "email_id": None}],
         }
     )
 

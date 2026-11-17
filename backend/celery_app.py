@@ -91,6 +91,9 @@ celery_app = Celery(
         # ai: claude-opus-5-5 | 2026-11-09 -- no tasks: its task_failure handler records
         # each per-account task that raises (plan 4.5); imported so every worker has it.
         "backend.task_failures",
+        # ai: claude-opus-5-5 | 2026-11-17 -- no tasks: its signal handlers keep the
+        # worker heartbeat that tells a killed run from a live one (backend/active_tasks.py).
+        "backend.task_liveness",
     ],
 )
 
