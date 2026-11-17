@@ -43,6 +43,7 @@ __all__ = [
     "SCORING_FAILED_WARNING",
     "TRACKING_LINK_JD_WARNING",
     "URL_OF_OTHER_JOB_WARNING",
+    "has_import_warning",
     "import_warnings_to_json",
     "normalize_and_validate",
     "remove_import_warning",
@@ -143,6 +144,18 @@ def normalize_and_validate(
 
     return job, warnings
 
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def has_import_warning(raw_warnings: str | None, code: str) -> bool:
+    """Whether the import_warnings JSON lists *code* (False when empty or unparseable)."""
+    if not raw_warnings:
+        return False
+    try:
+        existing = json.loads(raw_warnings)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    return isinstance(existing, list) and code in existing
 
 
 # ai: claude-sonnet-5 | 2026-09-21

@@ -16,8 +16,14 @@ import logging
 import time
 from http.client import HTTPException
 from typing import Any
+from urllib.parse import urlparse
 
-from backend.db import IJobRepository, IPenaltyRuleRepository, IResumeRepository
+from backend.db import (
+    CaptureQueueOrigin,
+    IJobRepository,
+    IPenaltyRuleRepository,
+    IResumeRepository,
+)
 from backend.db.job_columns import JobColumns
 from backend.scanning.career_site_scanner import CareerSiteScanner
 from backend.scoring.fit_scorer import FitScorer
@@ -25,6 +31,7 @@ from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
     TRACKING_LINK_JD_WARNING,
+    has_import_warning,
     remove_import_warning,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
@@ -135,8 +142,8 @@ def enrich_job_description(
     """
     job_id = int(job["id"])
     # ai: claude-opus-5-5 | 2026-11-13 -- description/warning fields now shared
-    # with refresh_job_description_from_url via _description_fields.
-    update_fields = _description_fields(job, description)
+    # with refresh_job_description_from_url via description_fields.
+    update_fields = description_fields(job, description)
     repos["jobs"].update(user_id, job_id, update_fields)
     try:
         result = FitScorer(user_id).score(
@@ -186,7 +193,7 @@ def status_after_rescore(current_status: str, score: int) -> str | None:
 
 
 # ai: claude-opus-5-5 | 2026-11-13
-def _description_fields(job: dict[str, Any], description: str) -> dict[str, Any]:
+def description_fields(job: dict[str, Any], description: str) -> dict[str, Any]:
     """Columns to write when *description* becomes the job's JD. A real
     description resolves the tracking-link warning; other warnings stay."""
     return {
@@ -196,6 +203,39 @@ def _description_fields(job: dict[str, Any], description: str) -> dict[str, Any]
             job.get(JobColumns.IMPORT_WARNINGS), TRACKING_LINK_JD_WARNING
         ),
     }
+
+
+# ai: claude-opus-5-5 | 2026-11-17 -- shared by the import repair, the
+# broken-import rescan and the per-email rescan; only the first used to queue.
+def queue_tracking_link_jd_capture(
+    repos: dict[str, Any],
+    user_id: int,
+    job: dict[str, Any],
+    *,
+    origin: CaptureQueueOrigin,
+    origin_detail: str,
+) -> bool:
+    """Queue *job*'s URL for the browser extension when its JD is only a tracking link.
+
+    The posting renders its JD with JavaScript or behind a sign-in, so a plain
+    fetch can't get it; the capture pipeline matches the capture back to the job
+    by URL and patches job_description in place. Writes through *repos*; the
+    caller commits. Returns whether a capture was queued: False when the job has
+    no tracking-link warning, no http(s) URL to capture, or is skipped (nobody
+    reads a skipped job's JD, and each capture opens a browser tab).
+    """
+    if str(job.get("status") or "") == "skipped":
+        return False
+    if not has_import_warning(job.get(JobColumns.IMPORT_WARNINGS), TRACKING_LINK_JD_WARNING):
+        return False
+    capture_url = str(job.get("url") or "").strip()
+    if not capture_url.lower().startswith(("http://", "https://")):
+        return False
+    site_name = str(job.get("source") or "").strip() or urlparse(capture_url).netloc
+    repos["browser_capture_queue"].enqueue(
+        user_id, capture_url, site_name, origin=origin, origin_detail=origin_detail
+    )
+    return True
 
 
 # ai: claude-opus-5-5 | 2026-11-13
@@ -215,7 +255,7 @@ class JobHasNoUrlError(ValueError):
 # ai: claude-opus-5-5 | 2026-11-13 -- extracted from routes/jobs.py's
 # refresh_job_from_url route so scripts can reuse it. The route only wrote
 # raw_jd_snippet, so a stale job_description (which every reader prefers) kept
-# winning over the fresh fetch; this writes both via _description_fields.
+# winning over the fresh fetch; this writes both via description_fields.
 def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any] | None:
     """Re-fetch a job's JD from its stored URL, re-score it, and save both.
 
@@ -268,7 +308,7 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
     )
     fit_score = int(score_result["score"])
 
-    description_fields = _description_fields(job, new_text)
+    new_fields = description_fields(job, new_text)
     with get_repos(user_id) as repos:
         # ai: claude-sonnet-4-6 | 2026-06-26 (moved from routes/jobs.py)
         # Certainty describes ingestion-time parsing and is stale once the JD
@@ -278,13 +318,13 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
             user_id,
             job_id,
             {
-                **description_fields,
+                **new_fields,
                 "fit_score": fit_score,
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
                 "salary_max": score_result["salary_max"],
                 JobColumns.IMPORT_WARNINGS: remove_import_warning(
-                    description_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
+                    new_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
                 ),
                 JobColumns.CERTAINTY_LEVEL: None,
                 JobColumns.CERTAINTY_SCORE: None,

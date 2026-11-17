@@ -61,6 +61,7 @@ export interface RescanImportResult extends RepairProgressBase {
   rescored: RepairJobSummary[];
   applied_fixed: RepairJobSummary[];
   url_only: RepairJobSummary[];
+  jd_queued: RepairJobSummary[];
   unresolved: RepairJobSummary[];
 }
 

@@ -117,6 +117,8 @@ from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_enrichment import (  # ai: claude-opus-5-5 | 2026-11-13
     JobHasNoUrlError,
     JobNotFoundError,
+    description_fields,
+    queue_tracking_link_jd_capture,
     refresh_job_description_from_url,
 )
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
@@ -1865,6 +1867,7 @@ class RescanImportState:
     rescored: list[dict] = field(default_factory=list)
     applied_fixed: list[dict] = field(default_factory=list)
     url_only: list[dict] = field(default_factory=list)
+    jd_queued: list[dict] = field(default_factory=list)  # ai: claude-opus-5-5 | 2026-11-17
     unresolved: list[dict] = field(default_factory=list)
     error: str | None = None
 
@@ -1951,6 +1954,7 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
         progress.state.rescored = []
         progress.state.applied_fixed = []
         progress.state.url_only = []
+        progress.state.jd_queued = []  # ai: claude-opus-5-5 | 2026-11-17
         progress.state.unresolved = []
         progress.state.error = None
 
@@ -1978,6 +1982,7 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
         rescored: list[dict] = []
         applied_fixed: list[dict] = []
         url_only: list[dict] = []
+        jd_queued: list[dict] = []  # ai: claude-opus-5-5 | 2026-11-17
         unresolved: list[dict] = []
         processed = 0
 
@@ -2065,7 +2070,18 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
                 if row.get("status") == "applied":
                     with get_repos(user_id) as write_repos:
                         write_repos["jobs"].update(user_id, job_id, updates)
+                        # ai: claude-opus-5-5 | 2026-11-17
+                        if queue_tracking_link_jd_capture(
+                            write_repos,
+                            user_id,
+                            {**row, **updates},
+                            origin=CaptureQueueOrigin.IMPORT_REPAIR,
+                            origin_detail=f"Job #{job_id}",
+                        ):
+                            jd_queued.append({"id": job_id, "company": effective_company, "job_title": title})
                         write_repos["conn"].commit()
+                    with progress.update():
+                        progress.state.jd_queued = list(jd_queued)
                     applied_fixed.append(
                         {
                             "id": job_id,
@@ -2140,6 +2156,11 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
                                 corrected_url,
                                 exc,
                             )
+                    # ai: claude-opus-5-5 | 2026-11-17 -- a fetched JD is the job's
+                    # description (it used to land only in raw_jd_snippet, so the
+                    # tracking-link warning and "No description loaded" stayed).
+                    if jd_text:
+                        updates.update(description_fields(row, jd_text))
                     try:
                         score_result = FitScorer(user_id).score(
                             job_title=title,
@@ -2153,12 +2174,13 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
                         updates["fit_reasoning"] = score_result["reasoning"]
                         updates["salary_min"] = score_result["salary_min"]
                         updates["salary_max"] = score_result["salary_max"]
-                        updates["raw_jd_snippet"] = (
-                            jd_text if jd_text else email_body
-                        )[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-10-30
-                        # ai: claude-sonnet-5 | 2026-09-21
+                        if not jd_text:
+                            updates["raw_jd_snippet"] = email_body[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-11-17
+                        # ai: claude-opus-5-5 | 2026-11-17 -- start from the warnings
+                        # description_fields already updated, not the stale row.
                         updates["import_warnings"] = remove_import_warning(
-                            row.get("import_warnings"), SCORING_FAILED_WARNING
+                            updates.get("import_warnings", row.get("import_warnings")),
+                            SCORING_FAILED_WARNING,
                         )
                         if score_result["score"] < 70:
                             updates["status"] = "triage"
@@ -2175,8 +2197,20 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
 
                 with get_repos(user_id) as write_repos:
                     write_repos["jobs"].update(user_id, job_id, updates)
+                    # ai: claude-opus-5-5 | 2026-11-17 -- a recovered URL whose JD
+                    # is still only a tracking link goes to the browser extension.
+                    if queue_tracking_link_jd_capture(
+                        write_repos,
+                        user_id,
+                        {**row, **updates},
+                        origin=CaptureQueueOrigin.IMPORT_REPAIR,
+                        origin_detail=f"Job #{job_id}",
+                    ):
+                        jd_queued.append(dict(summary))
                     write_repos["conn"].commit()
                     updated = write_repos["jobs"].get_by_id(user_id, job_id)
+                with progress.update():
+                    progress.state.jd_queued = list(jd_queued)
                 if updated:
                     known_jobs = [j for j in known_jobs if j.get("id") != job_id] + [
                         updated
@@ -2210,7 +2244,8 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
             progress.state.message = (
                 f"Done — {len(unskipped)} unskipped, {len(still_duplicate)} still duplicate, "
                 f"{len(rescored)} re-scored, {len(applied_fixed)} applied-job URLs fixed, "
-                f"{len(url_only)} url only, {len(unresolved)} need manual review."
+                f"{len(url_only)} url only, {len(jd_queued)} JD queued for capture, "  # ai: claude-opus-5-5 | 2026-11-17
+                f"{len(unresolved)} need manual review."
             )
 
     except NotAuthenticatedError as exc:
@@ -2304,13 +2339,12 @@ _PATTERN_MIN_COUNT = 3
 _PATTERN_MIN_PERCENT = 15.0
 
 
-def _attempt_import_repair(
-    user_id: int, repos: dict, job: dict, warnings: list[str]
-) -> tuple[dict, list[str]]:
+def _attempt_import_repair(job: dict, warnings: list[str]) -> tuple[dict, list[str]]:
     """Try to auto-fix a job's missing title/company or unusable URL in place.
 
     Returns (updates, remaining_warning_codes). `updates` is the DB patch to
-    apply (may be empty if nothing could be fixed synchronously).
+    apply (may be empty if nothing could be fixed synchronously). A JD that is
+    only a tracking link can't be fixed here; the caller queues a capture.
     """
     working = dict(job)
     updates: dict = {}
@@ -2332,31 +2366,6 @@ def _attempt_import_repair(
         if candidate_url and candidate_url != working.get("url"):
             working["url"] = candidate_url
             updates["url"] = candidate_url
-
-    if TRACKING_LINK_JD_WARNING in warnings:
-        # Can't be fixed synchronously — the description only renders after JS
-        # executes on the target page. Queue it for the browser extension to
-        # capture a fully-rendered copy; the capture pipeline already knows how
-        # to match it back to this job by URL and patch job_description in place.
-        capture_url = str(working.get("url") or "").strip()
-        if capture_url:
-            site_name = (
-                str(working.get("source") or "").strip() or urlparse(capture_url).netloc
-            )
-            try:
-                repos["browser_capture_queue"].enqueue(  # ai: claude-opus-5-5 | 2026-10-14
-                    user_id,
-                    capture_url,
-                    site_name,
-                    origin=CaptureQueueOrigin.IMPORT_REPAIR,
-                    origin_detail=f"Job #{job.get('id')}",
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Import repair: failed to enqueue browser capture for job %s: %s",
-                    job.get("id"),
-                    exc,
-                )
 
     _, remaining = normalize_and_validate(working)
     # ai: claude-opus-5-5 | 2026-11-15 -- the dropped URL is already gone, so a
@@ -2552,11 +2561,21 @@ def _run_import_repair(user_id: int, progress: TaskProgress[ImportRepairState]) 
             if not warnings:
                 continue
 
+            # ai: claude-opus-5-5 | 2026-11-17 -- commit whenever a capture was
+            # queued too: get_repos rolls back on exit, so a job whose only defect
+            # was a tracking-link JD (no updates) used to lose its queue row.
+            updates, remaining = _attempt_import_repair(job, warnings)
             with get_repos(user_id) as repos:
-                updates, remaining = _attempt_import_repair(user_id, repos, job, warnings)
                 if updates:
                     repos["jobs"].update(user_id, job["id"], updates)
-                    repos["conn"].commit()
+                jd_capture_queued = queue_tracking_link_jd_capture(
+                    repos,
+                    user_id,
+                    {**job, **updates, "import_warnings": import_warnings_to_json(remaining)},
+                    origin=CaptureQueueOrigin.IMPORT_REPAIR,
+                    origin_detail=f"Job #{job['id']}",
+                )
+                repos["conn"].commit()
 
             if "job_title" in updates or "company" in updates:
                 title_or_company_fixed.append(
@@ -2579,14 +2598,20 @@ def _run_import_repair(user_id: int, progress: TaskProgress[ImportRepairState]) 
                 with progress.update():
                     progress.state.url_fixed = list(url_fixed)
 
-            if TRACKING_LINK_JD_WARNING in warnings:
+            if jd_capture_queued:
                 jd_queued.append(summary)
                 with progress.update():
                     progress.state.jd_queued = list(jd_queued)
 
-            # jd_body_is_tracking_link is "handled" (queued for async capture) even
+            # ai: claude-opus-5-5 | 2026-11-17
+            # jd_body_is_tracking_link is "handled" once queued for async capture,
             # though it's still technically unresolved — don't show it as stuck.
-            stuck = [w for w in remaining if w != TRACKING_LINK_JD_WARNING]
+            # Without a URL to capture it is stuck, unless the job is skipped
+            # (its JD is never fetched, so there is nothing to resolve).
+            jd_warning_handled = jd_capture_queued or job.get("status") == "skipped"
+            stuck = [
+                w for w in remaining if not (jd_warning_handled and w == TRACKING_LINK_JD_WARNING)
+            ]
             if stuck:
                 unresolved.append({**summary, "warnings": stuck})
                 with progress.update():

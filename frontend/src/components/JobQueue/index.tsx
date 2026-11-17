@@ -1170,7 +1170,7 @@ function JobQueueContent({
     setRescanImportRunning(true);
     setRescanImportDialog({
       running: true, progress: 0, total: 0, message: "", current_company: "", current_title: "", error: null,
-      unskipped: [], still_duplicate: [], rescored: [], applied_fixed: [], url_only: [], unresolved: [],
+      unskipped: [], still_duplicate: [], rescored: [], applied_fixed: [], url_only: [], jd_queued: [], unresolved: [],
     });
     clearInterval(rescanImportPollRef.current);
     rescanImportPollRef.current = window.setInterval(pollRescanImportStatus, 2500);

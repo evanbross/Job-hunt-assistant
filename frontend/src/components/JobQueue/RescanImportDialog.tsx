@@ -44,6 +44,7 @@ export default function RescanImportDialog({ result, onClose }: RescanImportDial
   const rescored = result.rescored ?? [];
   const appliedFixed = result.applied_fixed ?? [];
   const urlOnly = result.url_only ?? [];
+  const jdQueued = result.jd_queued ?? []; // ai: claude-opus-5-5 | 2026-11-17
   const unresolved = result.unresolved ?? [];
   const running = !!result.running;
   const progress = result.total ? Math.round((result.progress / result.total) * 100) : 0;
@@ -57,6 +58,7 @@ export default function RescanImportDialog({ result, onClose }: RescanImportDial
     ...stillDuplicate.map((j) => ({ ...j, outcome: j.status || "" })),
     ...appliedFixed.map((j) => ({ ...j, outcome: "url fixed" })),
     ...urlOnly.map((j) => ({ ...j, outcome: "url only" })),
+    ...jdQueued.map((j) => ({ ...j, outcome: "jd queued" })),
     ...unresolved.map((j) => ({ ...j, outcome: j.reason || "unresolved" })),
   ];
   return (
@@ -87,6 +89,7 @@ export default function RescanImportDialog({ result, onClose }: RescanImportDial
         <div className="metric-item"><div className="metric-value" style={{ color: "var(--green)" }}>{unskipped.length}</div><div className="metric-label">unskipped (real jobs)</div></div>
         <div className="metric-item"><div className="metric-value">{rescored.length}</div><div className="metric-label">re-scored</div></div>
         <div className="metric-item"><div className="metric-value" style={{ color: "var(--text-muted)" }}>{stillDuplicate.length}</div><div className="metric-label">still a duplicate</div></div>
+        <div className="metric-item"><div className="metric-value">{jdQueued.length}</div><div className="metric-label">JD queued for capture</div></div>
         <div className="metric-item"><div className="metric-value" style={{ color: unresolved.length > 0 ? "var(--orange)" : undefined }}>{unresolved.length}</div><div className="metric-label">needs manual review</div></div>
       </div>
 
