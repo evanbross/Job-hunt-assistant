@@ -62,7 +62,6 @@ from backend.scanning.job_sightings import (
 )
 from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
-    canonical_wellfound_job_url,
     is_wellfound_job_url,
 )
 from backend.scoring.auto_reject_rules import (
@@ -674,16 +673,6 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                 # Whitelist match: this subject is explicitly flagged as a job listing
                 if subject_rule == "whitelist":
                     confidence = "high"
-
-                # ai: claude-fable-5 | 2026-07-14
-                # Canonicalize Wellfound listing URLs (tracking links are already
-                # resolved at parse time) so the same listing arriving in different
-                # digests dedupes by URL instead of by opaque per-email links.
-                wf_canonical = canonical_wellfound_job_url(
-                    str(parsed.get("url") or "")
-                )
-                if wf_canonical:
-                    parsed["url"] = wf_canonical
 
                 # Check for exact URL and fuzzy title/company duplicates.
                 # ai: claude-sonnet-4-6 | 2026-06-10

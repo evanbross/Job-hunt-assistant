@@ -539,3 +539,57 @@ https://app.welcometothejungle.com/jobs/1Jw-S0hu?token=abc123&position=2&count=2
     assert len(jobs) == 2
     assert jobs[0]["job_title"] == "Full Stack Engineer (Guardian Monitoring)"
     assert jobs[1]["job_title"] == "Senior Software Engineer (Storage)"
+
+
+# ai: claude-opus-5-5 | 2026-11-16
+class WellfoundEchoingClient:
+    """An LLM response echoing the [URL_0] token for a Wellfound digest job."""
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        return json.dumps(
+            [
+                {
+                    "company": "Netflix",
+                    "job_title": "Software Engineer 5 - TV (Ads)",
+                    "url": "[URL_0]",
+                    "source": "Wellfound",
+                    "certainty_level": "high",
+                    "certainty_score": 95,
+                    "certainty_reason": "test",
+                }
+            ]
+        )
+
+
+def test_parser_stores_canonical_wellfound_url_for_a_resolved_tracking_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A links.wellfound.com link resolves to the ?job_listing_slug= form; the
+    parser itself must store /jobs/{slug}, so every path that parses an email
+    (scan, per-email rescan, broken-import rescan) dedupes the listing by URL."""
+    tracking_url = "https://links.wellfound.com/s/c/AbC123/deadbeef/22"
+    monkeypatch.setattr(
+        email_parser_module,
+        "resolve_tracking_url",
+        lambda url, timeout=3.0: (
+            "https://wellfound.com/jobs?job_listing_slug=5040873-software-engineer-5-tv-ads"
+            if url == tracking_url
+            else url
+        ),
+    )
+
+    parser = EmailParser(1, client=WellfoundEchoingClient())
+    jobs = parser.parse(
+        "New jobs", "Wellfound <team@hi.wellfound.com>", f"Learn More: {tracking_url}"
+    )
+
+    assert [job["url"] for job in jobs] == [
+        "https://wellfound.com/jobs/5040873-software-engineer-5-tv-ads"
+    ]

@@ -44,6 +44,7 @@ from typing import Protocol, TypedDict
 from urllib.parse import unquote, urlparse
 
 from backend.ai_provider import AIMessage, AIProviderClient
+from backend.scoring.posting_identity import canonical_wellfound_job_url, is_sign_in_url
 from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
@@ -356,6 +357,12 @@ class EmailParser:
                 if resolved != raw_url:
                     item["url"] = resolved
                     logger.debug("Resolved tracking URL %s → %s", raw_url, resolved)
+            # ai: claude-opus-5-5 | 2026-11-16 -- here, not in routes/scan.py, so the
+            # email scan, per-email rescan and broken-import rescan all store the one
+            # canonical form, and the same listing dedupes by URL across digests.
+            wellfound_canonical = canonical_wellfound_job_url(str(item.get("url") or ""))
+            if wellfound_canonical:
+                item["url"] = wellfound_canonical
             # ai: claude-sonnet-5 | 2026-09-30
             # If the LLM left the URL empty, try to salvage one directly from
             # the email body using known job-board URL patterns. In a digest
@@ -595,27 +602,50 @@ def resolve_tracking_url(url: str, timeout: float = 3.0) -> str:
 
     Uses HEAD first; falls back to GET if the server doesn't redirect on HEAD.
     Returns the original URL on any failure so callers can proceed unchanged.
+    When the chain ends at a sign-in wall, returns the page the wall was
+    guarding instead (_page_behind_sign_in).
     """
     for method in ("HEAD", "GET"):
+        hops: list[str] = []
         try:
             req = urllib.request.Request(
                 url,
                 method=method,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; JobHuntBot/1.0)"},
             )
-            with safe_urlopen(req, timeout=timeout) as resp:
-                return resp.url
+            with safe_urlopen(req, timeout=timeout, redirect_log=hops) as resp:
+                return _page_behind_sign_in(url, hops, resp.url)
         # ai: claude-fable-5 | 2026-07-14
         except urllib.error.HTTPError as exc:
             # The destination itself may refuse a bot fetch (e.g. Cloudflare 403
             # on wellfound.com). The redirect was still followed to get there,
             # so exc.url names the final destination — which is all we need.
             if exc.url and exc.url != url:
-                return exc.url
+                return _page_behind_sign_in(url, hops, exc.url)
             continue
         except (UnsafeUrlError, urllib.error.URLError, socket.timeout, OSError):
             continue
     return url
+
+
+# ai: claude-opus-5-5 | 2026-11-16
+def _page_behind_sign_in(start: str, hops: list[str], final: str) -> str:
+    """*final*, unless it's a sign-in wall: then the last hop before the wall that
+    is neither a sign-in page nor a tracking link -- the page the wall guards.
+
+    A logged-out fetch of a posting often bounces to a login page (since
+    2026-11-16 Wellfound sends wellfound.com/jobs?job_listing_slug=... on to
+    /login?after_sign_in=...). The login URL names no posting, so job_validator
+    drops it as non_posting_url and the job is left with no URL and no JD; the
+    hop before it is the posting itself. Falls back to *final* when no such hop
+    exists, so the validator still drops a genuine dead end.
+    """
+    if not is_sign_in_url(final):
+        return final
+    for hop in reversed([start, *hops]):
+        if not is_sign_in_url(hop) and not is_email_tracking_url(hop):
+            return hop
+    return final
 
 
 # ai: claude-sonnet-4-6 | 2026-06-29

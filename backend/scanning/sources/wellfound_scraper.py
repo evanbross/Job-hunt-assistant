@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from playwright.sync_api import (
     Browser,
@@ -57,10 +57,9 @@ from playwright.sync_api import (
 )
 
 from backend.email.email_parser import resolve_tracking_url
+from backend.scoring.posting_identity import canonical_wellfound_job_url
 
 logger = logging.getLogger(__name__)
-
-_BASE = "https://wellfound.com"
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -133,32 +132,6 @@ _LISTING_METADATA_JS = """(listingId) => {
 def is_wellfound_job_url(url: str) -> bool:
     """Return True when the URL points at Wellfound (including its email tracking host)."""
     return urlparse(url).netloc.lower() in _WELLFOUND_HOSTS
-
-
-# ai: claude-fable-5 | 2026-07-14
-def canonical_wellfound_job_url(url: str) -> str:
-    """Normalize a Wellfound listing URL to https://wellfound.com/jobs/{slug}.
-
-    Handles both URL shapes Wellfound uses:
-      - https://wellfound.com/jobs?job_listing_slug=4446105-senior-engineer
-      - https://wellfound.com/jobs/4446105-senior-engineer
-    Returns "" when no listing slug can be extracted (e.g. an unresolved
-    links.wellfound.com tracking URL, or a non-listing Wellfound page).
-    """
-    parsed = urlparse(url)
-    host = parsed.netloc.lower()
-    if host not in ("wellfound.com", "www.wellfound.com"):
-        return ""
-    slug = (parse_qs(parsed.query).get("job_listing_slug") or [""])[0]
-    if not slug:
-        path = parsed.path.rstrip("/")
-        if path.startswith("/jobs/"):
-            slug = path[len("/jobs/") :]
-    slug = slug.strip("/")
-    # Real listing slugs start with the numeric listing ID.
-    if not slug or not slug[0].isdigit() or "/" in slug:
-        return ""
-    return f"{_BASE}/jobs/{slug}"
 
 
 # ai: claude-sonnet-5 | 2026-08-11

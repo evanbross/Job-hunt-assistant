@@ -46,9 +46,9 @@ from backend.email.email_parser import is_email_tracking_url
 from backend.scanning.sources.wellfound_scraper import (
     _extract_listing_id,
     _fetch_listing_metadata,
-    canonical_wellfound_job_url,
     is_wellfound_job_url,
 )
+from backend.scoring.posting_identity import canonical_wellfound_job_url
 from backend.settings_service import set_setting
 from routes import scan
 from tests.db_roles import runtime_database_url
@@ -186,6 +186,10 @@ class FakeGmailClient:
 
 
 class FakeEmailParser:
+    """Returns what the real EmailParser does for a Wellfound digest job: the
+    tracking link already resolved and canonicalized (since 2026-11-16 the
+    parser canonicalizes, not routes/scan.py)."""
+
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
@@ -196,7 +200,7 @@ class FakeEmailParser:
             {
                 "company": "TrustIn",
                 "job_title": "Senior Engineer",
-                "url": _SLUG_QUERY_URL,
+                "url": _CANONICAL_URL,
                 "source": "Wellfound",
                 "certainty_level": "low",
                 "certainty_reason": "digest job card",
