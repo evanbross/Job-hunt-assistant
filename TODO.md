@@ -7,13 +7,13 @@ or reprioritized.
 
 ## Features
 
-- [ ] **Recruiter lead tracking, phases 2-4** — Phase 1 (Leads tab, call/message/note
-      log, people on a lead, rich-text notes) built 2026-11-11 on
-      `evan-recruiter-leads-phase1`. Remaining, in order: (2) paste/upload call notes
-      with confirm-first AI extraction, LinkedIn `messages.csv` import into a
-      "Suggested leads" inbox; (3) one-thread capture button in the extension, Gmail
-      "Recruiter" label import, follow-up reminders; (4) optional live LinkedIn inbox
-      sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
+- [ ] **Recruiter lead tracking, phases 3-4** — Phase 1 (Leads tab, call/message/note
+      log, people on a lead, rich-text notes) and Phase 2 (call-notes import with
+      confirm-first AI extraction; LinkedIn `messages.csv` import into a "Suggested
+      leads" inbox, one suggestion per person) built 2026-11-11, used live
+      2026-11-16. Remaining, in order: (3) one-thread capture button in the
+      extension, Gmail "Recruiter" label import, follow-up reminders; (4) optional
+      live LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
 - [x] **Generic-site pagination in the browser extension** — done 2026-09-29
       (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
       detected "Next page" control (`rel="next"`, then an aria-label match,
@@ -306,7 +306,10 @@ Neon-backed install currently needs.
       registration done (on by default; Settings > System > Invites). 4.1/4.2
       (2026-11-07) off-site backups: nightly pg_dump encrypted with age to an S3
       bucket from the maintenance worker, restore + verify commands, key custody
-      documented; the restore drill itself is still to do on the real Neon project.
+      documented. Restore drill PASSED 2026-11-16: the live Neon project's R2
+      backup (jha-20261116T215243Z) restored into an empty Postgres 18, migrated
+      with current code, `backup verify` clean (RLS armed, every secret decrypts),
+      all 43 tables present with counts matching live less post-backup activity.
       4.2 (2026-11-08) every secret can come from a file (`NAME_FILE`, Docker/K8s
       secrets; backend/secret_files.py). R2 bucket `jha-backups` set up 2026-11-07.
       4.3 (2026-11-08) one stdout log format, Sentry-protocol error tracking with PII
