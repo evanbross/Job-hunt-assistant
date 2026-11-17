@@ -819,40 +819,92 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep channel open for the async response
   }
 
-  if (message.action === 'learnAnswer') {
-    (async () => {
-      try {
-        const settings = await loadSettings();
-        const headers = jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' });
-        const res = await fetch(`${settings.listenerUrl}/application-answers`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            question_text: message.question_text,
-            answer_text: message.answer_text,
-            platform: message.platform || null,
-          }),
-        });
-        jhaReportAuth(res);
-        if (!res.ok) {
-          // ai: claude-sonnet-5 | 2026-09-26 -- previously a failed save (stale token, server
-          // error) was silently ignored while the user believed the answer was remembered.
-          const data = await res.json().catch(() => ({}));
-          showNotification(
-            res.status === 401
-              ? JHA_AUTH_ERROR_MESSAGE
-              : `Could not save your answer (${res.status}): ${data.error || 'Unknown error'}`,
-            false
-          );
-        }
-      } catch (err) {
-        console.error('[JHA] learnAnswer failed:', err?.message || err);
-        showNotification('Could not save your answer — is Job Hunt App running?', false);
-      }
-    })();
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Saves the answers ticked in autofill.js's review panel (or the popup's
+  // list of answers stashed on submit) in one request, and reports back so
+  // the caller can say whether they were saved.
+  if (message.action === 'learnAnswers') {
+    saveLearnedAnswers(message.answers, message.platform).then(sendResponse);
+    return true; // keep channel open for the async response
+  }
+
+  if (message.action === 'stashPendingAnswers') {
+    stashPendingAnswers(message);
     return false;
   }
+
+  if (message.action === 'clearStashedAnswers') {
+    clearStashedAnswers(message.pageUrl).then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (message.action === 'getStashedAnswers') {
+    readStashedAnswers().then(sendResponse);
+    return true;
+  }
 });
+
+// ─── Learned application answers ───────────────────────────────────────────
+// ai: claude-opus-5-5 | 2026-11-17
+
+async function saveLearnedAnswers(answers, platform) {
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/application-answers`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ answers, platform: platform || null }),
+    });
+    jhaReportAuth(res);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.status === 401
+          ? JHA_AUTH_ERROR_MESSAGE
+          : `Could not save your answers (${res.status}): ${data.error || 'Unknown error'}`,
+      };
+    }
+    return { ok: true, answers: data.answers || [] };
+  } catch (err) {
+    console.error('[JHA] saving learned answers failed:', err?.message || err);
+    return { ok: false, error: 'Could not save your answers. Is Job Hunt App running?' };
+  }
+}
+
+// Answers ticked in the review panel but not saved before the application
+// was submitted. Kept per page (a second submit click replaces, not adds)
+// until saved or discarded from the popup.
+const PENDING_ANSWERS_KEY = 'pendingLearnedAnswers';
+const MAX_PENDING_APPLICATIONS = 20;
+
+async function readStashedAnswers() {
+  const { [PENDING_ANSWERS_KEY]: stored = [] } = await chrome.storage.local.get(PENDING_ANSWERS_KEY);
+  return stored;
+}
+
+async function stashPendingAnswers({ pageUrl, pageTitle, platform, answers }) {
+  if (!pageUrl || !Array.isArray(answers) || answers.length === 0) return;
+  const stored = await readStashedAnswers();
+  const isNew = !stored.some((entry) => entry.pageUrl === pageUrl);
+  const next = [
+    { pageUrl, pageTitle: pageTitle || pageUrl, platform: platform || null, answers, stashedAt: new Date().toISOString() },
+    ...stored.filter((entry) => entry.pageUrl !== pageUrl),
+  ].slice(0, MAX_PENDING_APPLICATIONS);
+  await chrome.storage.local.set({ [PENDING_ANSWERS_KEY]: next });
+  if (isNew) {
+    showNotification(
+      `${answers.length} answer${answers.length === 1 ? '' : 's'} from this application weren't saved. Open Job Hunt Assistant to review them.`,
+      false
+    );
+  }
+}
+
+async function clearStashedAnswers(pageUrl) {
+  const stored = await readStashedAnswers();
+  const next = stored.filter((entry) => entry.pageUrl !== pageUrl);
+  if (next.length !== stored.length) await chrome.storage.local.set({ [PENDING_ANSWERS_KEY]: next });
+}
 
 // ─── LinkedIn outreach ─────────────────────────────────────────────────────
 // ai: claude-opus-5-5 | 2026-10-14

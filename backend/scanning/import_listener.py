@@ -50,6 +50,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from pydantic import BaseModel, Field, ValidationError, field_validator
+
 import config
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.security.client_ip import Network, resolve_client_address
@@ -71,10 +73,35 @@ ClaimQueue = Callable[[int], list[dict[str, Any]]]
 GetProfile = Callable[[int], dict[str, Any] | None]
 GetResumeFile = Callable[[int], tuple[bytes, str] | None]
 GetAnswers = Callable[[int], list[dict[str, Any]]]
-LearnAnswer = Callable[[int, str, str, str | None], dict[str, Any]]
+# ai: claude-opus-5-5 | 2026-11-17 -- (user_id, [(question, answer), ...], platform) -> saved
+# rows; a batch so the autofill review panel saves everything you ticked in one go.
+LearnAnswers = Callable[[int, list[tuple[str, str]], str | None], list[dict[str, Any]]]
 # ai: claude-opus-5-5 | 2026-10-14 -- (user_id, page_url) -> staged LinkedIn
 # outreach draft for that profile page, or None.
 ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
+
+# ai: claude-opus-5-5 | 2026-11-17
+class LearnedAnswer(BaseModel):
+    question_text: str
+    answer_text: str
+
+    @field_validator("question_text", "answer_text")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+class LearnAnswersRequest(BaseModel):
+    """POST /application-answers body: every answer the user ticked in the
+    autofill review panel, saved together."""
+
+    answers: list[LearnedAnswer] = Field(min_length=1, max_length=100)
+    platform: str | None = None
+
 
 # A wrong or revoked token is not a guessing risk (tokens are 256-bit) but it is load and
 # log noise, and a browser holding a revoked token retries forever. The failure limit is
@@ -265,7 +292,7 @@ class JobImportListener:
         get_profile: GetProfile | None = None,
         get_resume_file: GetResumeFile | None = None,
         get_answers: GetAnswers | None = None,
-        learn_answer: LearnAnswer | None = None,
+        learn_answers: LearnAnswers | None = None,
         claim_outreach_draft: ClaimOutreachDraft | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
@@ -282,7 +309,7 @@ class JobImportListener:
         self._get_profile = get_profile
         self._get_resume_file = get_resume_file
         self._get_answers = get_answers
-        self._learn_answer = learn_answer
+        self._learn_answers = learn_answers
         self._claim_outreach_draft = claim_outreach_draft
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
@@ -305,7 +332,7 @@ class JobImportListener:
         get_profile = self._get_profile
         get_resume_file = self._get_resume_file
         get_answers = self._get_answers
-        learn_answer = self._learn_answer
+        learn_answers = self._learn_answers
         claim_outreach_draft = self._claim_outreach_draft
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
@@ -470,28 +497,31 @@ class JobImportListener:
                     payload = self._read_json_object()
                     if payload is None:
                         return
-                    question_text = str(payload.get("question_text") or "").strip()
-                    answer_text = str(payload.get("answer_text") or "").strip()
-                    platform = payload.get("platform")
-                    if not question_text or not answer_text:
+                    try:
+                        learn_request = LearnAnswersRequest.model_validate(payload)
+                    except ValidationError:
                         self._send_json(
-                            {"error": "question_text and answer_text are required."},
+                            {"error": "answers must be a non-empty list of question_text/answer_text pairs."},
                             HTTPStatus.BAD_REQUEST,
                         )
                         return
-                    if learn_answer is None:
+                    if learn_answers is None:
                         self._send_json(
                             {"error": "Answer bank unavailable."},
                             HTTPStatus.SERVICE_UNAVAILABLE,
                         )
                         return
                     try:
-                        answer = learn_answer(user_id, question_text, answer_text, platform)
-                        self._send_json({"answer": answer}, HTTPStatus.CREATED)
+                        saved = learn_answers(
+                            user_id,
+                            [(a.question_text, a.answer_text) for a in learn_request.answers],
+                            learn_request.platform,
+                        )
+                        self._send_json({"answers": saved}, HTTPStatus.CREATED)
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("Learning application answer failed: %s", exc)
+                        logger.warning("Learning application answers failed: %s", exc)
                         self._send_json(
-                            {"error": "Could not save answer."},
+                            {"error": "Could not save answers."},
                             HTTPStatus.INTERNAL_SERVER_ERROR,
                         )
                     return
@@ -721,7 +751,7 @@ def start_job_import_listener(
     get_profile: GetProfile | None = None,
     get_resume_file: GetResumeFile | None = None,
     get_answers: GetAnswers | None = None,
-    learn_answer: LearnAnswer | None = None,
+    learn_answers: LearnAnswers | None = None,
     claim_outreach_draft: ClaimOutreachDraft | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
@@ -756,7 +786,7 @@ def start_job_import_listener(
             get_profile=get_profile,
             get_resume_file=get_resume_file,
             get_answers=get_answers,
-            learn_answer=learn_answer,
+            learn_answers=learn_answers,
             claim_outreach_draft=claim_outreach_draft,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,

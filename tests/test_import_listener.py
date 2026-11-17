@@ -209,7 +209,7 @@ def test_listener_parser_rejects_large_body() -> None:
 
 class _Recorder:
     def __init__(self) -> None:
-        self.learned: list[tuple[int, str, str, str | None]] = []
+        self.learned: list[tuple[int, list[tuple[str, str]], str | None]] = []
         self.captured: list[tuple[int, dict[str, Any]]] = []
         self.claimed_for: list[int] = []
         self.outreach_claims: list[tuple[int, str]] = []
@@ -228,11 +228,15 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             raise recorder.auth_failure
         return _TOKENS.get(token)
 
-    def fake_learn_answer(
-        user_id: int, question_text: str, answer_text: str, platform: str | None
-    ) -> dict[str, Any]:
-        recorder.learned.append((user_id, question_text, answer_text, platform))
-        return {"id": 99, "question_text": question_text, "answer_text": answer_text, "platform": platform}
+    # ai: claude-opus-5-5 | 2026-11-17
+    def fake_learn_answers(
+        user_id: int, answers: list[tuple[str, str]], platform: str | None
+    ) -> list[dict[str, Any]]:
+        recorder.learned.append((user_id, answers, platform))
+        return [
+            {"id": 99 + i, "question_text": q, "answer_text": a, "platform": platform}
+            for i, (q, a) in enumerate(answers)
+        ]
 
     def fake_submit(user_id: int, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
         recorder.captured.append((user_id, body))
@@ -261,7 +265,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         get_answers=lambda user_id: [
             {"id": 1, "question_text": "Security clearance?", "answer_text": f"answer-{user_id}"}
         ],
-        learn_answer=fake_learn_answer,
+        learn_answers=fake_learn_answers,
         claim_outreach_draft=fake_claim_outreach_draft,
         ws_tickets=tickets,
     )
@@ -426,24 +430,45 @@ def test_authentication_backend_failure_returns_503_not_a_default_user(
     assert "profile" not in json.loads(body)
 
 
-def test_listener_learn_answer_is_attributed_to_the_caller(running_listener: Any) -> None:
+# ai: claude-opus-5-5 | 2026-11-17
+def test_listener_learn_answers_saves_the_batch_for_the_caller(running_listener: Any) -> None:
     listener, recorder, _ = running_listener
     status, body, _ = _post_json(
         listener,
         "/application-answers",
-        {"question_text": "Do you need sponsorship?", "answer_text": "No", "platform": "Ashby"},
+        {
+            "answers": [
+                {"question_text": " Do you need sponsorship? ", "answer_text": "No"},
+                {"question_text": "Years of Python?", "answer_text": "10+"},
+            ],
+            "platform": "Ashby",
+        },
         token=USER_B_TOKEN,
     )
     assert status == HTTPStatus.CREATED
-    assert json.loads(body)["answer"]["question_text"] == "Do you need sponsorship?"
-    assert recorder.learned == [(USER_B, "Do you need sponsorship?", "No", "Ashby")]
+    assert [a["question_text"] for a in json.loads(body)["answers"]] == [
+        "Do you need sponsorship?",
+        "Years of Python?",
+    ]
+    assert recorder.learned == [
+        (USER_B, [("Do you need sponsorship?", "No"), ("Years of Python?", "10+")], "Ashby")
+    ]
 
 
-def test_listener_learn_answer_rejects_blank_fields(running_listener: Any) -> None:
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"answers": []},
+        {"answers": [{"question_text": "  ", "answer_text": "x"}]},
+        {"answers": [{"question_text": "Q?", "answer_text": ""}]},
+        {"question_text": "Old single-answer shape?", "answer_text": "No"},
+    ],
+)
+def test_listener_learn_answers_rejects_invalid_batches(
+    running_listener: Any, payload: dict[str, Any]
+) -> None:
     listener, recorder, _ = running_listener
-    status, _, _ = _post_json(
-        listener, "/application-answers", {"question_text": "  ", "answer_text": ""}
-    )
+    status, _, _ = _post_json(listener, "/application-answers", payload)
     assert status == HTTPStatus.BAD_REQUEST
     assert recorder.learned == []
 

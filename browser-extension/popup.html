@@ -102,6 +102,17 @@
       line-height: 1.4;
       display: none;
     }
+    #stashed-answers { padding: 0 16px 12px; font-size: 13px; color: #0f172a; }
+    .stashed-title { font-weight: 600; margin-bottom: 6px; }
+    .stashed-group { border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; margin-bottom: 8px; }
+    .stashed-page { color: #64748b; font-size: 12px; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .stashed-row { display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px; }
+    .stashed-row input { margin-top: 2px; }
+    .stashed-question { font-weight: 600; }
+    .stashed-answer { color: #334155; word-break: break-word; }
+    .stashed-actions { display: flex; gap: 6px; }
+    .stashed-actions .btn { padding: 5px 10px; font-size: 13px; margin-top: 0; }
+    .stashed-error { color: #b91c1c; font-size: 12px; margin-top: 4px; }
     .status-row.success { background: #f0fdf4; color: #15803d; border: 1px solid #bbf7d0; }
     .status-row.error   { background: #fef2f2; color: #b91c1c; border: 1px solid #fecaca; }
     .status-row.info    { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
@@ -253,6 +264,9 @@
       <div class="progress-bar"><div class="progress-fill" id="progress-fill"></div></div>
     </div>
   </div>
+
+  <!-- ai: claude-opus-5-5 | 2026-11-17 — answers autofill.js stashed when an application was submitted before they were saved (see popup.js renderStashedAnswers) -->
+  <div id="stashed-answers" style="display:none;"></div>
 
   <div id="no-access">
     Cannot access this page.<br>Open a job board and try again.

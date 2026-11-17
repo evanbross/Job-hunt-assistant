@@ -703,17 +703,20 @@ export default function ApplicationProfilePanel() {
 
         <p style={sectionHeaderStyle}>Answer bank</p>
         <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "-4px", marginBottom: "12px" }}>
-          Free-text application questions that don't fit the structured profile above (e.g. "Do
-          you have a security clearance?"). The extension matches new questions against these by
-          wording and reuses the answer across postings and platforms.
+          {/* ai: claude-opus-5-5 | 2026-11-17 -- describes the extension's review panel */}
+          Application questions and your answers to them (e.g. "Do you have a security
+          clearance?"). The extension matches new questions against these by wording and reuses
+          the answer across postings and platforms, in text boxes, dropdowns and Yes/No buttons
+          alike. An answer saved for an exact question wins over the profile above, so it also
+          holds your corrections.
         </p>
 
         {loadingAnswers && <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Loading…</p>}
         {answersError && <p style={{ fontSize: "13px", color: "var(--red, #e05252)" }}>{answersError}</p>}
         {!loadingAnswers && !answersError && answers.length === 0 && (
           <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-            No saved answers yet. The extension will prompt you to save one the first time it
-            can't autofill a question, or add one manually below.
+            No saved answers yet. After you fill an application with the extension, it offers
+            to save whatever you typed, picked or corrected; or add one manually below.
           </p>
         )}
 

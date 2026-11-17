@@ -18,6 +18,7 @@ from backend.db import (
     get_connection,
 )
 from backend.db.row_level_security import set_current_user
+from web.extension_listener import learn_application_answers
 
 # ai: claude-sonnet-5 | 2026-08-13
 # ai: claude-sonnet-5 | 2026-08-20 — every repo call below now takes a
@@ -215,5 +216,31 @@ def test_answers_upsert_is_scoped_per_user(pg_dsn: str) -> None:
         set_current_user(conn.cursor(), user_b)
         assert len(repo.get_all(user_b)) == 1
         assert repo.get_all(user_b)[0]["answer_text"] == "Yes"
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_learn_application_answers_saves_the_batch_through_the_real_schema(pg_dsn: str) -> None:
+    """The extension listener's batch save (one transaction, all rows) against the
+    real tables, including an upsert over an existing normalized question."""
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        repo.upsert(user_id, question_text="What is your notice period?", answer_text="4 weeks")
+        conn.commit()
+
+        saved = learn_application_answers(
+            user_id,
+            [("What is your notice period?", "2 weeks"), ("Willing to relocate?", "No")],
+            "Greenhouse",
+        )
+
+        assert [row["answer_text"] for row in saved] == ["2 weeks", "No"]
+        rows = {row["question_text"]: row for row in repo.get_all(user_id)}
+        assert set(rows) == {"What is your notice period?", "Willing to relocate?"}
+        assert rows["What is your notice period?"]["answer_text"] == "2 weeks"
+        assert rows["Willing to relocate?"]["platform"] == "Greenhouse"
     finally:
         conn.close()

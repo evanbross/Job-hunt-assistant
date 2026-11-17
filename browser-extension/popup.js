@@ -88,6 +88,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
   document.getElementById('capture-mode-list').addEventListener('click', () => setCaptureMode('list'));
   document.getElementById('capture-mode-detail').addEventListener('click', () => setCaptureMode('detail'));
+  renderStashedAnswers(); // ai: claude-opus-5-5 | 2026-11-17 -- before the page probes; shown on any page
   await initFullDescOptions();
   initMaxJobsOption(); // ai: claude-opus-5-5 | 2026-11-02 — reads captureSettings, so after the line above
 
@@ -430,6 +431,75 @@ async function handleFillApplication() {
 
   btn.disabled = false;
   btn.textContent = 'Fill Application';
+}
+
+// ─── Answers stashed on submit ────────────────────────────────────────────────
+// ai: claude-opus-5-5 | 2026-11-17
+// autofill.js's review panel stashes the answers it would have saved when an
+// application is submitted before they were (see stashIfSubmitting there).
+// background.js owns that storage; this lists them so they can still be saved.
+
+function popupNode(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+async function renderStashedAnswers() {
+  const container = document.getElementById('stashed-answers');
+  const stashed = (await chrome.runtime.sendMessage({ action: 'getStashedAnswers' })) || [];
+  container.replaceChildren();
+  container.style.display = stashed.length ? 'block' : 'none';
+  if (stashed.length === 0) return;
+
+  container.append(popupNode('div', 'stashed-title', "Answers you didn't save"));
+  for (const application of stashed) {
+    const group = popupNode('div', 'stashed-group');
+    group.append(popupNode('div', 'stashed-page', application.pageTitle));
+    const rows = application.answers.map((answer) => {
+      const row = popupNode('label', 'stashed-row');
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = true;
+      const text = popupNode('div');
+      text.append(popupNode('div', 'stashed-question', answer.question_text));
+      text.append(popupNode('div', 'stashed-answer', answer.answer_text));
+      row.append(box, text);
+      group.append(row);
+      return { box, answer };
+    });
+
+    const actions = popupNode('div', 'stashed-actions');
+    const save = popupNode('button', 'btn', 'Save selected');
+    const discard = popupNode('button', 'btn secondary', 'Discard');
+    const error = popupNode('div', 'stashed-error');
+    save.addEventListener('click', async () => {
+      const chosen = rows.filter((r) => r.box.checked).map((r) => r.answer);
+      if (chosen.length > 0) {
+        save.disabled = true;
+        const response = await chrome.runtime.sendMessage({
+          action: 'learnAnswers',
+          answers: chosen,
+          platform: application.platform,
+        });
+        if (!response?.ok) {
+          error.textContent = response?.error || 'Could not save your answers.';
+          save.disabled = false;
+          return;
+        }
+      }
+      await chrome.runtime.sendMessage({ action: 'clearStashedAnswers', pageUrl: application.pageUrl });
+      await renderStashedAnswers();
+    });
+    discard.addEventListener('click', async () => {
+      await chrome.runtime.sendMessage({ action: 'clearStashedAnswers', pageUrl: application.pageUrl });
+      await renderStashedAnswers();
+    });
+    actions.append(save, discard);
+    group.append(actions, error);
+    container.append(group);
+  }
 }
 
 // ─── UI Helpers ───────────────────────────────────────────────────────────────

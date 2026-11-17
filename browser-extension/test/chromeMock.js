@@ -180,6 +180,7 @@ export class MockChromeEnvironment {
   constructor() {
     this.sessionStore = new Map();
     this.syncStore = new Map();
+    this.localStore = new Map(); // ai: claude-opus-5-5 | 2026-11-17 -- stashed autofill answers
     this.notifications = [];
     this.fetchMock = vi.fn().mockResolvedValue({
       ok: false,
@@ -193,6 +194,7 @@ export class MockChromeEnvironment {
       storage: {
         session: makeStorageArea(this.sessionStore),
         sync: makeStorageArea(this.syncStore),
+        local: makeStorageArea(this.localStore),
       },
       runtime: makeRuntime(),
       tabs: makeTabs(),

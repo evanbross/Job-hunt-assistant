@@ -660,14 +660,31 @@
 
   // ─── Answer bank matching ──────────────────────────────────────────────────
 
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Most ATS forms put a required-field asterisk on the label ("Phone*") and
+  // some don't; dropping it lets one saved answer cover both. Every question
+  // the review panel saves goes through this too, so stored rows are clean.
+  function cleanQuestion(label) {
+    return (label || '').replace(/\s+/g, ' ').replace(/[\s*]+$/, '').trim();
+  }
+
   function normalize(text) {
-    return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return cleanQuestion(text).toLowerCase();
+  }
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Only an exact (normalized) match is trusted enough to override the
+  // built-in category rules -- see fillControl.
+  function findExactBankAnswer(label, answers) {
+    const norm = normalize(label);
+    if (!norm) return null;
+    return answers.find((a) => normalize(a.question_text) === norm) || null;
   }
 
   function findBankAnswer(label, answers) {
-    const norm = normalize(label);
-    const exact = answers.find((a) => normalize(a.question_text) === norm);
+    const exact = findExactBankAnswer(label, answers);
     if (exact) return exact;
+    const norm = normalize(label);
 
     const labelTokens = new Set(norm.split(/\W+/).filter((w) => w.length > 2));
     if (labelTokens.size === 0) return null;
@@ -768,12 +785,25 @@
   // native radio input's own click behavior (toggle checked, fire change)
   // works the same regardless of framework, since it's the browser's default
   // action rather than something a framework has to reimplement.
+  // ai: claude-opus-5-5 | 2026-11-17 -- also matches the option's visible
+  // label, since that's what readControlValue saves for a radio question
+  // (an option's value is often an opaque id on non-LinkedIn forms).
   function fillRadioGroup(radios, candidates) {
     for (const candidate of candidates) {
-      const match = radios.find((r) => (r.value || '').trim().toLowerCase() === String(candidate).trim().toLowerCase());
+      const want = String(candidate).trim().toLowerCase();
+      const match = radios.find(
+        (r) => (r.value || '').trim().toLowerCase() === want || optionLabel(r).toLowerCase() === want
+      );
       if (match) { match.click(); return true; }
     }
     return false;
+  }
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  // The text a person sees for one radio/checkbox option.
+  function optionLabel(input) {
+    const text = input.labels?.[0]?.innerText?.trim();
+    return text || (input.value || '').trim();
   }
 
   // Location/Select-style combobox — covers two confirmed-different widget
@@ -1073,52 +1103,403 @@
     el.style.outlineOffset = '2px';
   }
 
-  // ─── "Remember this answer" — the actual learning mechanism, kept to an
-  // explicit user action rather than silent auto-capture. ──────────────────
+  // ─── Reading and replaying answers on any control type ─────────────────────
 
-  function escapeHtml(s) {
-    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  // ai: claude-opus-5-5 | 2026-11-17
+  // What the person sees as this control's current answer -- the option text
+  // for a choice question, not its underlying value -- so a saved answer reads
+  // naturally in the Application Profile tab and can be matched against the
+  // same question's options on a different ATS later.
+  function readControlValue(control) {
+    switch (control.type) {
+      case 'text':
+        return (control.el.value || '').trim();
+      case 'select': {
+        const option = control.el.selectedOptions?.[0];
+        return option && option.value !== '' ? option.textContent.trim() : '';
+      }
+      case 'combobox': {
+        // react-select shows the chosen value(s) in sibling elements and
+        // clears the input itself (see fillCombobox); Ashby keeps it in .value.
+        const shell = control.el.closest('[class*="select-shell"]');
+        const multi = shell
+          ? [...shell.querySelectorAll('[class*="multi-value__label"]')].map((n) => n.textContent.trim()).filter(Boolean)
+          : [];
+        if (multi.length > 0) return multi.join('; ');
+        const single = shell?.querySelector('[class*="single-value"]')?.textContent.trim();
+        return single || (control.el.value || '').trim();
+      }
+      case 'radio-group': {
+        const checked = control.radios.find((r) => r.checked);
+        return checked ? optionLabel(checked) : '';
+      }
+      case 'checkbox-group': {
+        const values = control.checkboxes.filter((cb) => cb.checked).map(optionLabel);
+        const custom = control.customCheckbox?.checked ? control.customTextInput?.value.trim() : '';
+        if (custom) values.push(custom);
+        return values.join('; ');
+      }
+      case 'yesno': {
+        // Same "active" class signal clickYesNo falls back to.
+        const pressed = control.buttons.find(
+          (b) => b.getAttribute('aria-pressed') === 'true' || /active|selected/i.test(b.className)
+        );
+        return pressed ? pressed.textContent.trim() : '';
+      }
+      default:
+        return '';
+    }
   }
 
-  function showLearnPrompt(question, answer, platform) {
-    document.getElementById('jha-learn-toast')?.remove();
-    const toast = document.createElement('div');
-    toast.id = 'jha-learn-toast';
-    toast.style.cssText =
-      'position:fixed;bottom:16px;right:16px;z-index:2147483647;background:#1e293b;' +
-      'color:#fff;padding:10px 14px;border-radius:8px;font:13px -apple-system,BlinkMacSystemFont,' +
-      'sans-serif;max-width:320px;box-shadow:0 4px 16px rgba(0,0,0,0.3);';
-    toast.innerHTML = `<div style="margin-bottom:8px;">Remember your answer to<br><b>"${escapeHtml(question)}"</b> for next time?</div>`;
-
-    const saveBtn = document.createElement('button');
-    saveBtn.textContent = 'Save';
-    saveBtn.style.cssText = 'background:#2563eb;color:#fff;border:none;border-radius:4px;padding:4px 10px;margin-right:6px;cursor:pointer;';
-    saveBtn.onclick = () => {
-      chrome.runtime.sendMessage({ action: 'learnAnswer', question_text: question, answer_text: answer, platform });
-      toast.remove();
-    };
-
-    const dismissBtn = document.createElement('button');
-    dismissBtn.textContent = 'Dismiss';
-    dismissBtn.style.cssText = 'background:transparent;color:#cbd5e1;border:1px solid #475569;border-radius:4px;padding:4px 10px;cursor:pointer;';
-    dismissBtn.onclick = () => toast.remove();
-
-    toast.appendChild(saveBtn);
-    toast.appendChild(dismissBtn);
-    document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 15000);
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Fills one saved answer-bank answer into whatever kind of control asked
+  // the question. Returns whether it took. The bank used to be tried only on
+  // text boxes, so every dropdown/radio/Yes-No screening question fell
+  // through to "unresolved" no matter what had been saved.
+  async function fillWithAnswer(control, answerText, platform) {
+    const answer = String(answerText || '').trim();
+    if (!answer) return false;
+    switch (control.type) {
+      case 'text':
+        setNativeValue(control.el, answer);
+        return true;
+      case 'select': {
+        const option = bestMatchingOption([...control.el.options].filter((o) => o.value !== ''), [answer]);
+        if (!option) return false;
+        control.el.value = option.value;
+        control.el.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      case 'combobox':
+        // Fixed option lists first; the typed-filter path covers async ones
+        // (locations) whose options only appear after typing.
+        return (await fillComboboxBestMatch(control.el, [answer], platform))
+          || fillComboboxCandidates(control.el, [answer], platform);
+      case 'radio-group':
+        return fillRadioGroup(control.radios, [answer]);
+      case 'yesno':
+        if (/^yes$/i.test(answer)) return clickYesNo(control.buttons, control.checkbox, true);
+        if (/^no$/i.test(answer)) return clickYesNo(control.buttons, control.checkbox, false);
+        return false;
+      case 'checkbox-group': {
+        const wanted = answer.split(';').map(normalizeOptionText).filter(Boolean);
+        const matches = control.checkboxes.filter(
+          (cb) => wanted.includes(normalizeOptionText(optionLabel(cb))) || wanted.includes(normalizeOptionText(cb.value))
+        );
+        if (matches.length === 0) return false;
+        matches.forEach((cb) => { if (!cb.checked) cb.click(); });
+        return true;
+      }
+      default:
+        return false;
+    }
   }
 
-  function attachLearnOnBlur(control, label, platform) {
-    if (control.type === 'file' || control.type === 'yesno') return;
-    const el = control.el;
-    const handler = () => {
-      const value = el.value?.trim();
-      if (!value) return;
-      markFilled(el);
-      showLearnPrompt(label, value, platform);
-    };
-    el.addEventListener('blur', handler, { once: true });
+  // ─── Answer review: how the extension learns ───────────────────────────────
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Replaces a per-field "Remember this answer?" toast that only appeared for
+  // unfilled plain text boxes, vanished after 15 seconds, and never noticed a
+  // correction -- 6 answers saved across ~900 applications. Instead, every
+  // control seen after "Fill Application" is tracked with the value it had
+  // once autofill finished (its baseline). Anything the person then types,
+  // picks, or changes shows up in one panel, as a new answer or a correction,
+  // to save in a single click. Nothing is saved without that click; if they
+  // submit first, the unsaved answers are stashed for the extension popup.
+
+  const LONG_ANSWER_CHARS = 300;
+
+  const review = {
+    entries: new Map(), // control element -> entry
+    platform: null,
+    profile: {},
+    answers: [],
+    expanded: false,
+    status: null, // { text, error }
+    listening: false,
+    refreshTimer: null,
+    host: null,
+  };
+
+  function sameAnswer(a, b) {
+    return normalizeOptionText(a) === normalizeOptionText(b);
+  }
+
+  // A value the built-in profile rules would have produced for this question
+  // anyway (e.g. typing your own email into a field autofill didn't reach) --
+  // nothing to learn from it.
+  function matchesProfile(question, value) {
+    const category = classify(question);
+    if (!category) return false;
+    let candidates = [];
+    if (BOOLEAN_CATEGORIES.has(category)) {
+      const boolValue = boolValueForCategory(review.profile, category);
+      if (boolValue !== null && boolValue !== undefined) candidates = candidateValuesForBoolean(category, boolValue);
+    } else {
+      const raw = profileValueForCategory(review.profile, category);
+      if (raw) candidates = candidateValuesForCategory(category, raw, review.profile);
+    }
+    return candidates.some((candidate) => sameAnswer(candidate, value));
+  }
+
+  function reviewBegin({ platform, profile, answers }) {
+    review.platform = platform;
+    review.profile = profile;
+    review.answers = answers;
+    if (!review.listening) {
+      review.listening = true;
+      for (const type of ['input', 'change', 'click']) {
+        document.addEventListener(type, onPageEvent, true);
+      }
+      document.addEventListener('click', stashIfSubmitting, true);
+      document.addEventListener('submit', stashIfSubmitting, true);
+    }
+  }
+
+  // filledByUs: autofill just wrote this control, so its current value is the
+  // new baseline. A control autofill couldn't fill keeps the baseline it was
+  // first seen with -- a second "Fill Application" click mustn't turn what
+  // the person already typed into the baseline and lose it.
+  function reviewTrack(control, filledByUs) {
+    if (control.type === 'file') return;
+    const question = cleanQuestion(control.label);
+    if (!question) return;
+    const existing = review.entries.get(control.el);
+    if (existing && !filledByUs) return;
+    const value = readControlValue(control);
+    review.entries.set(control.el, {
+      control,
+      question,
+      baseline: value,
+      filledByUs,
+      current: value,
+      checked: null, // null until the person toggles it; see isChecked
+      savedValue: null,
+      dismissedValue: null,
+    });
+  }
+
+  function isChecked(entry) {
+    return entry.checked ?? entry.current.length <= LONG_ANSWER_CHARS;
+  }
+
+  // Entries with something worth saving, one per question (a re-rendered
+  // control can be tracked twice under the same label; the newest wins).
+  function pendingReviewEntries() {
+    const byQuestion = new Map();
+    for (const entry of review.entries.values()) {
+      // A detached control (a multi-step form's previous step) keeps the
+      // last value read from it, so answering step 1 then moving on to step 2
+      // doesn't lose the step-1 answers.
+      if (entry.control.el.isConnected) entry.current = readControlValue(entry.control);
+      const current = entry.current;
+      if (!current || sameAnswer(current, entry.baseline)) continue;
+      if (entry.savedValue !== null && sameAnswer(current, entry.savedValue)) continue;
+      if (entry.dismissedValue !== null && sameAnswer(current, entry.dismissedValue)) continue;
+      const known = findExactBankAnswer(entry.question, review.answers);
+      if (known && sameAnswer(current, known.answer_text)) continue;
+      if (!entry.filledByUs && matchesProfile(entry.question, current)) continue;
+      byQuestion.set(normalize(entry.question), entry);
+    }
+    return [...byQuestion.values()];
+  }
+
+  function isOwnPanelEvent(event) {
+    return Boolean(review.host) && event.composedPath().includes(review.host);
+  }
+
+  function onPageEvent(event) {
+    if (isOwnPanelEvent(event)) return;
+    clearTimeout(review.refreshTimer);
+    review.refreshTimer = setTimeout(reviewRefresh, 300);
+  }
+
+  // Also picks up controls that appeared after autofill ran (the next step of
+  // a multi-step form, a conditionally revealed question). Their baseline is
+  // whatever the page itself put there.
+  function reviewRefresh() {
+    try {
+      for (const control of discoverControls()) {
+        if (!review.entries.has(control.el)) reviewTrack(control, false);
+      }
+    } catch (err) {
+      console.warn('[JHA] answer review: control discovery failed', err);
+    }
+    renderReviewPanel();
+  }
+
+  function checkedAnswersPayload(entries) {
+    return entries.filter(isChecked).map((entry) => ({ question_text: entry.question, answer_text: entry.current }));
+  }
+
+  async function saveReviewEntries() {
+    const entries = pendingReviewEntries().filter(isChecked);
+    if (entries.length === 0) return;
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({
+        action: 'learnAnswers',
+        platform: review.platform,
+        answers: checkedAnswersPayload(entries),
+      });
+    } catch (err) {
+      response = { ok: false, error: String(err?.message || err) };
+    }
+    if (!response?.ok) {
+      review.status = { text: response?.error || 'Could not save your answers.', error: true };
+      renderReviewPanel();
+      return;
+    }
+    for (const entry of entries) {
+      entry.savedValue = entry.current;
+      const existing = findExactBankAnswer(entry.question, review.answers);
+      if (existing) existing.answer_text = entry.current;
+      else review.answers.push({ question_text: entry.question, answer_text: entry.current });
+    }
+    chrome.runtime.sendMessage({ action: 'clearStashedAnswers', pageUrl: location.href });
+    review.status = { text: `Saved ${entries.length} answer${entries.length === 1 ? '' : 's'}.`, error: false };
+    review.expanded = false;
+    renderReviewPanel();
+  }
+
+  function dismissReviewEntries() {
+    for (const entry of pendingReviewEntries()) entry.dismissedValue = entry.current;
+    review.status = null;
+    renderReviewPanel();
+  }
+
+  const SUBMIT_TEXT = /\bsubmit\b|\bsend application\b|^apply( now)?$/i;
+
+  // Doesn't block or delay the submit -- just hands the ticked, unsaved
+  // answers to background.js before the page navigates away.
+  function stashIfSubmitting(event) {
+    if (isOwnPanelEvent(event)) return;
+    if (event.type === 'click') {
+      const button = event.target.closest?.('button, input[type="submit"], [role="button"]');
+      const text = button ? (button.innerText || button.value || '').trim() : '';
+      if (!SUBMIT_TEXT.test(text)) return;
+    }
+    const answers = checkedAnswersPayload(pendingReviewEntries());
+    if (answers.length === 0) return;
+    chrome.runtime.sendMessage({
+      action: 'stashPendingAnswers',
+      pageUrl: location.href,
+      pageTitle: document.title,
+      platform: review.platform,
+      answers,
+    });
+  }
+
+  const REVIEW_PANEL_CSS = `
+    :host { all: initial; }
+    .panel { position: fixed; bottom: 16px; right: 16px; z-index: 2147483647; width: 360px; max-height: 70vh;
+      display: flex; flex-direction: column; background: #1e293b; color: #f8fafc; border-radius: 10px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.35); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    .head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+    .title { flex: 1; font-weight: 600; }
+    .list { overflow-y: auto; padding: 0 12px; }
+    .item { display: flex; gap: 8px; padding: 8px 0; border-top: 1px solid #334155; }
+    .item input { margin-top: 3px; }
+    .q { font-weight: 600; }
+    .was { color: #94a3b8; text-decoration: line-through; }
+    .now { color: #e2e8f0; white-space: pre-wrap; word-break: break-word; }
+    .note { color: #fbbf24; font-size: 12px; }
+    .foot { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid #334155; }
+    button { font: inherit; border-radius: 5px; padding: 5px 10px; cursor: pointer; }
+    .primary { background: #2563eb; color: #fff; border: none; }
+    .primary:disabled { background: #475569; cursor: default; }
+    .ghost { background: transparent; color: #cbd5e1; border: 1px solid #475569; }
+    .status { padding: 0 12px 10px; }
+    .status.error { color: #fca5a5; }
+    .status.ok { color: #86efac; }
+  `;
+
+  function createNode(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function truncate(text, max = 160) {
+    return text.length > max ? `${text.slice(0, max)}…` : text;
+  }
+
+  function renderReviewPanel() {
+    const entries = pendingReviewEntries();
+    if (entries.length === 0 && !review.status) {
+      review.host?.remove();
+      review.host = null;
+      return;
+    }
+    if (!review.host || !review.host.isConnected) {
+      review.host = document.createElement('div');
+      review.host.id = 'jha-answer-review';
+      review.host.attachShadow({ mode: 'open' });
+      document.documentElement.appendChild(review.host);
+    }
+    const root = review.host.shadowRoot;
+    root.replaceChildren();
+    const style = document.createElement('style');
+    style.textContent = REVIEW_PANEL_CSS;
+    const panel = createNode('div', 'panel');
+    root.append(style, panel);
+
+    const head = createNode('div', 'head');
+    const count = entries.length;
+    head.append(createNode('span', 'title', count
+      ? `Remember ${count} answer${count === 1 ? '' : 's'} for next time?`
+      : 'Job Hunt Assistant'));
+    if (count) {
+      const toggle = createNode('button', 'ghost', review.expanded ? 'Hide' : 'Review');
+      toggle.dataset.action = 'toggle';
+      toggle.addEventListener('click', () => { review.expanded = !review.expanded; renderReviewPanel(); });
+      head.append(toggle);
+    }
+    const close = createNode('button', 'ghost', '✕');
+    close.title = count ? "Don't save these" : 'Close';
+    close.dataset.action = 'dismiss';
+    close.addEventListener('click', dismissReviewEntries);
+    head.append(close);
+    panel.append(head);
+
+    if (review.expanded && count) {
+      const list = createNode('div', 'list');
+      for (const entry of entries) {
+        const item = createNode('label', 'item');
+        const box = document.createElement('input');
+        box.type = 'checkbox';
+        box.checked = isChecked(entry);
+        box.addEventListener('change', () => { entry.checked = box.checked; renderReviewPanel(); });
+        const body = createNode('div');
+        body.append(createNode('div', 'q', entry.question));
+        if (entry.filledByUs && entry.baseline) {
+          body.append(createNode('div', 'was', `Filled: ${truncate(entry.baseline)}`));
+          body.append(createNode('div', 'now', `You changed it to: ${truncate(entry.current)}`));
+        } else {
+          body.append(createNode('div', 'now', truncate(entry.current)));
+        }
+        if (entry.current.length > LONG_ANSWER_CHARS) {
+          body.append(createNode('div', 'note', 'Long answer, probably written for this job. Tick it to reuse it anyway.'));
+        }
+        item.append(box, body);
+        list.append(item);
+      }
+      panel.append(list);
+
+      const checkedCount = entries.filter(isChecked).length;
+      const foot = createNode('div', 'foot');
+      const save = createNode('button', 'primary', `Save ${checkedCount}`);
+      save.dataset.action = 'save';
+      save.disabled = checkedCount === 0;
+      save.addEventListener('click', saveReviewEntries);
+      foot.append(save);
+      panel.append(foot);
+    }
+
+    if (review.status) {
+      panel.append(createNode('div', `status ${review.status.error ? 'error' : 'ok'}`, review.status.text));
+      if (!review.status.error) review.status = null; // shown once, gone on the next refresh
+    }
   }
 
   // ai: claude-sonnet-5 | 2026-10-08
@@ -1175,6 +1556,18 @@
             markUnresolved(control.el);
             unresolved.push(label);
           }
+          return;
+        }
+
+        // ai: claude-opus-5-5 | 2026-11-17
+        // A saved answer to this exact question beats the built-in rules
+        // below: it's either one the person taught directly or a correction
+        // they made to what those rules filled last time (e.g. a "Location"
+        // question that wants "Raleigh, NC" rather than profile.city).
+        const exactAnswer = findExactBankAnswer(label, safeAnswers);
+        if (exactAnswer && await fillWithAnswer(control, exactAnswer.answer_text, platform)) {
+          markFilled(control.el);
+          filled.push(label);
           return;
         }
 
@@ -1318,27 +1711,16 @@
           return;
         }
 
-        const bankAnswer = control.type === 'combobox' ? null : findBankAnswer(label, safeAnswers);
-        if (bankAnswer) {
-          // ai: claude-sonnet-5 | 2026-08-25
-          // Same reasoning as the structuredValue branch above: a radio-group's
-          // control.el is a container, not a fillable element itself.
-          if (control.type === 'radio-group') {
-            if (fillRadioGroup(control.radios, [bankAnswer.answer_text])) {
-              markFilled(control.el);
-              filled.push(label);
-              return;
-            }
-          } else {
-            setNativeValue(control.el, bankAnswer.answer_text);
-            markFilled(control.el);
-            filled.push(label);
-            return;
-          }
+        // ai: claude-opus-5-5 | 2026-11-17 -- any control type now, not just
+        // text boxes; see fillWithAnswer.
+        const bankAnswer = findBankAnswer(label, safeAnswers);
+        if (bankAnswer && await fillWithAnswer(control, bankAnswer.answer_text, platform)) {
+          markFilled(control.el);
+          filled.push(label);
+          return;
         }
 
         markUnresolved(control.el);
-        attachLearnOnBlur(control, label, platform);
         unresolved.push(label);
       } catch (err) {
         unresolved.push(`${label} (error: ${err})`);
@@ -1362,10 +1744,14 @@
       );
       for (const control of newControls) {
         controlElements(control).forEach((el) => processedEls.add(el));
+        const filledBefore = filled.length;
         await fillControl(control);
+        reviewTrack(control, filled.length > filledBefore); // ai: claude-opus-5-5 | 2026-11-17
       }
       return newControls.length > 0;
     }
+
+    reviewBegin({ platform, profile: safeProfile, answers: safeAnswers }); // ai: claude-opus-5-5 | 2026-11-17
 
     // A third pass would only matter for a conditional field gated behind
     // another conditional field, not confirmed on any live posting yet --
@@ -1373,6 +1759,7 @@
     // reveal and cheap to extend if that's ever confirmed needed.
     await processPass();
     await processPass();
+    renderReviewPanel(); // ai: claude-opus-5-5 | 2026-11-17
 
     return { filled, unresolved };
   }

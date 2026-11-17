@@ -28,6 +28,7 @@ import { vi } from "vitest";
 
 const EXT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const CONTENT_SOURCE = fs.readFileSync(path.join(EXT_DIR, "content.js"), "utf8");
+const AUTOFILL_SOURCE = fs.readFileSync(path.join(EXT_DIR, "autofill.js"), "utf8");
 const MANIFEST_VERSION = JSON.parse(fs.readFileSync(path.join(EXT_DIR, "manifest.json"), "utf8")).version;
 
 // A minimal fetch Response stand-in -- content.js only ever reads ok/status
@@ -40,37 +41,13 @@ export function htmlResponse(body, { ok = true, status = 200 } = {}) {
 // (same-origin, about:blank) document -- enough to model a wrapper page like
 // iCIMS's #icims_content_iframe, which the top frame reads directly.
 export function loadContentScript({ url, html, iframes = {}, fetchMock = vi.fn() }) {
-  const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
-  const { window } = dom;
-
-  // jsdom has no layout engine, so it doesn't implement innerText at all
-  // (it's undefined, not ""). content.js leans on innerText everywhere;
-  // textContent is the closest stand-in a layout-free DOM can offer.
-  if (!("innerText" in window.HTMLElement.prototype)) {
-    Object.defineProperty(window.HTMLElement.prototype, "innerText", {
-      get() { return this.textContent; },
-      configurable: true,
-    });
-  }
+  const { window, listeners, sentMessages } = createPageWindow({ url, html });
 
   for (const [id, bodyHtml] of Object.entries(iframes)) {
     const frame = window.document.getElementById(id);
     if (!frame) throw new Error(`loadContentScript: no iframe #${id} in html`);
     frame.contentDocument.body.innerHTML = bodyHtml;
   }
-
-  const listeners = [];
-  const sentMessages = [];
-  window.chrome = {
-    runtime: {
-      onMessage: { addListener: (fn) => listeners.push(fn) },
-      sendMessage: vi.fn((message) => {
-        sentMessages.push(message);
-        return Promise.resolve(null);
-      }),
-      getManifest: () => ({ version: MANIFEST_VERSION }),
-    },
-  };
   window.fetch = fetchMock;
 
   window.eval(CONTENT_SOURCE);
@@ -90,4 +67,55 @@ export function loadContentScript({ url, html, iframes = {}, fetchMock = vi.fn()
       return { ...response, payload: response.payload ? JSON.parse(response.payload) : null };
     },
   };
+}
+
+// ai: claude-opus-5-5 | 2026-11-17
+// Same idea for autofill.js, driven through the 'runAutofill' message that
+// background.js sends after the popup's "Fill Application" click.
+// respondTo(message) supplies runtime.sendMessage's reply (e.g. the
+// background's answer to 'learnAnswers').
+export function loadAutofillScript({ url, html, respondTo = () => null }) {
+  const { window, listeners, sentMessages } = createPageWindow({ url, html, respondTo });
+  window.eval(AUTOFILL_SOURCE);
+  return {
+    window,
+    document: window.document,
+    sentMessages,
+    async runAutofill(data) {
+      const response = await new Promise((resolve) => {
+        for (const listener of listeners) listener({ action: "runAutofill", data }, {}, resolve);
+      });
+      if (!response.ok) throw new Error(response.error);
+      return response.results;
+    },
+  };
+}
+
+function createPageWindow({ url, html, respondTo = () => null }) {
+  const dom = new JSDOM(html, { url, runScripts: "outside-only", pretendToBeVisual: true });
+  const { window } = dom;
+
+  // jsdom has no layout engine, so it doesn't implement innerText at all
+  // (it's undefined, not ""). content.js leans on innerText everywhere;
+  // textContent is the closest stand-in a layout-free DOM can offer.
+  if (!("innerText" in window.HTMLElement.prototype)) {
+    Object.defineProperty(window.HTMLElement.prototype, "innerText", {
+      get() { return this.textContent; },
+      configurable: true,
+    });
+  }
+
+  const listeners = [];
+  const sentMessages = [];
+  window.chrome = {
+    runtime: {
+      onMessage: { addListener: (fn) => listeners.push(fn) },
+      sendMessage: vi.fn((message) => {
+        sentMessages.push(message);
+        return Promise.resolve(respondTo(message));
+      }),
+      getManifest: () => ({ version: MANIFEST_VERSION }),
+    },
+  };
+  return { window, listeners, sentMessages };
 }

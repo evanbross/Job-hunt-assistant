@@ -114,21 +114,25 @@ def _get_application_answers_for_listener(user_id: int) -> list[dict]:
         return repos["application_answers"].get_all(user_id)
 
 
-# ai: claude-sonnet-5 | 2026-08-13
-def _learn_application_answer(
-    user_id: int, question_text: str, answer_text: str, platform: str | None
-) -> dict:
-    """Called when the extension's autofill content script learns a new
-    free-text answer from the user."""
+# ai: claude-opus-5-5 | 2026-11-17
+def learn_application_answers(
+    user_id: int, answers: list[tuple[str, str]], platform: str | None
+) -> list[dict]:
+    """Save the (question, answer) pairs the user ticked in the extension's
+    autofill review panel. One transaction, so a failure part-way saves none
+    of them rather than leaving the batch half-applied."""
     with get_repos(user_id) as repos:
-        answer = repos["application_answers"].upsert(
-            user_id,
-            question_text=question_text,
-            answer_text=answer_text,
-            platform=platform,
-        )
+        saved = [
+            repos["application_answers"].upsert(
+                user_id,
+                question_text=question_text,
+                answer_text=answer_text,
+                platform=platform,
+            )
+            for question_text, answer_text in answers
+        ]
         repos["conn"].commit()
-    return answer
+    return saved
 
 
 # ai: claude-opus-5-5 | 2026-10-14
@@ -162,7 +166,7 @@ def start_extension_servers(
         get_profile=_get_application_profile_for_listener,
         get_resume_file=get_resume_file_bytes,
         get_answers=_get_application_answers_for_listener,
-        learn_answer=_learn_application_answer,
+        learn_answers=learn_application_answers,
         claim_outreach_draft=_claim_linkedin_outreach_draft,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,
