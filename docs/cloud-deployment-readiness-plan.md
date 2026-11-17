@@ -525,8 +525,9 @@ Caddy handles certificates. Add CAA records for Let's Encrypt.
   (schema current, RLS armed, every secret decrypts with the key in custody, row
   counts) is the drill. The bucket credentials and age keys reach only `maintenance`
   (`deploy/.env.backup`), which refuses to start without them.
-  Still to do by hand: pick the bucket provider, generate the age keys, and run the
-  drill once against the real production project.
+  Done by hand: bucket provider (Cloudflare R2, 2026-11-07), age keys generated, and
+  the drill run once against the real production project (2026-11-16: R2 backup ->
+  empty Postgres 18 -> migrate -> verify passed; row counts matched live).
 - Size the connection pool for gunicorn workers × threads + Celery concurrency +
   listener, against Neon's connection limit (use Neon's pooled endpoint).
 
@@ -741,7 +742,7 @@ Before inviting anyone:
 - [ ] Gmail connect works on the production domain (consent screen in Testing with
       beta users listed)
 - [ ] Extension from the store build connects to the hosted listener and WebSocket
-- [ ] Restore-from-backup drill done once
+- [x] Restore-from-backup drill done once (2026-11-16)
 - [ ] Error tracking receives a test error; uptime alert fires on a test outage
 - [ ] `pip-audit` / `npm audit` clean (the gate already runs these)
 
