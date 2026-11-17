@@ -44,7 +44,7 @@ from pydantic import (
     model_validator,
 )
 
-from backend.db import SightingChannel
+from backend.db import CaptureQueueOrigin, SightingChannel
 from backend.db.job_columns import JobColumns
 from backend.email.classification import email_date_from_message, get_subject_rule_match
 from backend.email.email_cleanup_service import EmailCleanupService
@@ -67,6 +67,7 @@ from backend.scoring.duplicate_matching import (
     is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.jd_enrichment import queue_tracking_link_jd_capture
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
     import_warnings_to_json,
@@ -356,8 +357,10 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     Freshly re-parsed jobs are matched against this email's currently-active
     jobs (by URL, then fuzzy company+title) and updated in place; only active
     jobs with no match in the new parse are deleted. Applied/skipped jobs are
-    never touched, so a rescan can still detect them as tracked duplicates and
-    application history is never erased.
+    never touched, so application history is never erased; a re-parsed job that
+    is one of this email's own applied/skipped rows is left alone, not added
+    again as a duplicate of it. A job whose JD is only a tracking link is queued
+    for the browser extension to capture, as the scan does.
     """
     user_id = current_user_id()
     base_id = email_id.split(":")[0]
@@ -398,6 +401,18 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             )
         ]
         existing_email_job_ids = {job["id"] for job in existing_email_jobs}
+        # ai: claude-opus-5-5 | 2026-11-17 -- this email's rows the user already
+        # acted on (or the scan auto-skipped). Each rescan used to add every one
+        # of them again as a new skipped "duplicate" of the last copy.
+        settled_email_jobs: list[dict] = [
+            job
+            for job in all_jobs
+            if job["id"] not in existing_email_job_ids
+            and (
+                (job.get(JobColumns.DEDUP_KEY) or "") == email_id
+                or (job.get(JobColumns.DEDUP_KEY) or "").startswith(base_id + ":")
+            )
+        ]
         # Duplicate-hint detection must exclude this email's own jobs so a
         # rescanned job is never flagged as a duplicate of itself.
         known_jobs: list[dict] = [
@@ -498,6 +513,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     # Consumed as parsed jobs below claim a match; whatever's left at the end
     # no longer corresponds to anything in the fresh parse and gets deleted.
     unmatched_email_jobs: list[dict] = list(existing_email_jobs)
+    already_settled = 0  # ai: claude-opus-5-5 | 2026-11-17
 
     jobs_to_write: list[dict] = []
     sightings_to_record: list[tuple[int, dict]] = []  # ai: claude-opus-5-5 | 2026-11-15
@@ -507,6 +523,15 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         )
         if matched_existing is not None:
             unmatched_email_jobs.remove(matched_existing)
+        else:
+            # ai: claude-opus-5-5 | 2026-11-17
+            settled_match = find_existing_email_job_match(
+                parsed, settled_email_jobs, dedup_checker
+            )
+            if settled_match is not None:
+                settled_email_jobs.remove(settled_match)
+                already_settled += 1
+                continue
 
         confidence = parsed.get("certainty_level", "low")
         if feedback and feedback["is_relevant"] == 1:
@@ -619,6 +644,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
     # ── Write results (DB reopened only for this fast phase) ──────────────
     created: list[dict] = []
     updated: list[dict] = []
+    jd_captures_queued = 0  # ai: claude-opus-5-5 | 2026-11-17
     with get_repos() as repos:
         job_repo = repos["jobs"]
         # ai: claude-opus-5-5 | 2026-11-15
@@ -647,6 +673,15 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 )
                 if new_id is not None:
                     created.append(job_repo.get_by_id(user_id, new_id))
+            # ai: claude-opus-5-5 | 2026-11-17 -- as routes/scan.py does for a new job.
+            if queue_tracking_link_jd_capture(
+                repos,
+                user_id,
+                job_data,
+                origin=CaptureQueueOrigin.EMAIL_SCAN,
+                origin_detail=f'{sender} — "{subject}"',
+            ):
+                jd_captures_queued += 1
 
         # Active jobs from this email that no longer match anything in the
         # fresh parse (listing removed/replaced) — remove them.
@@ -670,9 +705,14 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
             "message": (
                 f"Rescanned — {len(created)} new, {len(updated)} updated, "
                 f"{len(unmatched_email_jobs)} removed"
-                + (  # ai: claude-opus-5-5 | 2026-11-15
-                    f", {len(sightings_to_record)} already tracked."
-                    if sightings_to_record
+                + (  # ai: claude-opus-5-5 | 2026-11-17
+                    f", {len(sightings_to_record) + already_settled} already tracked"
+                    if sightings_to_record or already_settled
+                    else ""
+                )
+                + (  # ai: claude-opus-5-5 | 2026-11-17
+                    f", {jd_captures_queued} queued for description capture."
+                    if jd_captures_queued
                     else "."
                 )
             ),
