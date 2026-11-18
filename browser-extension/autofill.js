@@ -98,12 +98,28 @@
     return /^(yes|no|upload file|submit|choose file|browse|remove)$/i.test(text.trim());
   }
 
+  // ai: claude-opus-5-5 | 2026-11-18
+  // A <select>'s innerText is its whole option list, and Lever's <label> wraps
+  // the select -- so the EEO question "Race" was read (and saved to the answer
+  // bank) as "Race Select ... Hispanic or Latino ...", and a select with no
+  // label as its own "Select..." placeholder. A field's label is the text
+  // around it minus the field's own options.
+  function ownOptionTexts(el) {
+    if (el?.tagName !== 'SELECT') return new Set();
+    return new Set([...el.options].map((option) => option.text.trim()).filter(Boolean));
+  }
+
+  function linesBesides(text, ownTexts) {
+    return (text || '').split('\n').map((s) => s.trim()).filter((s) => s && !ownTexts.has(s));
+  }
+
   // Confirmed against Ashby: system fields (Name/Email/Resume) carry a real
   // <label for>, discoverable via el.labels — custom per-posting questions
   // (e.g. visa sponsorship, location) don't, and need the ancestor-text walk.
   function resolveFieldLabel(el) {
+    const ownTexts = ownOptionTexts(el); // ai: claude-opus-5-5 | 2026-11-18
     if (el.labels && el.labels.length > 0) {
-      const text = el.labels[0].innerText?.trim();
+      const text = linesBesides(el.labels[0].innerText, ownTexts).join(' '); // ai: claude-opus-5-5 | 2026-11-18
       if (text) return text;
     }
     const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
@@ -132,7 +148,7 @@
 
     let node = el.parentElement;
     for (let depth = 0; depth < 6 && node; depth++, node = node.parentElement) {
-      const text = firstTextLine(node.innerText);
+      const text = linesBesides(node.innerText, ownTexts)[0] || ''; // ai: claude-opus-5-5 | 2026-11-18
       if (text && text.length < 300 && !isControlText(text)) return text;
     }
     return '';

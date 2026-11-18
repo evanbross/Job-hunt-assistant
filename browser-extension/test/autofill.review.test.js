@@ -324,3 +324,56 @@ describe("AI suggestions for unfilled questions", () => {
     expect(page.document.getElementById("jha-ai-busy")).toBeNull();
   });
 });
+
+// ai: claude-opus-5-5 | 2026-11-18
+// Lever's EEO section: the question's <label> wraps the <select>, and a
+// browser's innerText of a select is its whole option list. Saved questions
+// came out as "Race Select ... Hispanic or Latino ..." and, for a select with
+// no label, as its own "Select..." placeholder.
+describe("dropdown questions", () => {
+  const EEO_HTML = `
+<form>
+  <label class="application-question">
+    <div class="application-label">Race</div>
+    <div class="application-field">
+      <select id="race">
+        <option value="">Select ...</option>
+        <option value="Hispanic or Latino">Hispanic or Latino</option>
+        <option value="Decline">Decline to self-identify</option>
+      </select>
+    </div>
+  </label>
+  <div class="application-question">
+    <div class="application-label">Veteran status</div>
+    <div class="application-field">
+      <select id="veteran">
+        <option value="">Select...</option>
+        <option value="no">I am not a protected veteran</option>
+        <option value="decline">I don't wish to answer</option>
+      </select>
+    </div>
+  </div>
+</form>`;
+
+  it("are named by their question, never by their own options", async () => {
+    const page = loadAutofillScript({
+      url: APPLY_URL,
+      html: EEO_HTML,
+      respondTo: (message) => (message.action === "learnAnswers" ? { ok: true, answers: [] } : null),
+    });
+    await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    choose(page, "race", "Decline");
+    choose(page, "veteran", "decline");
+    await waitForPanelTitle(page, "Remember 2 answers for next time?");
+    panel(page).querySelector('[data-action="toggle"]').click();
+    panel(page).querySelector('[data-action="save"]').click();
+    await vi.waitFor(() => expect(page.sentMessages.some((m) => m.action === "learnAnswers")).toBe(true));
+
+    const learn = page.sentMessages.find((m) => m.action === "learnAnswers");
+    expect(learn.answers).toEqual([
+      { question_text: "Race", answer_text: "Decline to self-identify" },
+      { question_text: "Veteran status", answer_text: "I don't wish to answer" },
+    ]);
+  });
+});
