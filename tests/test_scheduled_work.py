@@ -29,6 +29,7 @@ from backend.celery_app import (
     DATABASE_BACKUP_TICK,
     DEFAULT_QUEUE,
     JD_HEALTH_CHECK_TICK,
+    LEAD_FOLLOW_UP_DIGEST_TICK,
     MAINTENANCE_QUEUE,
     QUEUE_DEPTH_CHECK,
     celery_app,
@@ -51,6 +52,7 @@ def test_every_scheduled_task_is_one_the_worker_registers() -> None:
     assert scheduled == {
         CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK,
         QUEUE_DEPTH_CHECK,  # ai: claude-opus-5-5 | 2026-11-08
+        LEAD_FOLLOW_UP_DIGEST_TICK,  # ai: claude-opus-5-5 | 2026-11-18
     }
     assert scheduled <= set(celery_app.tasks)
 
@@ -67,6 +69,7 @@ def test_only_the_sweep_the_backup_and_the_queue_check_go_to_the_maintenance_que
     assert _queue_for(QUEUE_DEPTH_CHECK) == MAINTENANCE_QUEUE
     assert _queue_for(CAREER_SITE_SCAN_TICK) == DEFAULT_QUEUE
     assert _queue_for(JD_HEALTH_CHECK_TICK) == DEFAULT_QUEUE
+    assert _queue_for(LEAD_FOLLOW_UP_DIGEST_TICK) == DEFAULT_QUEUE  # ai: claude-opus-5-5 | 2026-11-18
 
 
 def test_beat_ticks_everything_once_as_it_starts(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -79,7 +82,8 @@ def test_beat_ticks_everything_once_as_it_starts(monkeypatch: pytest.MonkeyPatch
 
     assert sorted(sent) == sorted(
         [CAREER_SITE_SCAN_TICK, JD_HEALTH_CHECK_TICK, DATA_LIFECYCLE_SWEEP, DATABASE_BACKUP_TICK,
-         QUEUE_DEPTH_CHECK]  # ai: claude-opus-5-5 | 2026-11-08
+         QUEUE_DEPTH_CHECK,  # ai: claude-opus-5-5 | 2026-11-08
+         LEAD_FOLLOW_UP_DIGEST_TICK]  # ai: claude-opus-5-5 | 2026-11-18
     )
 
 
