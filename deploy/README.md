@@ -187,6 +187,9 @@ command: `web` (gunicorn), `listener`, `worker`, `maintenance`, `beat`, `migrate
   `/health` for `listener`, and `celery inspect ping` for the workers; Caddy only starts
   once `app` and `listener` are healthy. On a platform with separate probes, point
   liveness at `/live` and readiness at `/ready`. Both are reachable without a session.
+  Because they are public, `/ready` and `/api/system/health` reuse each database and
+  Redis probe result for 5 seconds per process (`routes/system.py`), so anonymous traffic
+  can't turn into a database query per request; a status change shows up within that window.
 
 ### Database roles and migrations
 

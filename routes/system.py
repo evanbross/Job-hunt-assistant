@@ -31,6 +31,8 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import redis
@@ -56,6 +58,35 @@ logger = logging.getLogger(__name__)
 system_bp = Blueprint("system", __name__)
 
 
+# ai: claude-opus-5-5 | 2026-11-18 -- 2026-11-18 full code review: /health and /ready
+# answer anyone (the login page, Docker's healthcheck and an external uptime monitor all
+# call them without a session), and each call used to cost a pooled DB connection plus a
+# Redis round trip. Each probe's result is now reused for a few seconds, so anonymous
+# traffic can't turn into more than one DB query and one Redis ping per window per
+# process. Probes run under the lock: concurrent callers wait for one probe rather than
+# each starting their own (each probe has its own short timeout).
+PROBE_RESULT_TTL_SECONDS = 5.0
+
+
+class _CachedProbe[T]:
+    def __init__(self, probe: Callable[[], T]) -> None:
+        self._probe = probe
+        self._lock = threading.Lock()
+        self._last: tuple[float, T] | None = None  # (time.monotonic() when probed, result)
+
+    def result(self) -> T:
+        with self._lock:
+            if self._last is None or time.monotonic() - self._last[0] >= PROBE_RESULT_TTL_SECONDS:
+                fresh = self._probe()
+                self._last = (time.monotonic(), fresh)
+            return self._last[1]
+
+    def forget(self) -> None:
+        """Probe afresh on the next call."""
+        with self._lock:
+            self._last = None
+
+
 # ai: claude-opus-5-5 | 2026-11-06 -- extracted from health_check for /api/system/ready
 def _database_problem() -> dict[str, str] | None:
     """None if the database answers, else the fields describing why not."""
@@ -67,6 +98,10 @@ def _database_problem() -> dict[str, str] | None:
             "db": "unreachable",
             "detail": "Database initialization failed at startup; retrying in the background. See server logs.",
         }
+    return _database_probe.result()
+
+
+def _probe_database() -> dict[str, str] | None:
     try:
         with get_repos() as repos:
             # ai: claude-sonnet-4-6 | 2026-06-25
@@ -75,6 +110,9 @@ def _database_problem() -> dict[str, str] | None:
         logger.error("Health check DB probe failed: %s", exc)
         return {"db": "unreachable"}
     return None
+
+
+_database_probe: _CachedProbe[dict[str, str] | None] = _CachedProbe(_probe_database)
 
 
 @system_bp.route("/api/system/health")
@@ -97,6 +135,10 @@ _redis_probe_lock = threading.Lock()
 
 
 def _redis_reachable() -> bool:
+    return _redis_reachability.result()
+
+
+def _ping_redis() -> bool:
     global _redis_probe
     with _redis_probe_lock:
         if _redis_probe is None:
@@ -107,6 +149,16 @@ def _redis_reachable() -> bool:
     except (redis.RedisError, OSError) as exc:
         logger.error("Readiness Redis probe failed: %s", exc)
         return False
+
+
+_redis_reachability: _CachedProbe[bool] = _CachedProbe(_ping_redis)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def forget_probe_results() -> None:
+    """Make the next /health or /ready call probe the database and Redis afresh."""
+    _database_probe.forget()
+    _redis_reachability.forget()
 
 
 @system_bp.route("/api/system/live")

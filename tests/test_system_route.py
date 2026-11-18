@@ -37,7 +37,7 @@ import redis
 from flask import Flask
 
 import config
-from routes.system import system_bp
+from routes.system import PROBE_RESULT_TTL_SECONDS, system_bp
 from tests.redis_doubles import unreachable_redis
 
 
@@ -229,3 +229,74 @@ def test_folder_picker_destroys_its_tk_root_when_the_dialog_fails(
 
     assert response.status_code == 500
     assert _RecordingTkRoot.destroyed == 1
+
+
+# ai: claude-opus-5-5 | 2026-11-18 -- 2026-11-18 full code review: anonymous /health and
+# /ready traffic must not cost a database query (and Redis ping) per request.
+class _CountingConnection(FakeWorkingConnection):
+    opened = 0
+
+
+def _counting_get_repos() -> Any:
+    @contextmanager
+    def fake() -> Iterator[dict[str, Any]]:
+        _CountingConnection.opened += 1
+        yield {"conn": _CountingConnection()}
+
+    return fake
+
+
+def test_repeated_health_checks_reuse_one_database_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    _CountingConnection.opened = 0
+    monkeypatch.setattr("routes.system.get_repos", _counting_get_repos())
+    app = Flask(__name__)
+    app.register_blueprint(system_bp)
+    client = app.test_client()
+
+    responses = [client.get("/api/system/health") for _ in range(20)]
+
+    assert {r.status_code for r in responses} == {200}
+    assert _CountingConnection.opened == 1
+
+
+def test_the_database_is_probed_again_once_the_result_is_stale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _CountingConnection.opened = 0
+    clock = [1000.0]
+    monkeypatch.setattr("routes.system.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("routes.system.get_repos", _counting_get_repos())
+    app = Flask(__name__)
+    app.register_blueprint(system_bp)
+    client = app.test_client()
+
+    client.get("/api/system/health")
+    clock[0] += PROBE_RESULT_TTL_SECONDS - 0.1
+    client.get("/api/system/health")
+    assert _CountingConnection.opened == 1
+
+    clock[0] += 0.2
+    client.get("/api/system/health")
+    assert _CountingConnection.opened == 2
+
+
+def test_repeated_readiness_checks_reuse_one_redis_ping(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pings: list[int] = []
+
+    class CountingRedis:
+        def ping(self) -> bool:
+            pings.append(1)
+            return True
+
+    monkeypatch.setattr("routes.system.get_repos", make_fake_get_repos({"conn": FakeWorkingConnection()}))
+    monkeypatch.setattr("routes.system._redis_probe", CountingRedis())
+    app = Flask(__name__)
+    app.register_blueprint(system_bp)
+    client = app.test_client()
+
+    responses = [client.get("/api/system/ready") for _ in range(20)]
+
+    assert {r.status_code for r in responses} == {200}
+    assert len(pings) == 1

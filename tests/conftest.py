@@ -94,6 +94,7 @@ from backend.user_events import (  # noqa: E402
     UserEventTopic,
     set_user_events,
 )
+from routes.system import forget_probe_results  # noqa: E402
 from tests.db_guard import (  # noqa: E402
     UnsafeTestDatabaseError,
     assert_safe_test_database,
@@ -266,6 +267,16 @@ def isolated_host_fetch_spacing() -> Iterator[HostFetchSpacing]:
     set_host_fetch_spacing(spacing)
     yield spacing
     set_host_fetch_spacing(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@pytest.fixture(autouse=True)
+def fresh_health_probes() -> Iterator[None]:
+    """/health and /ready reuse a probe result for a few seconds (routes/system.py);
+    one test's simulated outage must not answer the next test's probe."""
+    forget_probe_results()
+    yield
+    forget_probe_results()
 
 
 # ai: claude-opus-5-5 | 2026-11-05
