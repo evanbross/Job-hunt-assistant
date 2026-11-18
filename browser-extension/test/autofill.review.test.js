@@ -248,6 +248,27 @@ describe("AI suggestions for unfilled questions", () => {
     expect(panel(page).querySelector('.item input[type="checkbox"]').checked).toBe(true);
   });
 
+  // ai: claude-opus-5-5 | 2026-11-17
+  it("shows the AI busy badge only while the request is out, and tells the popup", async () => {
+    let badgeDuringRequest = null;
+    let page = null;
+    page = openForm({
+      respondTo: (message) => {
+        if (message.action !== "suggestAnswers") return null;
+        badgeDuringRequest = page.document.getElementById("jha-ai-busy")?.shadowRoot.textContent ?? null;
+        return { ok: true, suggestions: [] };
+      },
+    });
+
+    await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    expect(badgeDuringRequest).toContain("AI");
+    expect(badgeDuringRequest).toContain("Asking AI about 4 questions");
+    expect(page.document.getElementById("jha-ai-busy")).toBeNull();
+    const busy = page.sentMessages.filter((m) => m.action === "autofillAiBusy").map((m) => m.busy);
+    expect(busy).toEqual([true, false]);
+  });
+
   it("reports a failed suggestion request without affecting what was filled", async () => {
     const page = openForm({
       respondTo: (message) => (message.action === "suggestAnswers" ? { ok: false, error: "No API key configured." } : null),
@@ -258,5 +279,6 @@ describe("AI suggestions for unfilled questions", () => {
     expect(results.suggestionError).toBe("No API key configured.");
     expect(results.filled).toEqual(["City", "Email"]);
     expect(results.suggested).toEqual([]);
+    expect(page.document.getElementById("jha-ai-busy")).toBeNull();
   });
 });

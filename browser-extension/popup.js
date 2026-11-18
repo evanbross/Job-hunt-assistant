@@ -62,6 +62,18 @@ let pendingWarningAck = null;
 // Restarts the in-flight sendToTab()'s timeout; null when none is waiting.
 let resetSendTimeout = null;
 
+// ai: claude-opus-5-5 | 2026-11-17
+// autofill.js reports when its AI step starts and ends; the Fill button shows
+// the "AI" spinner meanwhile. Ignored unless a fill is actually in flight.
+chrome.runtime.onMessage.addListener(msg => {
+  if (msg.action !== 'autofillAiBusy') return;
+  const btn = document.getElementById('fill-app-btn');
+  if (!btn?.disabled) return;
+  btn.innerHTML = msg.busy
+    ? '<div class="ai-spinner"><div class="ai-ring"></div><span>AI</span></div>Asking AI…'
+    : '<div class="spinner"></div>Filling…';
+});
+
 // Receives progress messages from content script during long builds (e.g. Wellfound).
 chrome.runtime.onMessage.addListener(msg => {
   if (msg.action !== 'progress') return;

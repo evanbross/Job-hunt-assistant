@@ -210,6 +210,23 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* "AI" busy spinner on the Fill button while the AI step runs */
+    .ai-spinner { position: relative; width: 22px; height: 22px; flex-shrink: 0; }
+    .ai-ring {
+      position: absolute; inset: 0; border-radius: 50%;
+      background: conic-gradient(from 0deg, #93c5fd, #c4b5fd, #f9a8d4, #93c5fd);
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+      mask: radial-gradient(farthest-side, transparent calc(100% - 2px), #000 calc(100% - 2px));
+      animation: spin 1s linear infinite;
+    }
+    .ai-spinner span {
+      position: absolute; inset: 0; display: grid; place-items: center;
+      font-size: 9px; font-weight: 800; letter-spacing: .3px; color: #fff;
+      animation: ai-pulse 1.6s ease-in-out infinite;
+    }
+    @keyframes ai-pulse { 50% { opacity: .55; } }
+    @media (prefers-reduced-motion: reduce) { .ai-ring { animation-duration: 3s; } .ai-spinner span { animation: none; } }
+
     #no-access {
       padding: 20px 14px;
       color: #64748b;

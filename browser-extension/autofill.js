@@ -1565,6 +1565,61 @@
     }
   }
 
+  // ai: claude-opus-5-5 | 2026-11-17
+  // A spinning "AI" badge in the page's corner while the AI step runs (reading
+  // dropdown options, waiting on the provider, filling the answers), so a
+  // several-second pause doesn't look like the extension hung. The popup is
+  // told too, since it may be the thing the person is watching.
+  const AI_BUSY_CSS = `
+    :host { all: initial; }
+    .badge { position: fixed; top: 16px; right: 16px; z-index: 2147483647; display: flex; align-items: center;
+      gap: 10px; padding: 8px 14px 8px 8px; border-radius: 999px; background: #0f172a; color: #e2e8f0;
+      font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+    .orb { position: relative; width: 34px; height: 34px; flex-shrink: 0; }
+    .ring { position: absolute; inset: 0; border-radius: 50%;
+      background: conic-gradient(from 0deg, #3b82f6, #8b5cf6, #ec4899, #3b82f6);
+      -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+      mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 3px));
+      animation: spin 1s linear infinite; }
+    .letters { position: absolute; inset: 0; display: grid; place-items: center; font-weight: 800; font-size: 12px;
+      letter-spacing: .5px; background: linear-gradient(135deg, #60a5fa, #c084fc);
+      -webkit-background-clip: text; background-clip: text; color: transparent; animation: pulse 1.6s ease-in-out infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 50% { opacity: .55; } }
+    @media (prefers-reduced-motion: reduce) { .ring { animation-duration: 3s; } .letters { animation: none; } }
+  `;
+
+  function notifyPopupAiBusy(busy, count = 0) {
+    try {
+      // Nobody listening (popup closed) rejects; that's fine.
+      Promise.resolve(chrome.runtime.sendMessage({ action: 'autofillAiBusy', busy, count })).catch(() => {});
+    } catch {
+      // Extension context gone mid-fill; the page badge still works.
+    }
+  }
+
+  // Shows the badge; returns the function that removes it.
+  function showAiBusy(count) {
+    const host = document.createElement('div');
+    host.id = 'jha-ai-busy';
+    const root = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = AI_BUSY_CSS;
+    const badge = createNode('div', 'badge');
+    badge.setAttribute('role', 'status');
+    const orb = createNode('div', 'orb');
+    orb.append(createNode('div', 'ring'), createNode('div', 'letters', 'AI'));
+    badge.append(orb, createNode('span', 'text',
+      `Asking AI about ${count} question${count === 1 ? '' : 's'}…`));
+    root.append(style, badge);
+    document.documentElement.appendChild(host);
+    notifyPopupAiBusy(true, count);
+    return () => {
+      host.remove();
+      notifyPopupAiBusy(false);
+    };
+  }
+
   // Returns { suggested: [labels filled], error }.
   async function suggestForUnresolved(controls, platform) {
     const askable = controls
@@ -1572,6 +1627,15 @@
       .slice(0, MAX_AI_QUESTIONS);
     if (askable.length === 0) return { suggested: [], error: null };
 
+    const hideAiBusy = showAiBusy(askable.length); // ai: claude-opus-5-5 | 2026-11-17
+    try {
+      return await askAndFill(askable, platform);
+    } finally {
+      hideAiBusy();
+    }
+  }
+
+  async function askAndFill(askable, platform) {
     const byId = new Map();
     const questions = [];
     for (const [index, control] of askable.entries()) {
