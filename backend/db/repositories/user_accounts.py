@@ -308,6 +308,18 @@ class PostgresUserAccountRepository(_BaseRepo):
         )
         return _row_to_dict(cur.fetchone())
 
+    # ai: claude-opus-5-5 | 2026-11-18
+    def end_sessions(self, user_id: int) -> int:
+        """End every login session issued for the account so far, without changing
+        its password: get_repos() rejects any session carrying an older
+        session_version. Returns the new version, for a session that should stay."""
+        cur = self._execute(
+            "UPDATE user_accounts SET session_version = session_version + 1, updated_at = NOW()"
+            " WHERE id = %s RETURNING session_version",
+            [user_id],
+        )
+        return int(cur.fetchone()["session_version"])
+
     def delete(self, user_id: int) -> None:
         self._execute("DELETE FROM user_accounts WHERE id = %s", [user_id])
 

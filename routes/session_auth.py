@@ -61,6 +61,7 @@ from backend.db.repositories.user_accounts import (
     DEFAULT_ADMIN_EMAIL,
 )
 from backend.email.smtp_sender import send_verification_email
+from backend.extension_auth.token_service import ExtensionTokenService
 from backend.public_urls import public_base_url
 from backend.security.account_email import is_plausible_email, normalize_email
 from backend.security.account_tokens import (
@@ -79,6 +80,7 @@ from backend.security.audit_log import (
     EMAIL_CHANGE_REQUESTED,
     LOGIN_FAILURE,
     LOGIN_SUCCESS,
+    OTHER_SESSIONS_ENDED,
     PASSWORD_CHANGED,
     PASSWORD_RESET_COMPLETED,
     PASSWORD_RESET_REQUESTED,
@@ -422,6 +424,8 @@ def reset_password() -> ResponseReturnValue:
             body.token, generate_password_hash(body.password)
         )
         if account is not None:
+            # ai: claude-opus-5-5 | 2026-11-18 -- same transaction as the new password
+            revoked_tokens = ExtensionTokenService(repos["extension_tokens"]).revoke_all(account["id"])
             repos["conn"].commit()
 
     if account is None:
@@ -429,7 +433,12 @@ def reset_password() -> ResponseReturnValue:
         return jsonify({"error": "This link is invalid or has expired"}), 400
 
     with get_repos(account["id"]) as event_repos:
-        record_event(event_repos, account["id"], PASSWORD_RESET_COMPLETED)
+        record_event(
+            event_repos,
+            account["id"],
+            PASSWORD_RESET_COMPLETED,
+            {"extension_tokens_revoked": revoked_tokens},  # ai: claude-opus-5-5 | 2026-11-18
+        )
         event_repos["conn"].commit()
     _start_session(account)
     return jsonify({"authenticated": True})
@@ -720,7 +729,10 @@ def change_password() -> ResponseReturnValue:
             return jsonify({"error": "Current password is incorrect"}), 401
         new_hash = generate_password_hash(body.new_password)
         updated = repos["user_accounts"].update_password(user_id, new_hash)
-        record_event(repos, user_id, PASSWORD_CHANGED)
+        # ai: claude-opus-5-5 | 2026-11-18 -- extension tokens are credentials too: a
+        # password change, like the session_version bump above, ends every one of them.
+        revoked_tokens = ExtensionTokenService(repos["extension_tokens"]).revoke_all(user_id)
+        record_event(repos, user_id, PASSWORD_CHANGED, {"extension_tokens_revoked": revoked_tokens})
         repos["conn"].commit()
         # ai: claude-opus-5-5 | 2026-11-18 -- the change ended every other session;
         # this one carries the new version so the person making it stays logged in.
@@ -733,7 +745,24 @@ def change_password() -> ResponseReturnValue:
         )
 
     get_rate_limiter().reset(*password_check)
-    return jsonify({"status": "password_changed"})
+    return jsonify({"status": "password_changed", "extension_tokens_revoked": revoked_tokens})
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@session_auth_bp.route("/account/logout-other-sessions", methods=["POST"])
+def logout_other_sessions() -> ResponseReturnValue:
+    """End every other browser's login (a lost laptop, a shared computer, a cookie
+    someone copied) while keeping this one. Same mechanism a password change uses:
+    the account's session_version moves on, and this session alone is re-issued
+    with the new value. No password needed -- it only ever takes access away, and
+    whoever is using this session could already end it with Log out."""
+    user_id = current_user_id()
+    with get_repos() as repos:
+        session_version = repos["user_accounts"].end_sessions(user_id)
+        record_event(repos, user_id, OTHER_SESSIONS_ENDED)
+        repos["conn"].commit()
+    session["session_version"] = session_version
+    return jsonify({"status": "other_sessions_ended"})
 
 
 @session_auth_bp.route("/account/export", methods=["GET"])

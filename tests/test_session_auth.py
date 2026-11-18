@@ -61,10 +61,12 @@ from werkzeug.security import generate_password_hash
 import config
 import routes.session_auth as session_auth_module
 from backend.email.smtp_sender import SmtpDeliveryError
+from backend.extension_auth.token_service import ExtensionTokenService
 from backend.security.account_tokens import hash_account_token
 from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
+from web.extension_listener import authenticate_extension_token
 
 _TEST_EMAIL = "owner@example.com"
 _TEST_PASSWORD = "correct horse battery staple"  # noqa: S105
@@ -708,6 +710,81 @@ def test_reset_password_ends_every_existing_session(flask_app, client, sent_emai
 
     assert stolen.get("/api/jobs/queue?view=queue").status_code == 401
     assert client.get("/api/jobs/queue?view=queue").status_code == 200
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def test_logout_other_sessions_ends_the_others_and_keeps_this_one_and_the_password(
+    flask_app, client
+) -> None:
+    _seed_active_account()
+    laptop = flask_app.test_client()
+    assert _login(laptop).status_code == 200
+    _login(client)
+
+    resp = client.post("/api/account/logout-other-sessions")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"status": "other_sessions_ended"}
+    revoked = laptop.get("/api/jobs/queue?view=queue")
+    assert revoked.status_code == 401
+    assert revoked.get_json()["code"] == "session_revoked"
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
+    # the password is untouched, so the laptop can simply log in again
+    assert _login(laptop).status_code == 200
+    assert laptop.get("/api/jobs/queue?view=queue").status_code == 200
+
+
+def test_logout_other_sessions_requires_a_session(client) -> None:
+    assert client.post("/api/account/logout-other-sessions").status_code == 401
+
+
+# ai: claude-opus-5-5 | 2026-11-18 -- extension tokens are credentials too
+def _issue_extension_token(account_id: int) -> str:
+    with get_repos(account_id) as repos:
+        issued = ExtensionTokenService(repos["extension_tokens"]).issue(account_id, "laptop")
+        repos["conn"].commit()
+    return issued.plaintext
+
+
+def test_change_password_revokes_every_extension_token(client) -> None:
+    account_id = _seed_active_account()
+    token = _issue_extension_token(account_id)
+    assert authenticate_extension_token(token) == account_id
+    _login(client)
+
+    resp = client.post(
+        "/api/account/change-password",
+        json={"current_password": _TEST_PASSWORD, "new_password": "new-password-123"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["extension_tokens_revoked"] == 1
+    assert authenticate_extension_token(token) is None
+
+
+def test_reset_password_revokes_every_extension_token(client, sent_emails) -> None:
+    account_id = _seed_active_account()
+    token = _issue_extension_token(account_id)
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    reset_token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": reset_token, "password": "new-password-123"}
+    )
+
+    assert resp.status_code == 200
+    assert authenticate_extension_token(token) is None
+
+
+def test_logout_other_sessions_leaves_extension_tokens_working(client) -> None:
+    """The Settings page says so: tokens are revoked under Browser Extension."""
+    account_id = _seed_active_account()
+    token = _issue_extension_token(account_id)
+    _login(client)
+
+    assert client.post("/api/account/logout-other-sessions").status_code == 200
+
+    assert authenticate_extension_token(token) == account_id
 
 
 def test_a_session_without_a_session_version_is_not_accepted(client) -> None:

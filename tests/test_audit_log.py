@@ -27,6 +27,7 @@ from backend.security.audit_log import (
     EXTENSION_TOKEN_REVOKED,
     LOGIN_FAILURE,
     LOGIN_SUCCESS,
+    OTHER_SESSIONS_ENDED,
     PASSWORD_CHANGED,
     PASSWORD_RESET_COMPLETED,
     PASSWORD_RESET_REQUESTED,
@@ -191,6 +192,16 @@ def test_change_password_records_the_event(client) -> None:
     assert resp.status_code == 200
 
     assert _event_types(client)[0] == PASSWORD_CHANGED
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def test_logging_out_other_sessions_records_the_event(client) -> None:
+    _seed_active_account()
+    _login(client)
+
+    assert client.post("/api/account/logout-other-sessions").status_code == 200
+
+    assert _event_types(client)[0] == OTHER_SESSIONS_ENDED
 
 
 def test_a_failed_password_change_records_nothing(client) -> None:

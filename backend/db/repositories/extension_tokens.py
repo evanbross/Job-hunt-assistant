@@ -92,3 +92,12 @@ class PostgresExtensionTokenRepository(_BaseRepo):
             (revoked_at, token_id, user_id),
         )
         return cur.rowcount > 0
+
+    # ai: claude-opus-5-5 | 2026-11-18
+    def revoke_all_for_user(self, user_id: int, revoked_at: str) -> int:
+        """Revoke every still-active token the account has; how many were revoked."""
+        cur = self._execute(
+            "UPDATE extension_tokens SET revoked_at = %s WHERE user_id = %s AND revoked_at IS NULL",
+            (revoked_at, user_id),
+        )
+        return cur.rowcount

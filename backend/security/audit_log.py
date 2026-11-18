@@ -56,6 +56,8 @@ ACCOUNT_ENABLED: Final = "account_enabled"
 REGISTRATION_LINK_RESENT: Final = "registration_link_resent"
 # ai: claude-opus-5-5 | 2026-11-10 -- detail holds the version accepted
 TERMS_ACCEPTED: Final = "terms_accepted"
+# ai: claude-opus-5-5 | 2026-11-18 -- "Log out other sessions" (routes/session_auth.py)
+OTHER_SESSIONS_ENDED: Final = "other_sessions_ended"
 
 EVENTS: Final[frozenset[str]] = frozenset(
     {
@@ -80,6 +82,7 @@ EVENTS: Final[frozenset[str]] = frozenset(
         ACCOUNT_ENABLED,
         REGISTRATION_LINK_RESENT,
         TERMS_ACCEPTED,
+        OTHER_SESSIONS_ENDED,
     }
 )
 

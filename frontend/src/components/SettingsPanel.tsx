@@ -325,6 +325,11 @@ function AccountSection() {
   const [passwordSaving, setPasswordSaving] = useState(false);
   const [passwordSaved, setPasswordSaved] = useState(false);
 
+  // ai: claude-opus-5-5 | 2026-11-18
+  const [endingSessions, setEndingSessions] = useState(false);
+  const [sessionsEnded, setSessionsEnded] = useState(false);
+  const [sessionsError, setSessionsError] = useState("");
+
   useEffect(() => {
     (async () => {
       const res = await apiFetch("/api/account");
@@ -413,6 +418,30 @@ function AccountSection() {
       setPasswordError(describeFetchError(err));
     } finally {
       setPasswordSaving(false);
+    }
+  };
+
+  // ai: claude-opus-5-5 | 2026-11-18
+  const logoutOtherSessions = async () => {
+    if (endingSessions) return;
+    if (!window.confirm("Log out every other browser and device signed in to this account? You stay logged in here.")) {
+      return;
+    }
+    setEndingSessions(true);
+    setSessionsError("");
+    setSessionsEnded(false);
+    try {
+      const res = await apiFetch("/api/account/logout-other-sessions", { method: "POST" });
+      if (!res.ok) {
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
+        setSessionsError(data.error || `Request failed (HTTP ${res.status})`);
+        return;
+      }
+      setSessionsEnded(true);
+    } catch (err) {
+      setSessionsError(describeFetchError(err));
+    } finally {
+      setEndingSessions(false);
     }
   };
 
@@ -510,9 +539,33 @@ function AccountSection() {
             <button type="submit" className="btn-primary" disabled={passwordSaving}>
               {passwordSaving ? "Saving…" : "Change password"}
             </button>
-            {passwordSaved && <span style={{ color: "var(--green)", fontSize: "13px" }}>Saved!</span>}
+            {passwordSaved && (
+              <span style={{ color: "var(--green)", fontSize: "13px" }}>
+                Saved! Other browsers and devices were logged out, and the browser extension needs a
+                new token (Settings &gt; Browser Extension).
+              </span>
+            )}
           </div>
         </form>
+      </div>
+
+      {/* ai: claude-opus-5-5 | 2026-11-18 */}
+      <h3 style={{ ...sectionSubheadingStyle, marginTop: "24px" }}>Sessions</h3>
+      <div style={formBox}>
+        {sessionsError && <div style={{ color: "var(--red)", fontSize: "13px", marginBottom: "10px" }}>{sessionsError}</div>}
+        <p style={{ ...helpTextStyle, margin: "0 0 12px 0" }}>
+          Signed in somewhere you no longer use, like a shared or lost computer? This logs out every
+          other browser and device. You stay logged in here, and your password doesn&apos;t change.
+          The browser extension keeps working; revoke its token under Settings &gt; Browser Extension.
+        </p>
+        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+          <button className="btn-secondary" onClick={logoutOtherSessions} disabled={endingSessions}>
+            {endingSessions ? "Logging out…" : "Log out other sessions"}
+          </button>
+          {sessionsEnded && (
+            <span style={{ color: "var(--green)", fontSize: "13px" }}>Other sessions logged out.</span>
+          )}
+        </div>
       </div>
 
       {/* ai: claude-opus-5-5 | 2026-11-10 */}

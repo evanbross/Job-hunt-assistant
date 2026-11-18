@@ -74,6 +74,13 @@ class FakeTokenRepo:
                 return True
         return False
 
+    # ai: claude-opus-5-5 | 2026-11-18 -- kept in step with IExtensionTokenRepository
+    def revoke_all_for_user(self, user_id: int, revoked_at: str) -> int:
+        active = [r for r in self.rows if r["user_id"] == user_id and r["revoked_at"] is None]
+        for row in active:
+            row["revoked_at"] = revoked_at
+        return len(active)
+
 
 @pytest.fixture
 def client_and_repo(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[Any, FakeTokenRepo]]:

@@ -114,6 +114,29 @@ def test_revoked_token_no_longer_authenticates(pg_dsn: str) -> None:
         conn.close()
 
 
+# ai: claude-opus-5-5 | 2026-11-18 -- used by a password change or reset
+def test_revoke_all_ends_every_token_of_that_user_only(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        owner = _new_user(conn)
+        other = _new_user(conn, "other@example.com")
+        service = ExtensionTokenService(PostgresExtensionTokenRepository(conn))
+        laptop = service.issue(owner, "laptop")
+        desktop = service.issue(owner, "desktop")
+        already_revoked = service.issue(owner, "old")
+        service.revoke(owner, already_revoked.record["id"])
+        others = service.issue(other, "theirs")
+
+        assert service.revoke_all(owner) == 2
+
+        assert service.authenticate(laptop.plaintext) is None
+        assert service.authenticate(desktop.plaintext) is None
+        assert service.authenticate(others.plaintext) is not None
+        assert service.revoke_all(owner) == 0
+    finally:
+        conn.close()
+
+
 def test_expired_token_no_longer_authenticates(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:

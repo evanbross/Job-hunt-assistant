@@ -117,3 +117,9 @@ class ExtensionTokenService:
 
     def revoke(self, user_id: int, token_id: int, *, now: datetime | None = None) -> bool:
         return self._tokens.revoke(user_id, token_id, _utc_iso(now or datetime.now(UTC)))
+
+    # ai: claude-opus-5-5 | 2026-11-18
+    def revoke_all(self, user_id: int, *, now: datetime | None = None) -> int:
+        """Revoke every active token of the account (a password change or reset);
+        how many were revoked."""
+        return self._tokens.revoke_all_for_user(user_id, _utc_iso(now or datetime.now(UTC)))
