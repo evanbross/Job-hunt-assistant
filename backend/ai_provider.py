@@ -259,32 +259,14 @@ class AIProviderClient:
     ) -> str:
         if not self._openai_api_key:
             raise AIProviderError("OpenAI API key is not configured for this account")
-        input_items: list[dict[str, str]] = []
-        if system:
-            input_items.append({"role": "developer", "content": system})
-        input_items.extend(
-            {"role": message.role, "content": message.content} for message in messages
+        return request_openai_completion(
+            self._openai_api_key,
+            self._openai_model,
+            messages,
+            system,
+            max_tokens,
+            on_retry,
         )
-        payload = {
-            "model": self._openai_model,
-            "input": input_items,
-            "max_output_tokens": max_tokens,
-        }
-        response = self._post_json(
-            "https://api.openai.com/v1/responses",
-            payload,
-            headers={"Authorization": f"Bearer {self._openai_api_key}"},
-            on_retry=on_retry,
-        )
-        output_text = response.get("output_text")
-        if isinstance(output_text, str) and output_text.strip():
-            return output_text.strip()
-        for output_item in response.get("output", []):
-            for content_item in output_item.get("content", []):
-                text = content_item.get("text")
-                if isinstance(text, str) and text.strip():
-                    return text.strip()
-        raise AIProviderError("OpenAI returned an empty response")
 
     def _complete_ollama(
         self,
@@ -383,6 +365,62 @@ class AIProviderClient:
         raise AIProviderError(
             f"AI provider connection failed: {last_exc}"
         ) from last_exc
+
+
+# ai: claude-opus-5-5 | 2026-11-18 -- lifted out of _complete_openai so the setup
+# wizard's credential test (check_openai_credentials) exercises the exact request
+# the real provider sends, instead of a separate SDK the app doesn't install.
+def request_openai_completion(
+    api_key: str,
+    model: str,
+    messages: list[AIMessage],
+    system: str,
+    max_tokens: int,
+    on_retry: Callable[[str], None] | None = None,
+) -> str:
+    """One OpenAI Responses API call; the reply's text."""
+    input_items: list[dict[str, str]] = []
+    if system:
+        input_items.append({"role": "developer", "content": system})
+    input_items.extend(
+        {"role": message.role, "content": message.content} for message in messages
+    )
+    payload = {
+        "model": model,
+        "input": input_items,
+        "max_output_tokens": max_tokens,
+    }
+    response = AIProviderClient._post_json(
+        "https://api.openai.com/v1/responses",
+        payload,
+        headers={"Authorization": f"Bearer {api_key}"},
+        on_retry=on_retry,
+    )
+    output_text = response.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
+    for output_item in response.get("output", []):
+        for content_item in output_item.get("content", []):
+            text = content_item.get("text")
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+    raise AIProviderError("OpenAI returned an empty response")
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+_OPENAI_MIN_OUTPUT_TOKENS = 16  # the Responses API rejects a smaller max_output_tokens
+
+
+def check_openai_credentials(api_key: str, model: str) -> None:
+    """Prove an (unsaved) OpenAI key can call *model*. Raises AIProviderError
+    (with the HTTP status, when OpenAI answered) if it can't."""
+    request_openai_completion(
+        api_key,
+        model,
+        [AIMessage(role="user", content="hi")],
+        "",
+        _OPENAI_MIN_OUTPUT_TOKENS,
+    )
 
 
 def _anthropic_error_message(exc: APIStatusError) -> str:

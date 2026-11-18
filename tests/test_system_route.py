@@ -188,3 +188,44 @@ def test_readiness_fails_when_the_database_is_down(
     assert response.status_code == 503
     assert response.get_json()["db"] == "unreachable"
     assert response.get_json()["redis"] == "connected"
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+class _RecordingTkRoot:
+    destroyed = 0
+
+    def withdraw(self) -> None:
+        pass
+
+    def attributes(self, *_args: object) -> None:
+        pass
+
+    def destroy(self) -> None:
+        _RecordingTkRoot.destroyed += 1
+
+
+class _FailingFileDialog:
+    @staticmethod
+    def askdirectory(**_kwargs: object) -> str:
+        raise RuntimeError("simulated dialog failure")
+
+
+class _FakeTk:
+    Tk = _RecordingTkRoot
+
+
+def test_folder_picker_destroys_its_tk_root_when_the_dialog_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _RecordingTkRoot.destroyed = 0
+    monkeypatch.setattr("routes.system.is_hosted", lambda: False)
+    monkeypatch.setattr("routes.system._TKINTER_AVAILABLE", True)
+    monkeypatch.setattr("routes.system._tk", _FakeTk, raising=False)
+    monkeypatch.setattr("routes.system._filedialog", _FailingFileDialog, raising=False)
+    app = Flask(__name__)
+    app.register_blueprint(system_bp)
+
+    response = app.test_client().post("/api/system/select-folder", json={})
+
+    assert response.status_code == 500
+    assert _RecordingTkRoot.destroyed == 1

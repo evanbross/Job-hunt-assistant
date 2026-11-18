@@ -141,6 +141,9 @@ def select_folder() -> ResponseReturnValue:
     body = request.get_json(silent=True) or {}
     initial_path = (body.get("initial_path") or "").strip()
 
+    # ai: claude-opus-5-5 | 2026-11-18 -- destroy the Tk root on every path, not
+    # only when the dialog succeeds, so a failure can't leave a native window behind.
+    root = None
     try:
         root = _tk.Tk()
         root.withdraw()
@@ -150,10 +153,12 @@ def select_folder() -> ResponseReturnValue:
             title="Select cover letter folder",
             mustexist=False,
         )
-        root.destroy()
     except Exception:
         logger.exception("Could not open folder picker")
         return jsonify({"error": "Could not open folder picker"}), 500
+    finally:
+        if root is not None:
+            root.destroy()
 
     if not selected:
         return jsonify({"selected_path": None})

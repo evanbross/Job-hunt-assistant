@@ -35,6 +35,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from http import HTTPStatus
 from typing import Any
 
 import anthropic
@@ -48,6 +49,7 @@ from pydantic import (
 )
 
 import config
+from backend.ai_provider import AIProviderError, check_openai_credentials
 from backend.app_mode import is_hosted
 from backend.candidate_profile_service import (
     CandidateProfileUpdate,
@@ -211,28 +213,17 @@ def _test_anthropic(api_key: str) -> Any:
         return jsonify({"ok": False, "message": f"Anthropic API error: {exc}"})
 
 
+# ai: claude-opus-5-5 | 2026-11-18 -- was an inline import of the openai SDK, which
+# the app never installs (the real provider calls the Responses API over HTTP), so
+# every locked install reported "openai package is not installed".
 def _test_openai(api_key: str, model: str) -> Any:
     try:
-        import openai  # noqa: PLC0415 — optional dep, degrades gracefully without it
-
-        client = openai.OpenAI(api_key=api_key)
-        client.chat.completions.create(
-            model=model,
-            max_tokens=1,
-            messages=[{"role": "user", "content": "hi"}],
-        )
-        return jsonify(
-            {"ok": True, "message": f"OpenAI key is valid (model: {model})."}
-        )
-    except ImportError:
-        return jsonify(
-            {
-                "ok": False,
-                "message": "openai package is not installed. Run: pip install openai",
-            }
-        )
-    except Exception as exc:  # noqa: BLE001 — surface any openai error to the user
-        return jsonify({"ok": False, "message": f"OpenAI test failed: {exc}"})
+        check_openai_credentials(api_key, model)
+    except AIProviderError as exc:
+        if exc.status_code == HTTPStatus.UNAUTHORIZED:
+            return jsonify({"ok": False, "message": "Invalid API key — authentication failed."})
+        return jsonify({"ok": False, "message": f"OpenAI API error: {exc}"})
+    return jsonify({"ok": True, "message": f"OpenAI key is valid (model: {model})."})
 
 
 # ─── Upload Google credentials ────────────────────────────────────────────────
