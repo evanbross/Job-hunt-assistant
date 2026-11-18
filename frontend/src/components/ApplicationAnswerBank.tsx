@@ -137,9 +137,12 @@ function AiSuggestionsToggle() {
       <span>
         Let AI suggest answers to questions the extension doesn&apos;t recognize
         <span style={{ display: "block", color: "var(--text-muted)", fontSize: "12px" }}>
-          Uses your AI provider (one request per Fill Application) and only what you&apos;ve told
-          the app. Suggestions are outlined in blue to check, and never cover gender, race,
-          veteran or disability questions, consent boxes or signatures.
+          {/* ai: claude-opus-5-5 | 2026-11-18 -- per-question calls, minimal facts */}
+          Uses your AI provider (one small request per question it can help with). Each question
+          only sees the profile fields and saved answers that match it, never your candidate
+          profile, and the AI can only pick from those. Suggestions are outlined in blue to check,
+          and never cover gender, race, veteran or disability questions, consent boxes or
+          signatures.
         </span>
       </span>
     </label>
