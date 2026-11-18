@@ -61,6 +61,7 @@ from werkzeug.security import generate_password_hash
 import config
 import routes.session_auth as session_auth_module
 from backend.email.smtp_sender import SmtpDeliveryError
+from backend.security.account_tokens import hash_account_token
 from backend.security.client_ip import TrustedProxyMiddleware, parse_trusted_proxies
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
@@ -264,8 +265,8 @@ def test_complete_registration_with_expired_token_is_rejected(client, sent_email
     with get_repos() as repos:
         repos["conn"].cursor().execute(
             "UPDATE user_accounts SET verification_expires_at = NOW() - INTERVAL '1 hour'"
-            " WHERE verification_token = %s",
-            [token],
+            " WHERE verification_token_hash = %s",
+            [hash_account_token(token)],
         )
         repos["conn"].commit()
 
@@ -609,8 +610,8 @@ def test_reset_password_with_expired_token_is_rejected(client, sent_emails) -> N
     with get_repos() as repos:
         repos["conn"].cursor().execute(
             "UPDATE user_accounts SET verification_expires_at = NOW() - INTERVAL '1 hour'"
-            " WHERE verification_token = %s",
-            [token],
+            " WHERE verification_token_hash = %s",
+            [hash_account_token(token)],
         )
         repos["conn"].commit()
 
@@ -668,6 +669,59 @@ def test_change_password_succeeds_and_old_password_stops_working(client) -> None
     client.post("/api/logout")
     assert _login(client).status_code == 401
     assert _login(client, password="new-password-123").status_code == 200
+
+
+# ai: claude-opus-5-5 | 2026-11-18 -- 2026-11-18 full code review: the session cookie is
+# client-side, so before session_version a stolen cookie outlived a password change.
+def test_change_password_ends_every_other_session_but_keeps_this_one(flask_app, client) -> None:
+    _seed_active_account()
+    other_browser = flask_app.test_client()
+    assert _login(other_browser).status_code == 200
+    _login(client)
+    assert other_browser.get("/api/jobs/queue?view=queue").status_code == 200
+
+    resp = client.post(
+        "/api/account/change-password",
+        json={"current_password": _TEST_PASSWORD, "new_password": "new-password-123"},
+    )
+    assert resp.status_code == 200
+
+    revoked = other_browser.get("/api/jobs/queue?view=queue")
+    assert revoked.status_code == 401
+    assert revoked.get_json()["code"] == "session_revoked"
+    # the cookie was cleared, so it stays logged out rather than failing each request
+    assert other_browser.get("/api/session").get_json()["authenticated"] is False
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
+
+
+def test_reset_password_ends_every_existing_session(flask_app, client, sent_emails) -> None:
+    _seed_active_account()
+    stolen = flask_app.test_client()
+    assert _login(stolen).status_code == 200
+    client.post("/api/account/forgot-password", json={"email": _TEST_EMAIL})
+    token = _token_from_link(sent_emails[-1]["link"])
+
+    resp = client.post(
+        "/api/account/reset-password", json={"token": token, "password": "new-password-123"}
+    )
+    assert resp.status_code == 200
+
+    assert stolen.get("/api/jobs/queue?view=queue").status_code == 401
+    assert client.get("/api/jobs/queue?view=queue").status_code == 200
+
+
+def test_a_session_without_a_session_version_is_not_accepted(client) -> None:
+    """Cookies issued before session_version existed carry none; they must fail
+    closed (log in again once), not be treated as current."""
+    account_id = _seed_active_account()
+    with client.session_transaction() as sess:
+        sess["authenticated"] = True
+        sess["user_id"] = account_id
+
+    resp = client.get("/api/jobs/queue?view=queue")
+
+    assert resp.status_code == 401
+    assert resp.get_json()["code"] == "session_revoked"
 
 
 def test_change_password_rejects_wrong_current_password(client) -> None:

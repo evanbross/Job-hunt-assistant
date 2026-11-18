@@ -34,6 +34,7 @@ from backend.user_events import RedisUserEvents, UserEventTopic
 from routes.events import events_bp
 from routes.import_ import import_bp
 from tests.conftest import RecordingUserEvents
+from tests.login_session import sign_in
 
 _USER_ID = 1
 _OTHER_USER_ID = 2
@@ -152,7 +153,7 @@ def test_stream_names_each_event_after_its_topic_for_the_caller_only(
     monkeypatch.setattr(events_routes, "_HEARTBEAT_SECONDS", 0.05)
     client = _app().test_client()
     with client.session_transaction() as flask_session:
-        flask_session["user_id"] = _USER_ID
+        sign_in(flask_session, _USER_ID)
 
     response = client.get("/api/events", buffered=False)
     try:
@@ -182,7 +183,8 @@ def test_every_tracked_import_change_is_announced_to_its_owner(
 
     client = _app().test_client()
     with client.session_transaction() as flask_session:
-        flask_session["user_id"] = _OTHER_USER_ID
+        sign_in(flask_session, _OTHER_USER_ID)
+
     assert client.post("/api/import/reset", json={}).status_code == 200
     assert isolated_user_events.published == [(_OTHER_USER_ID, _IMPORT)] * 2
 

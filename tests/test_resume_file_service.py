@@ -37,6 +37,7 @@ from backend.resume.resume_file_service import (
 )
 from routes.settings import settings_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 from web.extension_listener import get_resume_file_bytes
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -357,7 +358,8 @@ def resume_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, in
     # get_repos() (backend/db/row_level_security.py) reads the real Flask session, not
     # the current_user_id() monkeypatch above.
     with client.session_transaction() as sess:
-        sess["user_id"] = user_id
+        sign_in(sess, user_id)
+
     return client, user_id
 
 

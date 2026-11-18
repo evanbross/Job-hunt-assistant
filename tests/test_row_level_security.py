@@ -35,6 +35,7 @@ from backend.utils.utils import DatabaseUnavailableError, get_repos
 from routes.voice import execute_readonly
 from tests.db_roles import runtime_database_url
 from tests.identity_switch_sql import IDENTITY_SWITCH_SQL
+from tests.login_session import sign_in
 
 # ai: claude-sonnet-5 | 2026-09-27
 
@@ -198,7 +199,8 @@ def test_get_repos_inside_a_request_uses_the_session_user(pg_dsn: str, flask_app
     with flask_app.test_request_context("/"):
         from flask import session
 
-        session["user_id"] = user_a
+        sign_in(session, user_a)
+
         with get_repos() as repos:
             cur = repos["conn"].cursor()
             cur.execute("SELECT dedup_key FROM jobs")

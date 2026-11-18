@@ -26,6 +26,7 @@ from backend.db.row_level_security import set_current_user
 from backend.settings_service import set_setting
 from routes import emails, scan
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 _TRACKED_URL = "https://www.linkedin.com/jobs/view/4433333333/"
 # The same posting as a digest links it: another tracking URL, same LinkedIn job ID.
@@ -211,7 +212,8 @@ def test_rescan_turns_an_old_duplicate_row_into_a_sighting(
     app.register_blueprint(emails.emails_bp, url_prefix="/api")
     client = app.test_client()
     with client.session_transaction() as sess:
-        sess["user_id"] = user_id
+        sign_in(sess, user_id)
+
     response = client.post("/api/emails/msg-1/rescan")
 
     assert response.status_code == 200, response.get_json()

@@ -42,6 +42,7 @@ import pytest
 
 import config
 import routes.session_auth as session_auth_module
+from backend.security.account_tokens import REGISTRATION_TOKEN_LIFETIME, new_token
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
 
@@ -77,9 +78,13 @@ def _create_and_login(client, email: str) -> int:
     the token out of the (faked) sent email, complete it."""
     resp = client.post("/api/account", json={"email": email})
     assert resp.status_code == 202, resp.get_json()
+    # Only a digest of the emailed token is stored, so issue a known one instead of
+    # reading it back. ai: claude-opus-5-5 | 2026-11-18
+    token, expires_at = new_token(REGISTRATION_TOKEN_LIFETIME)
     with get_repos() as repos:
         pending = repos["user_accounts"].get_by_email(email)
-    token = pending["verification_token"]
+        repos["user_accounts"].renew_registration_token(pending["id"], token, expires_at)
+        repos["conn"].commit()
     complete = client.post(
         "/api/account/complete-registration", json={"token": token, "password": _PASSWORD}
     )

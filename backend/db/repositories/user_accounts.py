@@ -38,6 +38,8 @@ from typing import Any
 
 import psycopg2
 
+from backend.security.account_tokens import hash_account_token
+
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 
@@ -136,12 +138,12 @@ class PostgresUserAccountRepository(_BaseRepo):
                 """
                 UPDATE user_accounts
                 SET email = %s, password_hash = NULL,
-                    verification_token = %s, verification_purpose = 'registration',
+                    verification_token_hash = %s, verification_purpose = 'registration',
                     verification_expires_at = %s, updated_at = NOW()
                 WHERE email = %s
                 RETURNING *
                 """,
-                [email, token, expires_at, PLACEHOLDER_ACCOUNT_EMAIL],
+                [email, hash_account_token(token), expires_at, PLACEHOLDER_ACCOUNT_EMAIL],
             )
         except psycopg2.errors.UniqueViolation:
             self._conn.rollback()
@@ -159,13 +161,13 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             INSERT INTO user_accounts
-                (email, password_hash, verification_token, verification_purpose,
+                (email, password_hash, verification_token_hash, verification_purpose,
                  verification_expires_at)
             VALUES (%s, NULL, %s, 'registration', %s)
             ON CONFLICT (email) DO NOTHING
             RETURNING *
             """,
-            [email, token, expires_at],
+            [email, hash_account_token(token), expires_at],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
@@ -180,15 +182,15 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET password_hash = %s, verification_token = NULL,
+            SET password_hash = %s, verification_token_hash = NULL,
                 verification_purpose = NULL, verification_expires_at = NULL,
                 updated_at = NOW()
-            WHERE verification_token = %s
+            WHERE verification_token_hash = %s
               AND verification_purpose = 'registration'
               AND verification_expires_at > NOW()
             RETURNING *
             """,
-            [password_hash, token],
+            [password_hash, hash_account_token(token)],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
@@ -202,13 +204,13 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET pending_email = %s, verification_token = %s,
+            SET pending_email = %s, verification_token_hash = %s,
                 verification_purpose = 'email_change', verification_expires_at = %s,
                 updated_at = NOW()
             WHERE id = %s
             RETURNING *
             """,
-            [new_email, token, expires_at, user_id],
+            [new_email, hash_account_token(token), expires_at, user_id],
         )
         return _row_to_dict(cur.fetchone())
 
@@ -223,14 +225,14 @@ class PostgresUserAccountRepository(_BaseRepo):
                 """
                 UPDATE user_accounts
                 SET email = pending_email, pending_email = NULL,
-                    verification_token = NULL, verification_purpose = NULL,
+                    verification_token_hash = NULL, verification_purpose = NULL,
                     verification_expires_at = NULL, updated_at = NOW()
-                WHERE verification_token = %s
+                WHERE verification_token_hash = %s
                   AND verification_purpose = 'email_change'
                   AND verification_expires_at > NOW()
                 RETURNING *
                 """,
-                [token],
+                [hash_account_token(token)],
             )
         except psycopg2.errors.UniqueViolation:
             self._conn.rollback()
@@ -252,16 +254,18 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET verification_token = %s, verification_purpose = 'password_reset',
+            SET verification_token_hash = %s, verification_purpose = 'password_reset',
                 verification_expires_at = %s, updated_at = NOW()
             WHERE email = %s AND password_hash IS NOT NULL
             RETURNING *
             """,
-            [token, expires_at, email],
+            [hash_account_token(token), expires_at, email],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-opus-5-5 | 2026-11-18 -- both password writers below increment
+    # session_version, which ends every login session issued before the change.
     def reset_password(self, token: str, password_hash: str) -> dict[str, Any] | None:
         """Set a new password from a password-reset token and clear it.
         Returns None if the token doesn't exist, is for a different purpose,
@@ -270,15 +274,16 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET password_hash = %s, verification_token = NULL,
+            SET password_hash = %s, verification_token_hash = NULL,
                 verification_purpose = NULL, verification_expires_at = NULL,
-                bootstrap_password_pending = FALSE, updated_at = NOW()
-            WHERE verification_token = %s
+                bootstrap_password_pending = FALSE, updated_at = NOW(),
+                session_version = session_version + 1
+            WHERE verification_token_hash = %s
               AND verification_purpose = 'password_reset'
               AND verification_expires_at > NOW()
             RETURNING *
             """,
-            [password_hash, token],
+            [password_hash, hash_account_token(token)],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
@@ -294,7 +299,8 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET password_hash = %s, bootstrap_password_pending = FALSE, updated_at = NOW()
+            SET password_hash = %s, bootstrap_password_pending = FALSE, updated_at = NOW(),
+                session_version = session_version + 1
             WHERE id = %s
             RETURNING *
             """,
@@ -398,12 +404,12 @@ class PostgresUserAccountRepository(_BaseRepo):
         cur = self._execute(
             """
             UPDATE user_accounts
-            SET verification_token = %s, verification_purpose = 'registration',
+            SET verification_token_hash = %s, verification_purpose = 'registration',
                 verification_expires_at = %s, updated_at = NOW()
             WHERE id = %s AND password_hash IS NULL
             RETURNING *
             """,
-            [token, expires_at, user_id],
+            [hash_account_token(token), expires_at, user_id],
         )
         row = cur.fetchone()
         return _row_to_dict(row) if row else None

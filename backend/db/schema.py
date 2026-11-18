@@ -1020,13 +1020,34 @@ def migrate_schema(conn: Any) -> None:
     cur.execute("ALTER TABLE user_accounts ALTER COLUMN password_hash DROP NOT NULL")
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS name TEXT")
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS pending_email TEXT")
+    # ai: claude-opus-5-5 | 2026-11-18 -- registration/email-change/reset tokens used to be
+    # stored as-is in verification_token, so a database snapshot held working account
+    # links. Only a SHA-256 digest is stored now (backend/security/account_tokens.py
+    # hash_account_token -- this SQL must produce the identical hex digest). Existing
+    # tokens are hashed in place rather than invalidated, so links already emailed keep
+    # working; the column is renamed in the same transaction so no code can read a
+    # half-migrated mix of raw and hashed values under one name.
+    if _has_column(cur, "user_accounts", "verification_token"):
+        cur.execute(
+            "UPDATE user_accounts"
+            " SET verification_token = encode(sha256(convert_to(verification_token, 'UTF8')), 'hex')"
+            " WHERE verification_token IS NOT NULL"
+        )
+        cur.execute(
+            "ALTER TABLE user_accounts RENAME COLUMN verification_token TO verification_token_hash"
+        )
+        if _has_unique(cur, "user_accounts", "user_accounts_verification_token_key"):
+            cur.execute(
+                "ALTER TABLE user_accounts RENAME CONSTRAINT user_accounts_verification_token_key"
+                " TO user_accounts_verification_token_hash_key"
+            )
     cur.execute(
-        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS verification_token TEXT"
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS verification_token_hash TEXT"
     )
-    if not _has_unique(cur, "user_accounts", "user_accounts_verification_token_key"):
+    if not _has_unique(cur, "user_accounts", "user_accounts_verification_token_hash_key"):
         cur.execute(
             "ALTER TABLE user_accounts ADD CONSTRAINT"
-            " user_accounts_verification_token_key UNIQUE (verification_token)"
+            " user_accounts_verification_token_hash_key UNIQUE (verification_token_hash)"
         )
     cur.execute(
         "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS verification_purpose TEXT"
@@ -1070,6 +1091,14 @@ def migrate_schema(conn: Any) -> None:
     # every account made before the terms existed, and every desktop-app account.
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS terms_accepted_version TEXT")
     cur.execute("ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS terms_accepted_at TIMESTAMPTZ")
+    # ai: claude-opus-5-5 | 2026-11-18 -- the credential generation every login session
+    # carries (routes/session_auth.py _start_session) and get_repos() compares on each
+    # request. Changing or resetting the password increments it, ending every session
+    # issued before -- the cookie is client-side, so this is the only way to revoke one.
+    cur.execute(
+        "ALTER TABLE user_accounts ADD COLUMN IF NOT EXISTS"
+        " session_version INTEGER NOT NULL DEFAULT 1"
+    )
     conn.commit()
 
     # A completely empty user_accounts is possible here even when other tables
@@ -1144,7 +1173,8 @@ def migrate_schema(conn: Any) -> None:
         if check_password_hash(account["password_hash"], LEGACY_DEFAULT_ADMIN_PASSWORD):
             replacement = generate_bootstrap_password()
             cur.execute(
-                "UPDATE user_accounts SET password_hash = %s, bootstrap_password_pending = TRUE"
+                "UPDATE user_accounts SET password_hash = %s, bootstrap_password_pending = TRUE,"
+                " session_version = session_version + 1"  # ai: claude-opus-5-5 | 2026-11-18
                 " WHERE id = %s",
                 (generate_password_hash(replacement), account["id"]),
             )

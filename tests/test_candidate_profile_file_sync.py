@@ -48,6 +48,7 @@ from backend.utils.utils import get_repos
 from routes.settings import settings_bp
 from tests.conftest import RecordingUserEvents
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 OLD_TIMESTAMP = "2026-01-01T00:00:00+00:00"
 # Well before OLD_TIMESTAMP, for a file the stored profile is newer than.
@@ -426,7 +427,8 @@ def client(owner_id: int, monkeypatch: pytest.MonkeyPatch) -> FlaskClient:
     flask_app.register_blueprint(settings_bp, url_prefix="/api")
     test_client = flask_app.test_client()
     with test_client.session_transaction() as flask_session:
-        flask_session["user_id"] = owner_id
+        sign_in(flask_session, owner_id)
+
     rescored: list[int] = []
     monkeypatch.setattr(
         settings_routes,

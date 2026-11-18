@@ -33,6 +33,7 @@ from flask import Flask, jsonify, session
 from flask_cors import CORS
 
 import config
+from backend.db.row_level_security import SessionIdentity
 from backend.security.session_cookies import session_cookie_config
 from backend.utils.utils import (
     AccountUnavailableError,
@@ -140,6 +141,9 @@ def _account_unavailable(exc: AccountUnavailableError) -> tuple[flask.Response, 
     back to the login screen, which says why if they try again."""
     logger.info("Ended a session: %s", exc)
     session.clear()
+    # ai: claude-opus-5-5 | 2026-11-18 -- a session ended by a password change says so
+    if exc.reason is SessionIdentity.SESSION_REVOKED:
+        return jsonify({"error": "Your session has ended — log in again", "code": exc.reason.value}), 401
     return jsonify({"error": "This account is not available", "code": "account_unavailable"}), 401
 
 

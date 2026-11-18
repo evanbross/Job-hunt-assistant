@@ -37,6 +37,7 @@ switched off; it is only ever armed."""
 from __future__ import annotations
 
 import logging
+from enum import StrEnum
 from typing import Any
 
 from psycopg2 import sql
@@ -140,16 +141,35 @@ def set_current_user(cur: Any, user_id: int | None) -> None:
     )
 
 
-# ai: claude-opus-5-5 | 2026-11-09
-def set_current_user_if_active(cur: Any, user_id: int) -> bool:
+# ai: claude-opus-5-5 | 2026-11-18 -- also checks the session's credential generation
+class SessionIdentity(StrEnum):
+    """What set_current_user_if_active found for a login session's identity."""
+
+    ACTIVE = "active"
+    ACCOUNT_UNAVAILABLE = "account_unavailable"  # disabled by an admin, or deleted
+    SESSION_REVOKED = "session_revoked"  # the password changed after this session began
+
+
+def set_current_user_if_active(
+    cur: Any, user_id: int, session_version: int | None
+) -> SessionIdentity:
     """set_current_user for an identity taken from a login session: only if that account
-    still exists and isn't disabled (plan 4.5). Otherwise the identity is cleared (no
-    tenant rows) and this returns False. One statement, so checking costs no extra round
-    trip on every request; the same connection-session scope as set_current_user."""
+    still exists, isn't disabled (plan 4.5), and its session_version still equals the one
+    the session was issued with (a password change or reset increments it, which ends
+    every session issued before). Otherwise the identity is cleared (no tenant rows) and
+    the result says why. One statement, so checking costs no extra round trip on every
+    request; the same connection-session scope as set_current_user."""
     cur.execute(
         "SELECT set_config('app.current_user_id',"
-        " CASE WHEN EXISTS (SELECT 1 FROM user_accounts WHERE id = %s AND disabled_at IS NULL)"
-        " THEN %s ELSE '' END, false) <> '' AS active",
-        (user_id, str(user_id)),
+        " CASE WHEN a.session_version = %s THEN %s ELSE '' END, false) <> '' AS valid,"
+        " a.id IS NOT NULL AS account_active"
+        " FROM (SELECT 1) AS one"
+        " LEFT JOIN user_accounts a ON a.id = %s AND a.disabled_at IS NULL",
+        (session_version, str(user_id), user_id),
     )
-    return bool(cur.fetchone()["active"])
+    row = cur.fetchone()
+    if row["valid"]:
+        return SessionIdentity.ACTIVE
+    if row["account_active"]:
+        return SessionIdentity.SESSION_REVOKED
+    return SessionIdentity.ACCOUNT_UNAVAILABLE

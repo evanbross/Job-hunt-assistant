@@ -16,12 +16,24 @@ token, with the same lifetime and the same URL, as the first one."""
 
 from __future__ import annotations
 
+import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
 REGISTRATION_TOKEN_LIFETIME = timedelta(hours=24)
 EMAIL_CHANGE_TOKEN_LIFETIME = timedelta(hours=1)
 PASSWORD_RESET_TOKEN_LIFETIME = timedelta(hours=1)
+
+
+# ai: claude-opus-5-5 | 2026-11-18 -- 2026-11-18 full code review: these are bearer
+# credentials (a reset link is an account takeover for its hour), so only a digest is
+# stored -- a database snapshot or dump no longer hands out working links. A fast hash is
+# enough: the tokens are 256-bit random values, not guessable passwords.
+def hash_account_token(token: str) -> str:
+    """The digest user_accounts.verification_token_hash stores for *token*. Must stay
+    identical to the SQL backfill in backend/db/schema.py that hashed existing tokens:
+    hex SHA-256 of the UTF-8 bytes."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def new_token(lifetime: timedelta) -> tuple[str, str]:

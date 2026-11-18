@@ -29,6 +29,7 @@ from werkzeug.security import generate_password_hash
 import config
 import routes.admin_accounts as admin_accounts_module
 from backend.extension_auth.token_service import ExtensionTokenService
+from backend.security.account_tokens import hash_account_token
 from backend.security.data_lifecycle import (
     data_lifecycle_sweep_task,
     run_data_lifecycle_sweep,
@@ -72,13 +73,13 @@ def _owner_query(pg_dsn: str, sql: str, params: tuple[Any, ...] = ()) -> list[di
 def _create(pg_dsn: str, email: str, role: str = "user", *, password: bool = True) -> int:
     rows = _owner_query(
         pg_dsn,
-        "INSERT INTO user_accounts (email, password_hash, role, verification_token, verification_purpose,"
+        "INSERT INTO user_accounts (email, password_hash, role, verification_token_hash, verification_purpose,"
         " verification_expires_at) VALUES (%s, %s, %s, %s, %s, NOW() + interval '1 day') RETURNING id",
         (
             email,
             generate_password_hash(_PASSWORD) if password else None,
             role,
-            None if password else f"first-token-{email}",
+            None if password else hash_account_token(f"first-token-{email}"),
             None if password else "registration",
         ),
     )
@@ -256,8 +257,8 @@ def test_no_link_is_resent_to_a_finished_or_disabled_registration(
     assert admin.post(f"{_ACCOUNTS}/{user_id}/resend-verification").status_code == 409
     assert admin.post(f"{_ACCOUNTS}/{pending_id}/resend-verification").status_code == 409
     assert sent_emails == []
-    token = _owner_query(pg_dsn, "SELECT verification_token FROM user_accounts WHERE id = %s", (pending_id,))
-    assert token == [{"verification_token": "first-token-newbie@example.com"}]  # rolled back
+    token = _owner_query(pg_dsn, "SELECT verification_token_hash FROM user_accounts WHERE id = %s", (pending_id,))
+    assert token == [{"verification_token_hash": hash_account_token("first-token-newbie@example.com")}]  # rolled back
 
 
 # ── task failures ─────────────────────────────────────────────────────────────

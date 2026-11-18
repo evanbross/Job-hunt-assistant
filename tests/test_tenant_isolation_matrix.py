@@ -36,6 +36,7 @@ from flask import Flask
 
 import config
 from backend.db.row_level_security import set_current_user
+from backend.security.account_tokens import REGISTRATION_TOKEN_LIFETIME, new_token
 from backend.utils.utils import get_repos
 from tests.db_roles import runtime_database_url
 
@@ -251,8 +252,13 @@ def _no_outbound_email(monkeypatch: pytest.MonkeyPatch) -> None:
 def _register(app: Flask, email: str) -> int:
     client = app.test_client()
     assert client.post("/api/account", json={"email": email}).status_code == 202
+    # Only a digest of the emailed token is stored, so issue a known one instead of
+    # reading it back. ai: claude-opus-5-5 | 2026-11-18
+    token, expires_at = new_token(REGISTRATION_TOKEN_LIFETIME)
     with get_repos() as repos:
-        token = repos["user_accounts"].get_by_email(email)["verification_token"]
+        pending_id = repos["user_accounts"].get_by_email(email)["id"]
+        repos["user_accounts"].renew_registration_token(pending_id, token, expires_at)
+        repos["conn"].commit()
     done = client.post("/api/account/complete-registration", json={"token": token, "password": _PASSWORD})
     assert done.status_code == 200, done.get_json()
     with get_repos() as repos:

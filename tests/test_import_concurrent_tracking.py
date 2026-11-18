@@ -55,6 +55,7 @@ from backend.scanning.import_progress import (
 from backend.user_events import UserEventTopic
 from routes.import_ import import_bp
 from tests.conftest import RecordingUserEvents
+from tests.login_session import sign_in
 
 _USER_ID = 1
 _OTHER_USER_ID = 2
@@ -246,7 +247,8 @@ def _make_app(monkeypatch: pytest.MonkeyPatch, by_id: dict[str, _FakeAsyncResult
 def _client(app: Flask, user_id: int = _USER_ID) -> FlaskClient:
     client = app.test_client()
     with client.session_transaction() as flask_session:
-        flask_session["user_id"] = user_id
+        sign_in(flask_session, user_id)
+
     return client
 
 

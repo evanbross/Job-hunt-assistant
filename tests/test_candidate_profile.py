@@ -38,6 +38,7 @@ from backend.utils.utils import (
 from routes.settings import settings_bp
 from routes.setup import setup_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 from web import create_app
 
 # ai: claude-sonnet-5 | 2026-09-26
@@ -232,7 +233,7 @@ def profile_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, d
     # tests reassign to switch identity, so RLS sees whichever account is "logged in".
     @flask_app.before_request
     def _sync_rls_session() -> None:
-        session["user_id"] = session_user["id"]
+        sign_in(session, session_user["id"])
 
     return flask_app.test_client(), ids, session_user, rescored
 

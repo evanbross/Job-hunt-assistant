@@ -43,6 +43,7 @@ from backend.db.keyset_pagination import encode_cursor
 from backend.db.row_level_security import set_current_user
 from routes.jobs import jobs_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 _HEAVY_COLUMNS = {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason"}
 _FUTURE = "2099-01-01"
@@ -380,7 +381,8 @@ def client(db, monkeypatch: pytest.MonkeyPatch, pg_dsn: str):
     app.register_blueprint(jobs_bp, url_prefix="/api")
     test_client = app.test_client()
     with test_client.session_transaction() as flask_session:
-        flask_session["user_id"] = db[2]
+        sign_in(flask_session, db[2])
+
     return test_client
 
 

@@ -21,6 +21,7 @@ import pytest
 
 import web.extension_listener as extension_listener
 from backend.scanning.import_progress import ImportProgress, ImportProgressState
+from tests.login_session import sign_in
 from web.extension_listener import bound_port_problem
 
 _CONFIG = {"port": 8765, "ws_port": 8766}
@@ -124,7 +125,8 @@ def test_an_import_queued_by_the_listener_is_visible_to_the_status_route(
     client = flask_app.test_client()
     with client.session_transaction() as flask_session:
         flask_session["authenticated"] = True
-        flask_session["user_id"] = 7
+        sign_in(flask_session, 7)
+
         flask_session["setup_complete_verified"] = True
 
     data = client.get("/api/import/status").get_json()

@@ -49,6 +49,7 @@ from backend.security.session_cookies import (
 from backend.settings_registry import SETTINGS
 from backend.settings_service import get_setting, set_setting
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 from web import create_app
 from web.serving import apply_session_cookie_config
 
@@ -103,7 +104,8 @@ def _cookie_app(settings: dict[str, Any], secret: str, fallbacks: tuple[str, ...
 
     @flask_app.route("/login")
     def login() -> str:
-        session["user_id"] = 7
+        sign_in(session, 7)
+
         return "ok"
 
     @flask_app.route("/whoami")

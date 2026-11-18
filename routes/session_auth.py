@@ -222,10 +222,13 @@ class RequestDeletionRequest(_NotBlankModel):
 _MIN_PASSWORD_LENGTH = 8
 
 
-def _start_session(user_id: int) -> None:
+# ai: claude-opus-5-5 | 2026-11-18 -- takes the account row (was its id) so the session
+# carries the session_version get_repos() checks on every request.
+def _start_session(account: dict) -> None:
     session.clear()
     session["authenticated"] = True
-    session["user_id"] = user_id
+    session["user_id"] = account["id"]
+    session["session_version"] = account["session_version"]
     session.permanent = True
 
 
@@ -340,7 +343,7 @@ def complete_registration() -> ResponseReturnValue:
         if terms_apply:  # ai: claude-opus-5-5 | 2026-11-10
             record_event(event_repos, account["id"], TERMS_ACCEPTED, {"version": TERMS_VERSION})
         event_repos["conn"].commit()
-    _start_session(account["id"])
+    _start_session(account)
     return jsonify({"authenticated": True})
 
 
@@ -428,7 +431,7 @@ def reset_password() -> ResponseReturnValue:
     with get_repos(account["id"]) as event_repos:
         record_event(event_repos, account["id"], PASSWORD_RESET_COMPLETED)
         event_repos["conn"].commit()
-    _start_session(account["id"])
+    _start_session(account)
     return jsonify({"authenticated": True})
 
 
@@ -490,7 +493,7 @@ def login() -> ResponseReturnValue:
         event_repos["user_accounts"].record_login(account["id"])
         record_event(event_repos, account["id"], LOGIN_SUCCESS)
         event_repos["conn"].commit()
-    _start_session(account["id"])
+    _start_session(account)
     return jsonify({"authenticated": True})
 
 
@@ -716,9 +719,12 @@ def change_password() -> ResponseReturnValue:
             get_rate_limiter().record_all([password_check])
             return jsonify({"error": "Current password is incorrect"}), 401
         new_hash = generate_password_hash(body.new_password)
-        repos["user_accounts"].update_password(user_id, new_hash)
+        updated = repos["user_accounts"].update_password(user_id, new_hash)
         record_event(repos, user_id, PASSWORD_CHANGED)
         repos["conn"].commit()
+        # ai: claude-opus-5-5 | 2026-11-18 -- the change ended every other session;
+        # this one carries the new version so the person making it stays logged in.
+        session["session_version"] = updated["session_version"]
         # account still holds the pre-update row -- swap in the new hash so
         # _maybe_clear_setup_gate checks against what the password now is,
         # not what it was a moment ago.

@@ -45,6 +45,7 @@ from tests.linkedin_export_fixtures import (
     profile_url,
     zip_of,
 )
+from tests.login_session import sign_in
 from tests.task_doubles import RecordedDelays
 
 # Each other person started a conversation with the user; Pat (the user) also
@@ -77,7 +78,8 @@ def client_and_user(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, 
         app.register_blueprint(blueprint, url_prefix="/api")
     client = app.test_client()
     with client.session_transaction() as sess:
-        sess["user_id"] = account["id"]
+        sign_in(sess, account["id"])
+
     return client, int(account["id"])
 
 

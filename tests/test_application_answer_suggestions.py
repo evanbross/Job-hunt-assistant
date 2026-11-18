@@ -35,6 +35,7 @@ from backend.settings_service import set_setting
 from backend.utils.utils import get_repos
 from routes.settings import settings_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 
 class FakeAIClient:
@@ -177,7 +178,7 @@ def test_settings_route_switch_turns_suggestions_off(
     monkeypatch.setattr("routes.settings.current_user_id", lambda: user_id)
     client = app.test_client()
     with client.session_transaction() as sess:
-        sess["user_id"] = user_id
+        sign_in(sess, user_id)
 
     assert client.get("/api/config").get_json()["autofill_ai_suggestions"] == "true"
     assert client.put("/api/config", json={"autofill_ai_suggestions": "false"}).status_code == 200

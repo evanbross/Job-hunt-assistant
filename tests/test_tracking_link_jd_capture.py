@@ -32,6 +32,7 @@ from backend.db.row_level_security import set_current_user
 from routes import emails
 from routes import jobs as jobs_route
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 _POSTING_URL = "https://wellfound.com/jobs/5040873-software-engineer-5-tv-ads"
 _TRACKING_BODY = "https://links.wellfound.com/s/c/rzCJEFMgWGB3lJKPO5zEyg7vNJlCeQ4Dz"
@@ -163,7 +164,8 @@ def _rescan_email(user_id: int, email_id: str) -> dict[str, Any]:
     app.register_blueprint(emails.emails_bp, url_prefix="/api")
     client = app.test_client()
     with client.session_transaction() as sess:
-        sess["user_id"] = user_id
+        sign_in(sess, user_id)
+
     response = client.post(f"/api/emails/{email_id}/rescan")
     assert response.status_code == 200, response.get_json()
     return response.get_json()

@@ -32,6 +32,7 @@ from backend.scanning.job_sightings import insert_or_record_sighting
 from routes.jobs import jobs_bp
 from routes.leads import leads_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 _URL = "https://www.linkedin.com/jobs/view/4400000001/"
 
@@ -150,7 +151,8 @@ def client_and_user(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, 
         app.register_blueprint(blueprint, url_prefix="/api")
     client = app.test_client()
     with client.session_transaction() as sess:
-        sess["user_id"] = account["id"]
+        sign_in(sess, account["id"])
+
     return client, int(account["id"])
 
 

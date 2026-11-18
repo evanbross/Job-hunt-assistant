@@ -53,6 +53,7 @@ from backend.utils.utils import get_repos
 from routes.auth import auth_bp
 from routes.setup import setup_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 # ai: claude-sonnet-5 | 2026-09-26
 
@@ -312,7 +313,7 @@ def auth_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dict
 
     @flask_app.before_request
     def _sync_rls_session() -> None:
-        session["user_id"] = session_user["id"]
+        sign_in(session, session_user["id"])
 
     return flask_app.test_client(), ids, session_user
 
@@ -586,7 +587,7 @@ def setup_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, dic
 
     @flask_app.before_request
     def _sync_rls_session() -> None:
-        session["user_id"] = session_user["id"]
+        sign_in(session, session_user["id"])
 
     return flask_app.test_client(), {"admin": admin, "member": member}, session_user
 

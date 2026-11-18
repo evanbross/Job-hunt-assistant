@@ -33,6 +33,7 @@ from backend.db.row_level_security import set_current_user
 from backend.scanning.import_progress import ImportProgress, ImportProgressState
 from routes.import_ import import_bp
 from tests.db_roles import runtime_database_url
+from tests.login_session import sign_in
 
 
 def _make_app() -> Flask:
@@ -62,7 +63,8 @@ def _tracked(user_id: int = _RESET_USER_ID) -> ImportProgressState:
 def _logged_in_client(user_id: int = _RESET_USER_ID):
     client = _make_app().test_client()
     with client.session_transaction() as flask_session:
-        flask_session["user_id"] = user_id
+        sign_in(flask_session, user_id)
+
     return client
 
 
@@ -235,7 +237,8 @@ def repair_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, in
     client = flask_app.test_client()
     # get_repos() (backend/db/row_level_security.py) reads the real Flask session.
     with client.session_transaction() as sess:
-        sess["user_id"] = user_id
+        sign_in(sess, user_id)
+
     return client, user_id
 
 
