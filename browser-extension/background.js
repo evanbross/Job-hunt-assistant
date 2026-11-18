@@ -828,6 +828,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // keep channel open for the async response
   }
 
+  // ai: claude-opus-5-5 | 2026-11-17 -- autofill.js's AI step (suggestForUnresolved).
+  if (message.action === 'suggestAnswers') {
+    requestAnswerSuggestions(message.questions, message.pageTitle).then(sendResponse);
+    return true;
+  }
+
   if (message.action === 'stashPendingAnswers') {
     stashPendingAnswers(message);
     return false;
@@ -869,6 +875,30 @@ async function saveLearnedAnswers(answers, platform) {
   } catch (err) {
     console.error('[JHA] saving learned answers failed:', err?.message || err);
     return { ok: false, error: 'Could not save your answers. Is Job Hunt App running?' };
+  }
+}
+
+// ai: claude-opus-5-5 | 2026-11-17
+async function requestAnswerSuggestions(questions, pageTitle) {
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/application-answers/suggest`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ questions, page_title: pageTitle || null }),
+    });
+    jhaReportAuth(res);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.status === 401 ? JHA_AUTH_ERROR_MESSAGE : data.error || `Error ${res.status}`,
+      };
+    }
+    return { ok: true, suggestions: data.suggestions || [], disabled: Boolean(data.disabled) };
+  } catch (err) {
+    console.error('[JHA] AI answer suggestions failed:', err?.message || err);
+    return { ok: false, error: 'Is Job Hunt App running?' };
   }
 }
 

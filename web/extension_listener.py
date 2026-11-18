@@ -32,6 +32,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import config
+from backend.application_answer_suggestions import suggest_application_answers
 from backend.contacts.outreach_drafts import claim_draft_for_page
 from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.error_tracking import init_error_tracking
@@ -167,6 +168,7 @@ def start_extension_servers(
         get_resume_file=get_resume_file_bytes,
         get_answers=_get_application_answers_for_listener,
         learn_answers=learn_application_answers,
+        suggest_answers=suggest_application_answers,
         claim_outreach_draft=_claim_linkedin_outreach_draft,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,

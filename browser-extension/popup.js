@@ -410,20 +410,9 @@ async function handleFillApplication() {
     if (!response?.ok) {
       showStatus(`Autofill failed: ${response?.error || 'unknown error'}`, 'error');
     } else {
-      const { filled = [], unresolved = [] } = response.results || {};
-      let summary;
-      let type;
-      if (filled.length === 0 && unresolved.length === 0) {
-        summary = 'No form fields found on this page (including any embedded frames).';
-        type = 'error';
-      } else if (unresolved.length > 0) {
-        summary = `✓ Filled ${filled.length}, ${unresolved.length} need your review (outlined in orange).`;
-        type = 'info';
-      } else {
-        summary = `✓ Filled ${filled.length} field${filled.length !== 1 ? 's' : ''}.`;
-        type = 'success';
-      }
-      showStatus(summary, type);
+      // ai: claude-opus-5-5 | 2026-11-17 -- adds the AI step's suggestions and any error
+      const { filled = [], unresolved = [], suggested = [], suggestionError = null } = response.results || {};
+      showStatus(...autofillSummary(filled.length, suggested.length, unresolved.length, suggestionError));
     }
   } catch (err) {
     showStatus(err.message || 'An unexpected error occurred.', 'error');
@@ -431,6 +420,20 @@ async function handleFillApplication() {
 
   btn.disabled = false;
   btn.textContent = 'Fill Application';
+}
+
+// ai: claude-opus-5-5 | 2026-11-17
+function autofillSummary(filledCount, suggestedCount, unresolvedCount, suggestionError) {
+  if (filledCount + suggestedCount + unresolvedCount === 0) {
+    return ['No form fields found on this page (including any embedded frames).', 'error'];
+  }
+  const parts = [`✓ Filled ${filledCount}`];
+  if (suggestedCount > 0) parts.push(`AI suggested ${suggestedCount} (outlined in blue, please check)`);
+  if (unresolvedCount > 0) parts.push(`${unresolvedCount} need your review (outlined in orange)`);
+  let summary = `${parts.join(', ')}.`;
+  if (suggestionError) summary += ` AI suggestions failed: ${suggestionError}`;
+  const type = suggestionError ? 'warning' : suggestedCount + unresolvedCount > 0 ? 'info' : 'success';
+  return [summary, type];
 }
 
 // ─── Answers stashed on submit ────────────────────────────────────────────────

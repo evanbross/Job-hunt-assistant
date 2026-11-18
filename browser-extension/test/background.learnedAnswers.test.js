@@ -71,3 +71,34 @@ describe("answers stashed on submit", () => {
     expect(await send(background, { action: "getStashedAnswers" })).toEqual([]);
   });
 });
+
+// ai: claude-opus-5-5 | 2026-11-17
+describe("suggestAnswers", () => {
+  const QUESTIONS = [{ id: "q1", question: "Years of Python?", options: [] }];
+
+  it("asks the listener and passes back its suggestions", async () => {
+    const env = new MockChromeEnvironment();
+    env.fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ suggestions: [{ id: "q1", answer: "10" }], disabled: false }),
+    });
+    const background = await env.loadBackgroundScript();
+
+    const response = await send(background, { action: "suggestAnswers", questions: QUESTIONS, pageTitle: "Acme" });
+
+    expect(response).toEqual({ ok: true, suggestions: [{ id: "q1", answer: "10" }], disabled: false });
+    const [, init] = env.fetchMock.mock.calls.find(([u]) => String(u).endsWith("/application-answers/suggest"));
+    expect(JSON.parse(init.body)).toEqual({ questions: QUESTIONS, page_title: "Acme" });
+  });
+
+  it("passes back the listener's error", async () => {
+    const env = new MockChromeEnvironment();
+    env.fetchMock.mockResolvedValue({ ok: false, status: 502, json: async () => ({ error: "No API key configured." }) });
+    const background = await env.loadBackgroundScript();
+
+    const response = await send(background, { action: "suggestAnswers", questions: QUESTIONS, pageTitle: "" });
+
+    expect(response).toEqual({ ok: false, error: "No API key configured." });
+  });
+});

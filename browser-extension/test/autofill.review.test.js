@@ -186,3 +186,77 @@ describe("answer review panel", () => {
     });
   });
 });
+
+// ai: claude-opus-5-5 | 2026-11-17
+describe("AI suggestions for unfilled questions", () => {
+  function openWithSuggestions(suggestions) {
+    return openForm({
+      respondTo: (message) => {
+        if (message.action === "suggestAnswers") {
+          const byQuestion = Object.fromEntries(message.questions.map((q) => [q.question, q.id]));
+          return {
+            ok: true,
+            suggestions: Object.entries(suggestions)
+              .filter(([question]) => byQuestion[question])
+              .map(([question, answer]) => ({ id: byQuestion[question], answer })),
+          };
+        }
+        return message.action === "learnAnswers" ? { ok: true } : null;
+      },
+    });
+  }
+
+  it("sends only the still-empty questions, with each choice question's options", async () => {
+    const page = openWithSuggestions({});
+    page.document.getElementById("why").value = "Typed before filling";
+
+    await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    const request = page.sentMessages.find((m) => m.action === "suggestAnswers");
+    // Order follows control discovery, not the page.
+    expect(Object.fromEntries(request.questions.map((q) => [q.question, q.options]))).toEqual({
+      "What is your notice period?": [],
+      "Do you hold a security clearance?": ["Yes, active", "No"],
+      "Willing to work onsite?": ["Yes", "No"],
+    });
+  });
+
+  it("fills suggestions in blue and lists them unticked until checked", async () => {
+    const page = openWithSuggestions({
+      "What is your notice period?": "2 weeks",
+      "Do you hold a security clearance?": "No",
+    });
+
+    const results = await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    expect(page.document.getElementById("notice").value).toBe("2 weeks");
+    expect(page.document.getElementById("clearance").value).toBe("a2");
+    expect(page.document.getElementById("notice").style.outline).toBe("2px solid #3b82f6");
+    expect(results.suggested).toEqual(["What is your notice period?", "Do you hold a security clearance?"]);
+    expect(results.unresolved).toEqual(["Willing to work onsite?", "Why this company?"]);
+
+    await waitForPanelTitle(page, "Remember 2 answers for next time?");
+    panel(page).querySelector('[data-action="toggle"]').click();
+    expect(panel(page).querySelector(".item").textContent).toContain("AI suggested: 2 weeks");
+    expect([...panel(page).querySelectorAll('.item input[type="checkbox"]')].map((b) => b.checked)).toEqual([false, false]);
+
+    // Correcting a suggestion makes it a normal, ticked correction.
+    typeInto(page, "notice", "4 weeks");
+    await vi.waitFor(() =>
+      expect(panel(page).querySelector(".item").textContent).toContain("AI suggested: 2 weeksYou changed it to: 4 weeks")
+    );
+    expect(panel(page).querySelector('.item input[type="checkbox"]').checked).toBe(true);
+  });
+
+  it("reports a failed suggestion request without affecting what was filled", async () => {
+    const page = openForm({
+      respondTo: (message) => (message.action === "suggestAnswers" ? { ok: false, error: "No API key configured." } : null),
+    });
+
+    const results = await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    expect(results.suggestionError).toBe("No API key configured.");
+    expect(results.filled).toEqual(["City", "Email"]);
+    expect(results.suggested).toEqual([]);
+  });
+});

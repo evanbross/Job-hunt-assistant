@@ -53,6 +53,8 @@ from urllib.parse import parse_qs, urlparse
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 import config
+from backend.ai_provider import AIProviderError
+from backend.application_answer_suggestions import FormQuestion, SuggestionResult
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.security.client_ip import Network, resolve_client_address
 from backend.security.rate_limiter import (
@@ -76,6 +78,9 @@ GetAnswers = Callable[[int], list[dict[str, Any]]]
 # ai: claude-opus-5-5 | 2026-11-17 -- (user_id, [(question, answer), ...], platform) -> saved
 # rows; a batch so the autofill review panel saves everything you ticked in one go.
 LearnAnswers = Callable[[int, list[tuple[str, str]], str | None], list[dict[str, Any]]]
+# ai: claude-opus-5-5 | 2026-11-17 -- (user_id, questions, page_title) -> AI answer
+# suggestions for questions autofill couldn't fill itself.
+SuggestAnswers = Callable[[int, list[FormQuestion], str | None], SuggestionResult]
 # ai: claude-opus-5-5 | 2026-10-14 -- (user_id, page_url) -> staged LinkedIn
 # outreach draft for that profile page, or None.
 ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
@@ -103,6 +108,38 @@ class LearnAnswersRequest(BaseModel):
     platform: str | None = None
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+class SuggestQuestion(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    question: str = Field(max_length=1000)
+    options: list[str] = Field(default_factory=list, max_length=200)
+
+    @field_validator("question")
+    @classmethod
+    def _question_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("options")
+    @classmethod
+    def _clean_options(cls, value: list[str]) -> list[str]:
+        cleaned = [option.strip() for option in value if option.strip()]
+        if any(len(option) > 500 for option in cleaned):
+            raise ValueError("option text is too long")
+        return cleaned
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+class SuggestAnswersRequest(BaseModel):
+    """POST /application-answers/suggest body: the questions autofill left
+    unfilled on one page, with each choice question's options."""
+
+    questions: list[SuggestQuestion] = Field(min_length=1, max_length=40)
+    page_title: str | None = Field(default=None, max_length=500)
+
+
 # A wrong or revoked token is not a guessing risk (tokens are 256-bit) but it is load and
 # log noise, and a browser holding a revoked token retries forever. The failure limit is
 # per address, sized so one stale extension polling every few seconds does not lock out
@@ -110,6 +147,10 @@ class LearnAnswersRequest(BaseModel):
 AUTH_FAILURE_IP = Policy("listener-auth-failure-ip", 120, 900)
 # Per token: a runaway or abusive client cannot monopolise the listener for everyone else.
 TOKEN_REQUESTS = Policy("listener-token-requests", 600, 60)
+# ai: claude-opus-5-5 | 2026-11-17 -- per user: each request is one paid AI call. One
+# "Fill Application" click makes at most one (two for a two-step form), so 60 an hour
+# is far beyond real use and stops a stuck loop from running up the bill.
+AI_ANSWER_SUGGESTIONS = Policy("listener-ai-answer-suggestions", 60, 3600)
 
 # ai: claude-opus-5-5 | 2026-10-14
 # A plain mapping (tests, callers) or BaseHTTPRequestHandler.headers, which is
@@ -293,6 +334,7 @@ class JobImportListener:
         get_resume_file: GetResumeFile | None = None,
         get_answers: GetAnswers | None = None,
         learn_answers: LearnAnswers | None = None,
+        suggest_answers: SuggestAnswers | None = None,
         claim_outreach_draft: ClaimOutreachDraft | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
@@ -310,6 +352,7 @@ class JobImportListener:
         self._get_resume_file = get_resume_file
         self._get_answers = get_answers
         self._learn_answers = learn_answers
+        self._suggest_answers = suggest_answers
         self._claim_outreach_draft = claim_outreach_draft
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
@@ -333,6 +376,7 @@ class JobImportListener:
         get_resume_file = self._get_resume_file
         get_answers = self._get_answers
         learn_answers = self._learn_answers
+        suggest_answers = self._suggest_answers
         claim_outreach_draft = self._claim_outreach_draft
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
@@ -524,6 +568,64 @@ class JobImportListener:
                             {"error": "Could not save answers."},
                             HTTPStatus.INTERNAL_SERVER_ERROR,
                         )
+                    return
+
+                # ai: claude-opus-5-5 | 2026-11-17
+                if path == "/application-answers/suggest":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        suggest_request = SuggestAnswersRequest.model_validate(payload)
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "questions must be a non-empty list of {id, question, options}."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if suggest_answers is None:
+                        self._send_json(
+                            {"error": "AI suggestions unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    over_rate = limiter.hit(AI_ANSWER_SUGGESTIONS, str(user_id))
+                    if over_rate.blocked:
+                        self._send_throttled(over_rate)
+                        return
+                    questions = [
+                        FormQuestion(id=q.id, question=q.question, options=tuple(q.options))
+                        for q in suggest_request.questions
+                    ]
+                    try:
+                        result = suggest_answers(user_id, questions, suggest_request.page_title)
+                    except AIProviderError as exc:
+                        # AIProviderError messages are written for the user
+                        # ("No API key configured", the provider's own reason).
+                        logger.warning("AI answer suggestions failed: %s", exc)
+                        self._send_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+                        return
+                    except ValueError as exc:
+                        logger.warning("AI answer suggestions reply unusable: %s", exc)
+                        self._send_json(
+                            {"error": "The AI reply couldn't be read."}, HTTPStatus.BAD_GATEWAY
+                        )
+                        return
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("AI answer suggestions failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not get AI suggestions."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                        return
+                    self._send_json(
+                        {
+                            "suggestions": [
+                                {"id": s.id, "answer": s.answer} for s in result.suggestions
+                            ],
+                            "disabled": result.disabled,
+                        }
+                    )
                     return
 
                 # ai: claude-opus-5-5 | 2026-10-14
@@ -752,6 +854,7 @@ def start_job_import_listener(
     get_resume_file: GetResumeFile | None = None,
     get_answers: GetAnswers | None = None,
     learn_answers: LearnAnswers | None = None,
+    suggest_answers: SuggestAnswers | None = None,
     claim_outreach_draft: ClaimOutreachDraft | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
@@ -787,6 +890,7 @@ def start_job_import_listener(
             get_resume_file=get_resume_file,
             get_answers=get_answers,
             learn_answers=learn_answers,
+            suggest_answers=suggest_answers,
             claim_outreach_draft=claim_outreach_draft,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,

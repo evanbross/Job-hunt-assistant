@@ -1040,31 +1040,38 @@
   // the DOM. This instead reads whatever's already rendered and picks the
   // best match via bestMatchingOption, so it tolerates ATS-specific wording
   // differences instead of requiring an exact one.
+  // ai: claude-opus-5-5 | 2026-11-17 -- lifted out of fillComboboxBestMatch so
+  // the AI-suggestion step can read a dropdown's options too (see
+  // readComboboxOptionTexts).
+  async function openComboboxAndReadOptions(el) {
+    const shell = el.closest('[class*="select-shell"]');
+    const rect0 = el.getBoundingClientRect();
+    const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
+    el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
+    el.dispatchEvent(new MouseEvent('mouseup', openEventInit));
+    el.dispatchEvent(new MouseEvent('click', openEventInit));
+    el.focus();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const listboxId = el.getAttribute('aria-controls');
+    const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
+    return listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
+  }
+
+  // ai: claude-sonnet-5 | 2026-10-08
+  // Confirmed live on Greenhouse (Antora Energy posting): the open-click
+  // sequence dropped silently the first time it ran against "Please
+  // identify your race" -- the field conditionally mounted by
+  // runAutofill's second discovery pass moments earlier, same
+  // freshly-mounted-node hydration race documented on clickYesNo above.
+  // Retry the open once before giving up, same as that function does.
+  async function openComboboxOptions(el) {
+    const options = await openComboboxAndReadOptions(el);
+    return options.length > 0 ? options : openComboboxAndReadOptions(el);
+  }
+
   async function fillComboboxBestMatch(el, candidates, _platform) {
     const shell = el.closest('[class*="select-shell"]');
-
-    const openAndReadOptions = async () => {
-      const rect0 = el.getBoundingClientRect();
-      const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
-      el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
-      el.dispatchEvent(new MouseEvent('mouseup', openEventInit));
-      el.dispatchEvent(new MouseEvent('click', openEventInit));
-      el.focus();
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      const listboxId = el.getAttribute('aria-controls');
-      const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
-      return listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
-    };
-
-    // ai: claude-sonnet-5 | 2026-10-08
-    // Confirmed live on Greenhouse (Antora Energy posting): the open-click
-    // sequence dropped silently the first time it ran against "Please
-    // identify your race" -- the field conditionally mounted by
-    // runAutofill's second discovery pass moments earlier, same
-    // freshly-mounted-node hydration race documented on clickYesNo above.
-    // Retry the open once before giving up, same as that function does.
-    let options = await openAndReadOptions();
-    if (options.length === 0) options = await openAndReadOptions();
+    const options = await openComboboxOptions(el);
     if (options.length === 0) return false;
 
     const option = bestMatchingOption(options, candidates);
@@ -1259,7 +1266,9 @@
   // new baseline. A control autofill couldn't fill keeps the baseline it was
   // first seen with -- a second "Fill Application" click mustn't turn what
   // the person already typed into the baseline and lose it.
-  function reviewTrack(control, filledByUs) {
+  // suggested: the value came from the AI step (see suggestForUnresolved),
+  // so it is offered for saving even unchanged, but unticked.
+  function reviewTrack(control, filledByUs, { suggested = false } = {}) {
     if (control.type === 'file') return;
     const question = cleanQuestion(control.label);
     if (!question) return;
@@ -1271,6 +1280,7 @@
       question,
       baseline: value,
       filledByUs,
+      suggested,
       current: value,
       checked: null, // null until the person toggles it; see isChecked
       savedValue: null,
@@ -1278,8 +1288,14 @@
     });
   }
 
+  function isUnchangedSuggestion(entry) {
+    return entry.suggested && sameAnswer(entry.current, entry.baseline);
+  }
+
+  // An AI suggestion left as-is starts unticked: saving it would make an
+  // unchecked guess permanent. Ticking it is the person vouching for it.
   function isChecked(entry) {
-    return entry.checked ?? entry.current.length <= LONG_ANSWER_CHARS;
+    return entry.checked ?? (!isUnchangedSuggestion(entry) && entry.current.length <= LONG_ANSWER_CHARS);
   }
 
   // Entries with something worth saving, one per question (a re-rendered
@@ -1292,7 +1308,7 @@
       // doesn't lose the step-1 answers.
       if (entry.control.el.isConnected) entry.current = readControlValue(entry.control);
       const current = entry.current;
-      if (!current || sameAnswer(current, entry.baseline)) continue;
+      if (!current || (sameAnswer(current, entry.baseline) && !entry.suggested)) continue;
       if (entry.savedValue !== null && sameAnswer(current, entry.savedValue)) continue;
       if (entry.dismissedValue !== null && sameAnswer(current, entry.dismissedValue)) continue;
       const known = findExactBankAnswer(entry.question, review.answers);
@@ -1472,8 +1488,12 @@
         box.addEventListener('change', () => { entry.checked = box.checked; renderReviewPanel(); });
         const body = createNode('div');
         body.append(createNode('div', 'q', entry.question));
-        if (entry.filledByUs && entry.baseline) {
-          body.append(createNode('div', 'was', `Filled: ${truncate(entry.baseline)}`));
+        if (isUnchangedSuggestion(entry)) {
+          body.append(createNode('div', 'now', `AI suggested: ${truncate(entry.current)}`));
+          body.append(createNode('div', 'note', "Tick it if it's right."));
+        } else if (entry.filledByUs && entry.baseline) {
+          const filledBy = entry.suggested ? 'AI suggested' : 'Filled';
+          body.append(createNode('div', 'was', `${filledBy}: ${truncate(entry.baseline)}`));
           body.append(createNode('div', 'now', `You changed it to: ${truncate(entry.current)}`));
         } else {
           body.append(createNode('div', 'now', truncate(entry.current)));
@@ -1500,6 +1520,90 @@
       panel.append(createNode('div', `status ${review.status.error ? 'error' : 'ok'}`, review.status.text));
       if (!review.status.error) review.status = null; // shown once, gone on the next refresh
     }
+  }
+
+  // ─── AI suggestions for what's still unfilled ──────────────────────────────
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Last resort after the profile rules and saved answers: the questions still
+  // empty go to the app (POST /application-answers/suggest via background.js),
+  // which asks the person's own AI provider to answer from what they've told
+  // the app, or leave it blank. Suggestions get a blue outline rather than
+  // green so they read as "check this", and they appear unticked in the review
+  // panel. The app drops voluntary self-ID, consent and signature questions
+  // before the model sees them, and can be switched off on the Application
+  // Profile tab.
+
+  const MAX_AI_QUESTIONS = 40; // the listener's limit per request
+  const MAX_AI_OPTIONS = 200;
+
+  function markSuggested(el) {
+    el.style.outline = '2px solid #3b82f6';
+    el.style.outlineOffset = '2px';
+  }
+
+  // The choices a question offers, so the model answers with one of them.
+  // Empty means free text (including a search-as-you-type dropdown, whose
+  // options only appear after typing).
+  async function readControlOptions(control) {
+    switch (control.type) {
+      case 'select':
+        return [...control.el.options].filter((o) => o.value !== '').map((o) => o.textContent.trim()).filter(Boolean);
+      case 'radio-group':
+        return control.radios.map(optionLabel).filter(Boolean);
+      case 'checkbox-group':
+        return control.checkboxes.map(optionLabel).filter(Boolean);
+      case 'yesno':
+        return control.buttons.map((b) => b.textContent.trim()).filter(Boolean);
+      case 'combobox': {
+        const options = (await openComboboxOptions(control.el)).map((o) => o.textContent.trim()).filter(Boolean);
+        control.el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+        control.el.blur();
+        return options;
+      }
+      default:
+        return [];
+    }
+  }
+
+  // Returns { suggested: [labels filled], error }.
+  async function suggestForUnresolved(controls, platform) {
+    const askable = controls
+      .filter((control) => control.type !== 'file' && cleanQuestion(control.label) && !readControlValue(control))
+      .slice(0, MAX_AI_QUESTIONS);
+    if (askable.length === 0) return { suggested: [], error: null };
+
+    const byId = new Map();
+    const questions = [];
+    for (const [index, control] of askable.entries()) {
+      const id = `q${index + 1}`;
+      byId.set(id, control);
+      const options = (await readControlOptions(control)).slice(0, MAX_AI_OPTIONS);
+      questions.push({ id, question: cleanQuestion(control.label), options });
+    }
+
+    let response;
+    try {
+      response = await chrome.runtime.sendMessage({ action: 'suggestAnswers', questions, pageTitle: document.title });
+    } catch (err) {
+      response = { ok: false, error: String(err?.message || err) };
+    }
+    if (!response?.ok) return { suggested: [], error: response?.error || 'AI suggestions failed.' };
+
+    const suggested = [];
+    for (const { id, answer } of response.suggestions || []) {
+      const control = byId.get(id);
+      if (!control) continue;
+      try {
+        if (await fillWithAnswer(control, answer, platform)) {
+          markSuggested(control.el);
+          reviewTrack(control, true, { suggested: true });
+          suggested.push(control.label);
+        }
+      } catch (err) {
+        console.warn('[JHA] filling an AI suggestion failed', control.label, err);
+      }
+    }
+    return { suggested, error: null };
   }
 
   // ai: claude-sonnet-5 | 2026-10-08
@@ -1738,6 +1842,7 @@
     // second pass only touches genuinely new controls instead of
     // re-clicking ones pass one already filled.
     const processedEls = new Set();
+    const unfilledControls = []; // ai: claude-opus-5-5 | 2026-11-17 -- for suggestForUnresolved
     async function processPass() {
       const newControls = discoverControls().filter(
         (control) => !controlElements(control).every((el) => processedEls.has(el))
@@ -1746,7 +1851,9 @@
         controlElements(control).forEach((el) => processedEls.add(el));
         const filledBefore = filled.length;
         await fillControl(control);
-        reviewTrack(control, filled.length > filledBefore); // ai: claude-opus-5-5 | 2026-11-17
+        const filledIt = filled.length > filledBefore;
+        reviewTrack(control, filledIt); // ai: claude-opus-5-5 | 2026-11-17
+        if (!filledIt) unfilledControls.push(control);
       }
       return newControls.length > 0;
     }
@@ -1759,9 +1866,17 @@
     // reveal and cheap to extend if that's ever confirmed needed.
     await processPass();
     await processPass();
-    renderReviewPanel(); // ai: claude-opus-5-5 | 2026-11-17
 
-    return { filled, unresolved };
+    // ai: claude-opus-5-5 | 2026-11-17
+    const ai = await suggestForUnresolved(unfilledControls, platform);
+    const stillUnresolved = [...unresolved];
+    for (const label of ai.suggested) {
+      const at = stillUnresolved.indexOf(label);
+      if (at >= 0) stillUnresolved.splice(at, 1);
+    }
+    renderReviewPanel();
+
+    return { filled, unresolved: stillUnresolved, suggested: ai.suggested, suggestionError: ai.error };
   }
 
   function base64ToUint8Array(base64) {

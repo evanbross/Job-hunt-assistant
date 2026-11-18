@@ -32,6 +32,7 @@ import type { CSSProperties } from "react";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
 import type { ApplicationAnswer, ApplicationProfile } from "../types/applicationProfile.ts";
 import type { ApiErrorBody } from "../types/common.ts";
+import type { AppConfigResponse } from "../types/settings.ts";
 
 const titleStyle: CSSProperties = { fontSize: "18px", fontWeight: 700, lineHeight: 1.2 };
 const summaryStyle: CSSProperties = { color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" };
@@ -163,6 +164,66 @@ function TriStateSelect({ value, onChange, yesLabel, noLabel }: TriStateSelectPr
       <option value="yes">{yesLabel}</option>
       <option value="no">{noLabel}</option>
     </select>
+  );
+}
+
+// ai: claude-opus-5-5 | 2026-11-17
+// The user setting backend/application_answer_suggestions.py checks before
+// each AI call (registry key autofill_ai_suggestions, default on). Stored as
+// a string like every generic user setting in GET/PUT /api/config.
+const AI_SUGGESTIONS_SETTING = "autofill_ai_suggestions";
+
+function AiSuggestionsToggle() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Failed to load (${res.status})`))))
+      .then((cfg: AppConfigResponse) => setEnabled(String(cfg[AI_SUGGESTIONS_SETTING] ?? "true") !== "false"))
+      .catch(() => setEnabled(null));
+  }, []);
+
+  const toggle = async (next: boolean) => {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ [AI_SUGGESTIONS_SETTING]: String(next) }),
+      });
+      if (!res.ok) {
+        const data: ApiErrorBody = await res.json().catch(() => ({}));
+        window.alert(data.error || `Save failed: ${res.status}`);
+        return;
+      }
+      setEnabled(next);
+    } catch (e) {
+      window.alert(describeFetchError(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (enabled === null) return null;
+  return (
+    <label style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "13px", marginBottom: "12px" }}>
+      <input
+        type="checkbox"
+        checked={enabled}
+        disabled={saving}
+        onChange={(e) => toggle(e.target.checked)}
+        style={{ marginTop: "2px" }}
+      />
+      <span>
+        Let AI suggest answers to questions the extension doesn&apos;t recognize
+        <span style={{ display: "block", color: "var(--text-muted)", fontSize: "12px" }}>
+          Uses your AI provider (one request per Fill Application) and only what you&apos;ve told
+          the app. Suggestions are outlined in blue to check, and never cover gender, race,
+          veteran or disability questions, consent boxes or signatures.
+        </span>
+      </span>
+    </label>
   );
 }
 
@@ -710,6 +771,7 @@ export default function ApplicationProfilePanel() {
           alike. An answer saved for an exact question wins over the profile above, so it also
           holds your corrections.
         </p>
+        <AiSuggestionsToggle />
 
         {loadingAnswers && <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Loading…</p>}
         {answersError && <p style={{ fontSize: "13px", color: "var(--red, #e05252)" }}>{answersError}</p>}

@@ -329,6 +329,15 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Flag a lead as quiet after (days)", group="Leads",
         help_text="A lead with nothing logged for this many days is highlighted on the Leads tab.",
     ),
+    # ai: claude-opus-5-5 | 2026-11-17 -- read by backend/application_answer_suggestions.py;
+    # toggled from the Application Profile tab. Each suggestion run is one AI call.
+    "autofill_ai_suggestions": SettingSpec(
+        scope="user", is_secret=False, default="true",
+        label="AI suggestions for unrecognized questions", group="Application Profile",
+        input_type="checkbox",
+        help_text="When the extension can't fill a question from your profile or saved answers, "
+        "ask your AI provider for a suggestion from what you've told the app.",
+    ),
 }
 
 # Keys an admin may write via PUT /api/settings/system.

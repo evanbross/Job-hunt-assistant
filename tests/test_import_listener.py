@@ -41,9 +41,16 @@ from websockets.sync.client import connect
 
 import backend.queue_websocket as queue_websocket
 import backend.scanning.import_listener as import_listener
+from backend.ai_provider import AIProviderError
+from backend.application_answer_suggestions import (
+    AnswerSuggestion,
+    FormQuestion,
+    SuggestionResult,
+)
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
 from backend.queue_websocket import QueueWebSocketServer
 from backend.scanning.import_listener import (
+    AI_ANSWER_SUGGESTIONS,
     ImportListenerRequestParser,
     JobImportListener,
     bearer_token,
@@ -210,6 +217,8 @@ def test_listener_parser_rejects_large_body() -> None:
 class _Recorder:
     def __init__(self) -> None:
         self.learned: list[tuple[int, list[tuple[str, str]], str | None]] = []
+        self.suggested: list[tuple[int, list[FormQuestion], str | None]] = []  # ai: claude-opus-5-5 | 2026-11-17
+        self.suggest_failure: Exception | None = None
         self.captured: list[tuple[int, dict[str, Any]]] = []
         self.claimed_for: list[int] = []
         self.outreach_claims: list[tuple[int, str]] = []
@@ -237,6 +246,17 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             {"id": 99 + i, "question_text": q, "answer_text": a, "platform": platform}
             for i, (q, a) in enumerate(answers)
         ]
+
+    # ai: claude-opus-5-5 | 2026-11-17
+    def fake_suggest_answers(
+        user_id: int, questions: list[FormQuestion], page_title: str | None
+    ) -> SuggestionResult:
+        recorder.suggested.append((user_id, questions, page_title))
+        if recorder.suggest_failure is not None:
+            raise recorder.suggest_failure
+        return SuggestionResult(
+            suggestions=[AnswerSuggestion(id=q.id, answer=f"answer-for-{user_id}") for q in questions]
+        )
 
     def fake_submit(user_id: int, body: dict[str, Any]) -> tuple[dict[str, Any], int]:
         recorder.captured.append((user_id, body))
@@ -266,6 +286,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             {"id": 1, "question_text": "Security clearance?", "answer_text": f"answer-{user_id}"}
         ],
         learn_answers=fake_learn_answers,
+        suggest_answers=fake_suggest_answers,
         claim_outreach_draft=fake_claim_outreach_draft,
         ws_tickets=tickets,
     )
@@ -352,6 +373,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/import"),
     ("POST", "/capture"),
     ("POST", "/application-answers"),
+    ("POST", "/application-answers/suggest"),
     ("POST", "/ws-ticket"),
     ("POST", "/linkedin-outreach/claim"),
 ]
@@ -471,6 +493,79 @@ def test_listener_learn_answers_rejects_invalid_batches(
     status, _, _ = _post_json(listener, "/application-answers", payload)
     assert status == HTTPStatus.BAD_REQUEST
     assert recorder.learned == []
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+_SUGGEST_BODY = {
+    "questions": [
+        {"id": "q1", "question": " Years of Python? ", "options": []},
+        {"id": "q2", "question": "Start within a month?", "options": ["Yes", " No ", ""]},
+    ],
+    "page_title": "Acme - Backend Engineer",
+}
+
+
+def test_listener_suggest_answers_is_for_the_caller(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(listener, "/application-answers/suggest", _SUGGEST_BODY, token=USER_B_TOKEN)
+
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {
+        "suggestions": [
+            {"id": "q1", "answer": f"answer-for-{USER_B}"},
+            {"id": "q2", "answer": f"answer-for-{USER_B}"},
+        ],
+        "disabled": False,
+    }
+    [(user_id, questions, page_title)] = recorder.suggested
+    assert user_id == USER_B
+    assert questions == [
+        FormQuestion(id="q1", question="Years of Python?", options=()),
+        FormQuestion(id="q2", question="Start within a month?", options=("Yes", "No")),
+    ]
+    assert page_title == "Acme - Backend Engineer"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"questions": []},
+        {"questions": [{"id": "q1", "question": "  "}]},
+        {"questions": [{"id": "", "question": "Q?"}]},
+        {"questions": [{"id": f"q{i}", "question": "Q?"} for i in range(41)]},
+    ],
+)
+def test_listener_suggest_answers_rejects_invalid_requests(
+    running_listener: Any, payload: dict[str, Any]
+) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(listener, "/application-answers/suggest", payload)
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.suggested == []
+
+
+def test_listener_suggest_answers_reports_the_provider_error(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    recorder.suggest_failure = AIProviderError("No Anthropic API key is configured.")
+
+    status, body, _ = _post_json(listener, "/application-answers/suggest", _SUGGEST_BODY)
+
+    assert status == HTTPStatus.BAD_GATEWAY
+    assert json.loads(body) == {"error": "No Anthropic API key is configured."}
+
+
+def test_listener_suggest_answers_is_rate_limited_per_user(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    statuses = [
+        _post_json(listener, "/application-answers/suggest", _SUGGEST_BODY, token=USER_B_TOKEN)[0]
+        for _ in range(AI_ANSWER_SUGGESTIONS.limit + 1)
+    ]
+
+    assert statuses[:-1] == [HTTPStatus.OK] * AI_ANSWER_SUGGESTIONS.limit
+    assert statuses[-1] == HTTPStatus.TOO_MANY_REQUESTS
+    assert len(recorder.suggested) == AI_ANSWER_SUGGESTIONS.limit
+    # Another user's allowance is separate.
+    assert _post_json(listener, "/application-answers/suggest", _SUGGEST_BODY)[0] == HTTPStatus.OK
 
 
 # ai: claude-opus-5-5 | 2026-10-14
