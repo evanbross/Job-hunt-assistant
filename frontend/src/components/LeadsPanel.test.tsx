@@ -35,6 +35,8 @@ function lead(overrides: Partial<LeadSummary> & { id: number; company: string })
     last_activity_date: "2026-11-01",
     idle_days: 2,
     is_stale: false,
+    follow_up_due: false,
+    needs_attention: false,
     ...overrides,
   };
 }
@@ -46,8 +48,11 @@ function stage(key: string, label: string, isTerminal = false): ApplicationStage
 const BOARD: LeadsBoard = {
   leads: [
     lead({ id: 1, company: "Fresh Co" }),
-    lead({ id: 2, company: "Quiet Co", is_stale: true, idle_days: 14, last_activity_date: "2026-10-20" }),
-    lead({ id: 3, company: "Due Co", next_follow_up: "2000-01-01" }),
+    lead({ id: 2, company: "Quiet Co", is_stale: true, needs_attention: true, idle_days: 14, last_activity_date: "2026-10-20" }),
+    lead({ id: 3, company: "Due Co", next_follow_up: "2026-11-18", follow_up_due: true, needs_attention: true }),
+    // ai: claude-opus-5-5 | 2026-11-18 -- a date the browser would call past, but the
+    // server (on the account's own date) says isn't due: the page follows the server.
+    lead({ id: 5, company: "Later Co", next_follow_up: "2000-01-01" }),
     lead({ id: 4, company: "Done Co", stage: "withdrew", is_closed: true }),
   ],
   open_conversations: [
@@ -101,10 +106,26 @@ describe("LeadsPanel", () => {
   it("shows open leads by default, with stage labels and the stale highlight", async () => {
     render(<LeadsPanel />);
     expect(await screen.findByText("Fresh Co")).toBeInTheDocument();
-    expect(rowCompanies()).toEqual(["Fresh Co", "Quiet Co", "Due Co"]);
-    expect((await screen.findAllByText("Recruiter Screen")).length).toBe(3);
+    expect(rowCompanies()).toEqual(["Fresh Co", "Quiet Co", "Due Co", "Later Co"]);
+    expect((await screen.findAllByText("Recruiter Screen")).length).toBe(4);
     expect(screen.getByText("Quiet Co").closest("tr")).toHaveClass("stale");
-    expect(screen.getByRole("button", { name: "Open (3)" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Open (4)" })).toHaveAttribute("aria-pressed", "true");
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-18
+  it("marks a follow-up due only where the server says so", async () => {
+    render(<LeadsPanel />);
+    await screen.findByText("Fresh Co");
+    expect(within(screen.getByText("Due Co").closest("tr")!).getByText("due")).toBeInTheDocument();
+    expect(within(screen.getByText("Later Co").closest("tr")!).queryByText("due")).not.toBeInTheDocument();
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-18
+  it("reports the needs-attention count for the nav badge each time the board loads", async () => {
+    const onAttentionCountChange = vi.fn();
+    render(<LeadsPanel onAttentionCountChange={onAttentionCountChange} />);
+    await screen.findByText("Fresh Co");
+    expect(onAttentionCountChange).toHaveBeenLastCalledWith(2);
   });
 
   it("filters to leads needing attention and to closed leads", async () => {

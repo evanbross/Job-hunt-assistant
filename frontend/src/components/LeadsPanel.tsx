@@ -16,7 +16,7 @@ import type { Contact, ContactsListResponse } from "../types/contacts.ts";
 import type { LeadSummary, LeadsBoard } from "../types/leads.ts";
 import { CHANNEL_LABELS, ORIGIN_LABELS } from "../types/leads.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
-import { getJson, loadStageCatalog, localToday, needsAttention, stageLabel } from "./leads/leadsShared.ts";
+import { getJson, loadStageCatalog, stageLabel } from "./leads/leadsShared.ts";
 import SuggestedLeads from "./leads/SuggestedLeads.tsx";
 
 // Lazy: these carry the rich-text editor, which the board itself doesn't need.
@@ -33,14 +33,21 @@ const SCOPE_LABELS: Record<Scope, string> = {
   all: "All",
 };
 
-function inScope(lead: LeadSummary, scope: Scope, today: string): boolean {
+function inScope(lead: LeadSummary, scope: Scope): boolean {
   if (scope === "all") return true;
   if (scope === "closed") return lead.is_closed;
-  if (scope === "attention") return needsAttention(lead, today);
+  if (scope === "attention") return lead.needs_attention; // ai: claude-opus-5-5 | 2026-11-18
   return !lead.is_closed;
 }
 
-export default function LeadsPanel() {
+// ai: claude-opus-5-5 | 2026-11-18
+interface LeadsPanelProps {
+  /** Told the "needs attention" count each time the board loads, so the nav badge
+   * follows edits made here without a separate request. */
+  onAttentionCountChange?: (count: number) => void;
+}
+
+export default function LeadsPanel({ onAttentionCountChange }: LeadsPanelProps = {}) {
   const [board, setBoard] = useState<LeadsBoard | null>(null);
   const [catalog, setCatalog] = useState<ApplicationStageStatus[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -81,28 +88,32 @@ export default function LeadsPanel() {
     };
   }, [loadBoard, loadContacts]);
 
-  const today = localToday();
   const visibleLeads = useMemo(() => {
     const needle = search.trim().toLowerCase();
     return (board?.leads || []).filter(
       (lead) =>
-        inScope(lead, scope, today) &&
+        inScope(lead, scope) &&
         (!needle ||
           `${lead.company || ""} ${lead.job_title || ""} ${lead.primary_contact_name || ""} ${lead.primary_contact_company || ""}`
             .toLowerCase()
             .includes(needle)),
     );
-  }, [board, scope, search, today]);
+  }, [board, scope, search]);
 
   const counts = useMemo(() => {
     const leads = board?.leads || [];
     return {
       active: leads.filter((l) => !l.is_closed).length,
-      attention: leads.filter((l) => needsAttention(l, today)).length,
+      attention: leads.filter((l) => l.needs_attention).length,
       closed: leads.filter((l) => l.is_closed).length,
       all: leads.length,
     } satisfies Record<Scope, number>;
-  }, [board, today]);
+  }, [board]);
+
+  // ai: claude-opus-5-5 | 2026-11-18
+  useEffect(() => {
+    if (board) onAttentionCountChange?.(counts.attention);
+  }, [board, counts.attention, onAttentionCountChange]);
 
   const refreshAll = () => {
     void loadBoard();
@@ -197,7 +208,7 @@ export default function LeadsPanel() {
                 </td>
                 <td>
                   {lead.next_follow_up ? formatLocalDate(lead.next_follow_up) : "—"}
-                  {!lead.is_closed && lead.next_follow_up !== null && lead.next_follow_up <= today && (
+                  {lead.follow_up_due && (
                     <span className="lead-sub" style={{ color: "var(--red)" }}>due</span>
                   )}
                 </td>

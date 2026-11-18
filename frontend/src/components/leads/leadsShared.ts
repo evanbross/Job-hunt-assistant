@@ -10,7 +10,7 @@
 // ai: claude-opus-5-5 | 2026-11-11
 // Helpers shared by the Leads tab's components.
 import type { ApplicationStageStatus } from "../../types/applications.ts";
-import type { CallNotesProposal, LeadSummary } from "../../types/leads.ts";
+import type { CallNotesProposal } from "../../types/leads.ts";
 import { apiFetch } from "../../utils/apiClient.ts";
 import { responseErrorText } from "../../utils/contactsUtils.ts";
 
@@ -34,11 +34,6 @@ export async function getJson<T>(url: string): Promise<T> {
 
 export async function loadStageCatalog(): Promise<ApplicationStageStatus[]> {
   return getJson<ApplicationStageStatus[]>("/api/applications/stage-statuses");
-}
-
-/** Open, and either gone quiet or due for a follow-up today or earlier. */
-export function needsAttention(lead: LeadSummary, today: string): boolean {
-  return !lead.is_closed && (lead.is_stale || (lead.next_follow_up !== null && lead.next_follow_up <= today));
 }
 
 export interface NewContactDraft {

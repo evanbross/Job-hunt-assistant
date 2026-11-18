@@ -329,6 +329,24 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Flag a lead as quiet after (days)", group="Leads",
         help_text="A lead with nothing logged for this many days is highlighted on the Leads tab.",
     ),
+    # ai: claude-opus-5-5 | 2026-11-18 -- read by backend/leads/follow_up_digest.py
+    "lead_follow_up_digest_enabled": SettingSpec(
+        scope="user", is_secret=False, default="false",
+        label="Daily follow-up email", group="Leads", input_type="checkbox",
+        help_text="Each morning, email the open leads whose follow-up date has come or that have "
+        "gone quiet. Nothing is sent on a day with none.",
+    ),
+    "lead_follow_up_digest_time": SettingSpec(
+        scope="user", is_secret=False, default=config.DEFAULT_LEAD_FOLLOW_UP_DIGEST_TIME,
+        label="Follow-up email time", group="Leads", placeholder="08:00",
+        help_text="24-hour HH:MM in your timezone (Career Profile > Your Timezone; UTC if not set).",
+    ),
+    "lead_follow_up_digest_notify_email": SettingSpec(
+        scope="user", is_secret=False, default="",
+        label="Follow-up email address", group="Leads", placeholder="you@example.com",
+        help_text="Optional. Defaults to the email address on your account.",
+        desktop_only=True,  # see career_scan_digest_notify_email
+    ),
     # ai: claude-opus-5-5 | 2026-11-17 -- read by backend/application_answer_suggestions.py;
     # toggled from the Application Profile tab. Each suggestion run is one AI call.
     "autofill_ai_suggestions": SettingSpec(

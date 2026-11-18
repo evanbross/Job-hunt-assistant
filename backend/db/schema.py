@@ -2615,6 +2615,19 @@ def create_tables(conn: Any) -> None:
         CREATE INDEX IF NOT EXISTS idx_lead_suggestions_user_status
             ON lead_suggestions (user_id, status, last_message_at DESC)
         """,
+        # ai: claude-opus-5-5 | 2026-11-18
+        # Recruiter lead tracking, phase 3: one row per (account, local date) whose
+        # daily follow-up email was claimed (backend/leads/follow_up_digest.py). The
+        # UNIQUE constraint is what makes claim() atomic across workers.
+        """
+        CREATE TABLE IF NOT EXISTS lead_follow_up_digest_log (
+            id          SERIAL PRIMARY KEY,
+            user_id     INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            digest_date TEXT NOT NULL,
+            sent_at     TEXT NOT NULL,
+            CONSTRAINT lead_follow_up_digest_log_user_date_key UNIQUE (user_id, digest_date)
+        )
+        """,
         # ai: claude-opus-5-5 | 2026-11-15
         # Repeat sightings of a tracked job (backend/db/repositories/job_sightings.py):
         # a capture naming a posting already in jobs records a row here instead of

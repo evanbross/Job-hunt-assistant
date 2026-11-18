@@ -68,6 +68,10 @@ export interface LeadSummary {
   last_activity_date: string | null;
   idle_days: number | null;
   is_stale: boolean;
+  // ai: claude-opus-5-5 | 2026-11-18 -- decided server-side on the account's own date
+  // (LeadService._lead_rows), the same rule the badge and the follow-up email use.
+  follow_up_due: boolean;
+  needs_attention: boolean;
 }
 
 /** A conversation with someone that isn't tied to a role yet. */
@@ -300,3 +304,9 @@ export const SUGGESTION_TAB_LABELS: Record<SuggestionTab, string> = {
   not_recruiter: "Ruled out",
   dismissed: "Dismissed",
 };
+
+// ai: claude-opus-5-5 | 2026-11-18
+/** GET /api/leads/attention: the Leads tab badge's count. */
+export interface LeadsAttentionResponse {
+  count: number;
+}

@@ -313,6 +313,12 @@ class ICareerScanDigestLogRepository(Protocol):
     def claim(self, user_id: int, report_date: str) -> bool: ...
 
 
+# ai: claude-opus-5-5 | 2026-11-18
+@runtime_checkable
+class ILeadFollowUpDigestLogRepository(Protocol):
+    def claim(self, user_id: int, digest_date: str) -> bool: ...
+
+
 # ai: claude-sonnet-5 | 2026-09-27
 @runtime_checkable
 class IAuditLogRepository(Protocol):

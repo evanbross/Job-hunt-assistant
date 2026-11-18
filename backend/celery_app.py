@@ -85,6 +85,7 @@ celery_app = Celery(
         "routes.jd_health_check",
         "routes.jobs",  # ai: claude-opus-5-5 | 2026-11-06
         "routes.lead_suggestions",  # ai: claude-opus-5-5 | 2026-11-11
+        "backend.leads.follow_up_digest",  # ai: claude-opus-5-5 | 2026-11-18
         "backend.security.data_lifecycle",
         "backend.db.scheduled_backup",  # ai: claude-opus-5-5 | 2026-11-07
         "backend.queue_depth",  # ai: claude-opus-5-5 | 2026-11-08
@@ -114,6 +115,10 @@ QUEUE_DEPTH_CHECK_INTERVAL = timedelta(minutes=5)
 # How often beat asks "is a JD health check due" per account. The run itself happens at
 # each account's own configured time; this only bounds how late it can start.
 JD_HEALTH_CHECK_TICK_INTERVAL = timedelta(minutes=15)
+# ai: claude-opus-5-5 | 2026-11-18 -- each account's follow-up email goes out at its own
+# local time; this only bounds how late after that time it can be sent.
+LEAD_FOLLOW_UP_DIGEST_TICK = "backend.leads.follow_up_digest.lead_follow_up_digest_tick"
+LEAD_FOLLOW_UP_DIGEST_TICK_INTERVAL = timedelta(minutes=15)
 
 # ai: claude-sonnet-5 | 2026-09-26 -- a rediss:// URL means TLS; verify the server
 # certificate against REDIS_TLS_CA_FILE (see backend/security/redis_tls.py).
@@ -162,6 +167,10 @@ celery_app.conf.update(
         "queue-depth-check": {  # ai: claude-opus-5-5 | 2026-11-08
             "task": QUEUE_DEPTH_CHECK,
             "schedule": QUEUE_DEPTH_CHECK_INTERVAL,
+        },
+        "lead-follow-up-digest": {  # ai: claude-opus-5-5 | 2026-11-18
+            "task": LEAD_FOLLOW_UP_DIGEST_TICK,
+            "schedule": LEAD_FOLLOW_UP_DIGEST_TICK_INTERVAL,
         },
     },
     # Each tick re-checks what is due, so one missed while beat was down is just late.

@@ -50,6 +50,7 @@ import { requestGoogleAuthUrl } from "./utils/googleAuth.ts";
 import type { SetupStatusResponse } from "./types/setupWizard.ts";
 import type { ImportStatus } from "./types/importing.ts";
 import type { SystemHealthResponse } from "./types/common.ts";
+import type { LeadsAttentionResponse } from "./types/leads.ts"; // ai: claude-opus-5-5 | 2026-11-18
 
 // Everything except the default tab and the login page loads on first use, so the
 // initial bundle is what a signed-out visitor or the job queue actually needs.
@@ -225,12 +226,24 @@ function readSettingsDeepLink(): string | undefined {
   return new URLSearchParams(window.location.search).get(SETTINGS_DEEP_LINK_PARAM) || undefined;
 }
 
+// ai: claude-opus-5-5 | 2026-11-18
+// `/?tab=<tab key>` opens that tab -- the lead follow-up email links to `?tab=leads`
+// (backend/leads/follow_up_digest.py). An unknown key is ignored.
+const TAB_DEEP_LINK_PARAM = "tab";
+
+function readTabDeepLink(): string | undefined {
+  const key = new URLSearchParams(window.location.search).get(TAB_DEEP_LINK_PARAM);
+  return key && TABS.some((tab) => tab.key === key) ? key : undefined;
+}
+
 export default function App() {
   const [settingsDeepLink] = useState(readSettingsDeepLink);
+  const [tabDeepLink] = useState(readTabDeepLink); // ai: claude-opus-5-5 | 2026-11-18
   // ai: claude-fable-5 | 2026-07-14 — validate legacy-resolved keys too, so a
   // stored tab that no longer exists (e.g. "career") falls back to the queue
   const [activeTab, setActiveTab] = useState(() => {
     if (settingsDeepLink) return "settings";
+    if (tabDeepLink) return tabDeepLink; // ai: claude-opus-5-5 | 2026-11-18
     const saved = localStorage.getItem("activeTab");
     const legacyIndex = parseInt(String(saved), 10);
     const resolved =
@@ -317,12 +330,14 @@ export default function App() {
 
   // ai: claude-opus-5-5 | 2026-11-06 -- drop the deep-link parameter once it has been
   // read, so a reload or a bookmark of the current page doesn't keep forcing Settings.
+  // ai: claude-opus-5-5 | 2026-11-18 -- the tab parameter too
   useEffect(() => {
-    if (!settingsDeepLink) return;
+    if (!settingsDeepLink && !tabDeepLink) return;
     const url = new URL(window.location.href);
     url.searchParams.delete(SETTINGS_DEEP_LINK_PARAM);
+    url.searchParams.delete(TAB_DEEP_LINK_PARAM);
     window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
-  }, [settingsDeepLink]);
+  }, [settingsDeepLink, tabDeepLink]);
 
   useEffect(() => {
     fetchAuthStatus();
@@ -425,6 +440,51 @@ export default function App() {
     if (appAuthenticated) refreshListenerImportStatus();
   }, [appAuthenticated, refreshListenerImportStatus]);
   useServerEvent("import", refreshListenerImportStatus, { enabled: appAuthenticated === true });
+
+  // ai: claude-opus-5-5 | 2026-11-18
+  // The Leads tab's badge: open leads whose follow-up date has come or that have gone
+  // quiet. The Leads tab reports its own count after every edit there; this reads it
+  // when the app opens, when the page becomes visible again (another device may have
+  // changed something), when switching tabs (a stage changed on Applications), and
+  // just after local midnight, when tomorrow's follow-ups fall due with nothing having
+  // changed on the server -- so no polling.
+  const [leadAttentionCount, setLeadAttentionCount] = useState(0);
+  const refreshLeadAttention = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/leads/attention");
+      if (!res.ok) return;
+      const data: LeadsAttentionResponse = await res.json();
+      setLeadAttentionCount(data.count);
+    } catch {
+      /* keep the last count; the next trigger reads it again */
+    }
+  }, []);
+  useEffect(() => {
+    if (appAuthenticated !== true) return undefined;
+    void refreshLeadAttention();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshLeadAttention();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    let midnightTimer: ReturnType<typeof setTimeout> | undefined;
+    const armMidnight = () => {
+      const nextMidnight = new Date();
+      nextMidnight.setHours(24, 0, 5, 0);
+      clearTimeout(midnightTimer);
+      midnightTimer = setTimeout(() => {
+        void refreshLeadAttention();
+        armMidnight();
+      }, nextMidnight.getTime() - Date.now());
+    };
+    armMidnight();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      clearTimeout(midnightTimer);
+    };
+  }, [appAuthenticated, refreshLeadAttention]);
+  useEffect(() => {
+    if (appAuthenticated === true) void refreshLeadAttention();
+  }, [activeTab, appAuthenticated, refreshLeadAttention]);
 
   // ai: claude-fable-5 | 2026-07-14 — backend/database health poll. Uses a
   // setTimeout chain (not setInterval) so a slow probe while the DB is timing
@@ -665,6 +725,15 @@ export default function App() {
                 onClick={() => switchTab(tab.key)}
               >
                 {tab.label}
+                {/* ai: claude-opus-5-5 | 2026-11-18 */}
+                {tab.key === "leads" && leadAttentionCount > 0 && (
+                  <span
+                    style={styles.countBadge}
+                    aria-label={`${leadAttentionCount} lead${leadAttentionCount === 1 ? "" : "s"} need${leadAttentionCount === 1 ? "s" : ""} attention`}
+                  >
+                    {leadAttentionCount}
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -773,7 +842,7 @@ export default function App() {
         )}
         {activeTab === HISTORY_TAB_KEY && <HistoryPanel />}
         {activeTab === "applications" && <ApplicationSheetPanel onNavigateToJobCard={navigateToJobCard} />}
-        {activeTab === "leads" && <LeadsPanel />}
+        {activeTab === "leads" && <LeadsPanel onAttentionCountChange={setLeadAttentionCount} />}
         {activeTab === "contacts" && <ContactsPanel onUnsavedChangesChange={setUnsavedChanges} />}
         {activeTab === "phrasebook" && <PhraseBookPanel />}
         {activeTab === "settings" && (

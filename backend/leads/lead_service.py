@@ -21,12 +21,18 @@ first call) is one transaction."""
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import config
 from backend.contacts.contact_identity import contact_identity_columns
+from backend.settings_service import get_setting, get_setting_int
 from backend.utils.stage_status_normalization import effective_application_status
+
+logger = logging.getLogger(__name__)
 
 # ai: claude-opus-5-5 | 2026-11-11
 # How far back a role-less conversation still counts as open on the Leads tab.
@@ -35,6 +41,10 @@ OPEN_CONVERSATION_WINDOW_DAYS = 30
 DEFAULT_LEAD_STAGE = "recruiter_reached_out"
 # jobs.source for a lead created here, shown in the Applications sheet's Source column.
 LEAD_SOURCE_LABEL = "Recruiter"
+# ai: claude-opus-5-5 | 2026-11-18 -- moved from routes/leads.py: the follow-up
+# email reads the same setting. Bounds a typo'd or hostile value; anything
+# outside falls back to the default.
+STALE_AFTER_DAYS_RANGE = (1, 365)
 
 
 class ContactNotFoundError(LookupError):
@@ -75,6 +85,44 @@ class NewLead:
     first_interaction: dict[str, Any] | None
 
 
+# ai: claude-opus-5-5 | 2026-11-18
+def local_now(now: datetime, timezone_name: str) -> datetime:
+    """*now* (UTC-aware) on the account's own clock: the IANA zone from Settings >
+    Your Timezone, or UTC when that is blank or not a zone this machine knows."""
+    name = timezone_name.strip()
+    if name:
+        try:
+            return now.astimezone(ZoneInfo(name))
+        except (ZoneInfoNotFoundError, ValueError):
+            logger.warning("Unknown candidate_timezone %r; using UTC for lead dates", name)
+    return now.astimezone(UTC)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@dataclass(frozen=True)
+class AttentionRules:
+    """What makes a lead need attention, for one account: its own calendar date
+    (a follow-up dated today is due from local midnight, not from UTC's) and how
+    many idle days make a lead "gone quiet"."""
+
+    today: date
+    stale_after_days: int
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def attention_rules(user_id: int, repos: dict[str, Any], now: datetime) -> AttentionRules:
+    """The account's AttentionRules as of *now*, from its settings. The Leads tab,
+    its badge and the follow-up email all use this, so they always agree."""
+    stale_after_days = get_setting_int(
+        "lead_stale_after_days", user_id, repos, config.DEFAULT_LEAD_STALE_AFTER_DAYS
+    )
+    low, high = STALE_AFTER_DAYS_RANGE
+    if not low <= stale_after_days <= high:
+        stale_after_days = config.DEFAULT_LEAD_STALE_AFTER_DAYS
+    today = local_now(now, get_setting("candidate_timezone", user_id, repos)).date()
+    return AttentionRules(today=today, stale_after_days=stale_after_days)
+
+
 # ai: claude-opus-5-5 | 2026-11-11
 def _activity_date(value: str | None) -> date | None:
     """The calendar date of a stored timestamp or YYYY-MM-DD date (both stored as
@@ -99,12 +147,31 @@ class LeadService:
         if stage not in {s["key"] for s in self._stage_catalog()}:
             raise InvalidStageError(f"Unknown stage: {stage}")
 
-    def board(self, user_id: int, now: datetime, stale_after_days: int) -> dict[str, Any]:
-        """Everything the Leads tab shows: every lead with its effective stage,
-        whether that stage is terminal (closed), days since anything happened and
-        whether that makes it stale, plus the role-less open conversations."""
+    # ai: claude-opus-5-5 | 2026-11-18 -- takes AttentionRules (the account's own
+    # date) instead of a bare stale_after_days.
+    def board(self, user_id: int, now: datetime, rules: AttentionRules) -> dict[str, Any]:
+        """Everything the Leads tab shows: every lead (see _lead_rows), plus the
+        role-less open conversations."""
+        since = (now - timedelta(days=OPEN_CONVERSATION_WINDOW_DAYS)).isoformat(timespec="seconds")
+        return {
+            "leads": self._lead_rows(user_id, rules),
+            "open_conversations": self._repos["leads"].list_open_conversations(user_id, since),
+            "stale_after_days": rules.stale_after_days,
+            "open_conversation_window_days": OPEN_CONVERSATION_WINDOW_DAYS,
+        }
+
+    # ai: claude-opus-5-5 | 2026-11-18
+    def leads_needing_attention(self, user_id: int, rules: AttentionRules) -> list[dict[str, Any]]:
+        """Open leads whose follow-up date has come or that have gone quiet, in the
+        board's order (soonest follow-up first)."""
+        return [lead for lead in self._lead_rows(user_id, rules) if lead["needs_attention"]]
+
+    def _lead_rows(self, user_id: int, rules: AttentionRules) -> list[dict[str, Any]]:
+        """Every lead with its effective stage, whether that stage is terminal
+        (closed), days since anything happened and whether that makes it stale,
+        whether its follow-up date has come, and so whether it needs attention."""
         terminal = {s["key"] for s in self._stage_catalog() if s["is_terminal"]}
-        today = now.date()
+        today = rules.today
         leads = []
         for row in self._repos["leads"].list_leads(user_id):
             latest = row.pop("latest_stage_status")
@@ -123,6 +190,10 @@ class LeadService:
             last_activity = max(activity) if activity else None
             idle_days = (today - last_activity).days if last_activity else None
             is_closed = stage in terminal
+            is_stale = not is_closed and idle_days is not None and idle_days > rules.stale_after_days
+            # ai: claude-opus-5-5 | 2026-11-18
+            follow_up = _activity_date(row["next_follow_up"])
+            follow_up_due = not is_closed and follow_up is not None and follow_up <= today
             leads.append(
                 {
                     **row,
@@ -130,18 +201,12 @@ class LeadService:
                     "is_closed": is_closed,
                     "last_activity_date": last_activity.isoformat() if last_activity else None,
                     "idle_days": idle_days,
-                    "is_stale": (
-                        not is_closed and idle_days is not None and idle_days > stale_after_days
-                    ),
+                    "is_stale": is_stale,
+                    "follow_up_due": follow_up_due,  # ai: claude-opus-5-5 | 2026-11-18
+                    "needs_attention": is_stale or follow_up_due,  # ai: claude-opus-5-5 | 2026-11-18
                 }
             )
-        since = (now - timedelta(days=OPEN_CONVERSATION_WINDOW_DAYS)).isoformat(timespec="seconds")
-        return {
-            "leads": leads,
-            "open_conversations": self._repos["leads"].list_open_conversations(user_id, since),
-            "stale_after_days": stale_after_days,
-            "open_conversation_window_days": OPEN_CONVERSATION_WINDOW_DAYS,
-        }
+        return leads
 
     def detail(self, user_id: int, job_id: int) -> dict[str, Any] | None:
         """One lead's drawer: the job, its people, its timeline (interactions newest

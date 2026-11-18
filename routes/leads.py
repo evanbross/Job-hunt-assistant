@@ -32,7 +32,6 @@ from pydantic import (
     model_validator,
 )
 
-import config
 from backend.ai_provider import AIProviderError
 from backend.db import DuplicateJobUrlError
 from backend.leads.call_notes import (
@@ -48,8 +47,8 @@ from backend.leads.lead_service import (
     LeadService,
     NewContact,
     NewLead,
+    attention_rules,
 )
-from backend.settings_service import get_setting_int
 from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
 from backend.utils.rich_text import (
     MAX_RICH_TEXT_LENGTH,
@@ -82,8 +81,6 @@ _MAX_URL_LENGTH = 2000
 _MAX_SUMMARY_LENGTH = 1000
 _MAX_JOB_DESCRIPTION_LENGTH = 100_000
 _MAX_PHONE_LENGTH = 50
-# Bounds a typo'd or hostile setting value; anything outside falls back to it.
-_STALE_DAYS_RANGE = (1, 365)
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -263,15 +260,23 @@ def get_leads_board() -> ResponseReturnValue:
     """Every recruiter lead with its stage, staleness and primary contact, plus
     conversations with recruiters that aren't tied to a role yet."""
     user_id = current_user_id()
+    now = datetime.now(UTC)
     with get_repos() as repos:
-        stale_after_days = get_setting_int(
-            "lead_stale_after_days", user_id, repos, config.DEFAULT_LEAD_STALE_AFTER_DAYS
-        )
-        low, high = _STALE_DAYS_RANGE
-        if not low <= stale_after_days <= high:
-            stale_after_days = config.DEFAULT_LEAD_STALE_AFTER_DAYS
-        board = LeadService(repos).board(user_id, datetime.now(UTC), stale_after_days)
+        rules = attention_rules(user_id, repos, now)  # ai: claude-opus-5-5 | 2026-11-18
+        board = LeadService(repos).board(user_id, now, rules)
     return jsonify(board)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@leads_bp.route("/leads/attention")
+def get_leads_attention() -> ResponseReturnValue:
+    """How many open leads need attention (follow-up date reached, or gone quiet):
+    the count on the Leads tab's badge, readable from anywhere in the app."""
+    user_id = current_user_id()
+    with get_repos() as repos:
+        rules = attention_rules(user_id, repos, datetime.now(UTC))
+        count = len(LeadService(repos).leads_needing_attention(user_id, rules))
+    return jsonify({"count": count})
 
 
 # ai: claude-opus-5-5 | 2026-11-11

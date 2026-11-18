@@ -380,6 +380,9 @@ DEFAULT_JD_HEALTH_CHECK_NOTIFY_EMAIL: str = os.getenv("JD_HEALTH_CHECK_NOTIFY_EM
 # quiet. Per-user setting (lead_stale_after_days); deliberately not read from the
 # environment -- new settings live in the DB (TODO.md's "eliminate .env").
 DEFAULT_LEAD_STALE_AFTER_DAYS: int = 10
+# ai: claude-opus-5-5 | 2026-11-18 -- when the daily lead follow-up email goes out,
+# HH:MM on the account's own clock (lead_follow_up_digest_time); DB setting, not env.
+DEFAULT_LEAD_FOLLOW_UP_DIGEST_TIME: str = "08:00"
 
 # ai: claude-sonnet-4-6 | 2026-06-10
 # Default cover letter prompt template, written to DEFAULT_COVER_LETTER_PROMPT_PATH

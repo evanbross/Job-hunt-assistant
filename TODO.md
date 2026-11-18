@@ -11,9 +11,12 @@ or reprioritized.
       log, people on a lead, rich-text notes) and Phase 2 (call-notes import with
       confirm-first AI extraction; LinkedIn `messages.csv` import into a "Suggested
       leads" inbox, one suggestion per person) built 2026-11-11, used live
-      2026-11-16. Remaining, in order: (3) one-thread capture button in the
-      extension, Gmail "Recruiter" label import, follow-up reminders; (4) optional
-      live LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
+      2026-11-16. Phase 3 follow-up reminders built 2026-11-18: a "needs attention"
+      badge on the Leads tab (follow-up date reached or gone quiet, judged on the
+      account's own date from Your Timezone) and an opt-in daily email at a chosen
+      local time (Settings > Leads), sent once a day by Celery beat. Remaining, in
+      order: (3) one-thread capture button in the extension, Gmail "Recruiter"
+      label import; (4) optional live LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
 - [x] **Generic-site pagination in the browser extension** — done 2026-09-29
       (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
       detected "Next page" control (`rel="next"`, then an aria-label match,
@@ -135,6 +138,14 @@ Neon-backed install currently needs.
       - Deliberately not fixed: the GitLab self-hosted-runner finding — CI
         stays disabled, not spending more GitLab credits on it right now.
       - Next full pass should scope from `38616e0` forward.
+- [x] Full reviews on 2026-11-02 (`docs/code-review-2026-11-02-full.md`) and
+      2026-11-18 (`docs/code-review-2026-11-18-full.md`, through `5a88f6f`) —
+      all findings fixed. 2026-11-18 fixes (`63d0c0a`..`2885779`): sessions end on
+      password change/reset (`session_version`), account tokens stored hashed,
+      autofill AI gets per-question fact allowlists, setup wizard OpenAI test,
+      cached health probes, Tk cleanup; plus "Log out other sessions" and
+      extension tokens revoked on password change/reset.
+      Next full pass should scope from `2885779` forward.
 - [x] **Inconsistent Pydantic validation across route modules.** Done
       2026-09-29: converted every hand-parsed `request.get_json()` route
       across `jobs.py`, `fit.py`, `career_sites.py`, `jd_health_check.py`,
@@ -190,10 +201,10 @@ Neon-backed install currently needs.
       - ~~No extension test harness~~ — addressed 2026-10-18: vitest +
         a Node `vm`-based chrome mock (`browser-extension/test/chromeMock.js`)
         now covers `background.js`'s queued-capture/payloadReady handling.
-        `content.js`'s site-specific parsers (RobertHalf, Oracle Fusion,
-        etc.) are not yet covered — the harness supports it (swap the `node`
-        vitest environment for `jsdom` to give `content.js` a `document`),
-        just not done yet.
+        Since 2026-10-23 `content.js` parsers are covered too, through a
+        per-test JSDOM loader (`browser-extension/test/contentHarness.js`):
+        Amazon, Clera, Elastic, Greenhouse, iCIMS, Phenom, Work at a Startup.
+        RobertHalf, Oracle Fusion and the other site parsers still aren't.
       - ~~Shallow generated Swagger docs~~ — fixed 2026-10-18: request-body
         schemas are now read from each route's real Pydantic model (`$ref`
         into a generated `definitions` section) instead of a generic

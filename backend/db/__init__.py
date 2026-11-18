@@ -141,6 +141,9 @@ from .repositories.job_status_history import PostgresJobStatusHistoryRepository
 
 # ai: claude-sonnet-5 | 2026-08-12
 from .repositories.jobs import DuplicateJobUrlError, PostgresJobRepository
+from .repositories.lead_follow_up_digest_log import (  # ai: claude-opus-5-5 | 2026-11-18
+    PostgresLeadFollowUpDigestLogRepository,
+)
 from .repositories.lead_suggestions import PostgresLeadSuggestionRepository
 from .repositories.leads import PostgresLeadRepository
 from .repositories.outreach_templates import (
@@ -229,6 +232,7 @@ __all__ = [
     "PostgresInteractionRepository",
     "PostgresJobContactRepository",
     "PostgresLeadSuggestionRepository",
+    "PostgresLeadFollowUpDigestLogRepository",
     "PostgresJobSightingRepository",
     "SightingChannel",
     "PostgresLeadRepository",
@@ -457,6 +461,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "job_contacts": PostgresJobContactRepository(conn),
         "leads": PostgresLeadRepository(conn),
         "lead_suggestions": PostgresLeadSuggestionRepository(conn),  # ai: claude-opus-5-5 | 2026-11-11
+        "lead_follow_up_digest_log": PostgresLeadFollowUpDigestLogRepository(conn),  # ai: claude-opus-5-5 | 2026-11-18
         "job_sightings": PostgresJobSightingRepository(conn),  # ai: claude-opus-5-5 | 2026-11-15
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
