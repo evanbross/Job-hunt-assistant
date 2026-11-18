@@ -14,11 +14,19 @@ later import merges into a hand-added recruiter instead of duplicating them."""
 
 from __future__ import annotations
 
+import re
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 from backend.contacts.title_normalization import normalize_title
 from backend.scoring.company_matching import normalize_company_name
+
+# ai: claude-opus-5-5 | 2026-11-18
+# LinkedIn's internal member id (urn:li:fsd_profile:ACoAA...), which also works as a
+# linkedin.com/in/<id> link -- the form LinkedIn's messaging data uses -- as opposed
+# to the member's vanity name, which exports and Connections.csv use. Lowercased,
+# as linkedin_profile_slug returns it.
+_MEMBER_ID_SLUG_RE = re.compile(r"^acoa[a-z0-9_-]{35}$")
 
 
 # ai: claude-opus-5-5 | 2026-11-11 -- moved out of ContactImportService.import_csv
@@ -62,3 +70,11 @@ def linkedin_profile_slug(url: str | None) -> str | None:
     if len(parts) < 2 or parts[0].lower() != "in":
         return None
     return unquote(parts[1]).lower() or None
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def is_linkedin_member_id_url(url: str | None) -> bool:
+    """Whether *url* is a linkedin.com/in/<member id> link rather than a vanity
+    one: the same person, but a different slug, so the two never match each other."""
+    slug = linkedin_profile_slug(url)
+    return slug is not None and _MEMBER_ID_SLUG_RE.match(slug) is not None

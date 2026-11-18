@@ -435,6 +435,9 @@ class IContactRepository(Protocol):
         self, user_id: int, identity: dict[str, Any], details: dict[str, Any], created_at: str
     ) -> tuple[int, bool]: ...
     def update_identity(self, user_id: int, contact_id: int, identity: dict[str, Any]) -> bool: ...
+    def replace_member_id_url(  # ai: claude-opus-5-5 | 2026-11-18
+        self, user_id: int, contact_id: int, member_id_url: str, vanity_url: str
+    ) -> bool: ...
 
 
 # ai: claude-sonnet-5 | 2026-09-28

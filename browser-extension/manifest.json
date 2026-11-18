@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Job Hunt Assistant",
   "description": "Capture job listings from any page and send them to Job Hunt Assistant",
-  "version": "1.37.0",
+  "version": "1.38.0",
   "permissions": ["activeTab", "scripting", "contextMenus", "storage", "notifications", "alarms", "tabs"],
   "host_permissions": ["http://localhost/*", "http://*.localhost/*", "https://*/*", "ws://localhost/*", "ws://*.localhost/*", "wss://*/*"],
   "background": {
@@ -18,6 +18,12 @@
     {
       "matches": ["https://getclera.com/*", "https://www.getclera.com/*"],
       "js": ["cleraSearchRecorder.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.linkedin.com/*"],
+      "js": ["linkedinMessagesRecorder.js"],
       "run_at": "document_start",
       "world": "MAIN"
     }

@@ -23,7 +23,16 @@ CONVERSATION TITLE, FROM, SENDER PROFILE URL, TO, RECIPIENT PROFILE URLS
 (comma-separated), DATE ("YYYY-MM-DD HH:MM:SS UTC"), SUBJECT, CONTENT (sometimes
 HTML), FOLDER (INBOX / ARCHIVE / SPAM / blank), ATTACHMENTS. Sender URLs are
 linkedin.com/in/<vanity> links, the same form Connections.csv uses. Sponsored and
-system messages have no sender URL."""
+system messages have no sender URL.
+
+The extension's "Capture this conversation" (captured_candidate) feeds the same
+pipeline from LinkedIn's own messaging data for one thread. Checked live
+2026-11-18 against the 2026-11-16 export: the thread URL's id is the export's
+CONVERSATION ID, deliveredAt cut to whole seconds is DATE, and the message text is
+CONTENT -- but people are linkedin.com/in/<member id> (ACoAA...) links there, never
+the vanity form. So a message's identity (message_ref) never involves how LinkedIn
+spells the sender, and a captured person is matched to their export rows by
+conversation (lead_suggestions.py)."""
 
 from __future__ import annotations
 
@@ -33,6 +42,7 @@ import io
 import re
 import zipfile
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePath
@@ -69,8 +79,18 @@ SKIP_TOO_OLD = "too_old"
 # ai: claude-opus-5-5 | 2026-11-16 -- lead_suggestions.source for these rows (here, not in
 # lead_suggestions.py, so the DB migration can use it without importing the AI provider)
 SUGGESTION_SOURCE = "linkedin_messages"
+# ai: claude-opus-5-5 | 2026-11-18
+# interactions.source of a message logged on an accepted person's timeline.
+LOGGED_MESSAGE_SOURCE = "linkedin_import"
 # Marks a person-keyed suggestion (suggestion_ref).
 SUGGESTION_REF_PREFIX = "person:"
+# ai: claude-opus-5-5 | 2026-11-18
+# Which message_ref() scheme a ref was made with: "<conversation id>/2:<digest>".
+# Scheme 1 ("<conversation id>/<digest>", until 2026-11-18) hashed the sender's
+# profile slug, which LinkedIn's messaging data doesn't carry; the one-time
+# backend/db/lead_message_ref_rekey.py moved stored refs to scheme 2.
+MESSAGE_REF_SCHEME = "2"
+_MESSAGE_REF_MARK = f"/{MESSAGE_REF_SCHEME}:"
 
 
 class MessagesFormatError(ValueError):
@@ -273,13 +293,30 @@ def _owner_key(conversations: dict[str, list[_Row]]) -> str:
     return ranked[0][0]
 
 
-def _external_ref(conversation_id: str, row: _Row) -> str:
-    """Stable across re-exports: the export has no message id, so a message is
-    its conversation, time, sender and text."""
+# ai: claude-opus-5-5 | 2026-11-18 -- was _external_ref, which hashed the sender's slug
+def message_ref(conversation_id: str, sent_at: str, from_owner: bool, text: str) -> str:
+    """A message's identity, the same from a re-export or a capture: the export has
+    no message id, so a message is its conversation, time (*sent_at*: UTC ISO 8601,
+    seconds precision, as ExportMessage stores it), direction and text. Direction,
+    not sender: conversations here are one-to-one, and LinkedIn writes the same
+    person's profile URL two ways (see the module docstring)."""
     digest = hashlib.sha256(
-        "\x1f".join((conversation_id, row.sent_at.isoformat(), row.sender_key, row.text)).encode("utf-8")
+        "\x1f".join((conversation_id, sent_at, "owner" if from_owner else "other", text)).encode("utf-8")
     ).hexdigest()[:24]
-    return f"{conversation_id}/{digest}"
+    return f"{conversation_id}{_MESSAGE_REF_MARK}{digest}"
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def is_current_message_ref(ref: str) -> bool:
+    """Whether *ref* was made by this module's message_ref() scheme."""
+    return _MESSAGE_REF_MARK in ref
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def conversation_of(ref: str) -> str:
+    """The conversation id a message ref (either scheme) starts with. Conversation
+    ids are base64 and may contain "/", so split at the last one."""
+    return ref.rsplit("/", 1)[0]
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -324,20 +361,10 @@ def _candidate(person: list[tuple[str, list[_Row]]], owner: str) -> SuggestionCa
     """`person` is one sender's candidate conversations, each sorted oldest first."""
     by_activity = sorted(person, key=lambda convo: (convo[1][-1].sent_at, convo[0]))
     latest = by_activity[-1][1][0]  # the most recently active conversation's opening message
-    messages = sorted(
-        (
-            ExportMessage(
-                external_ref=_external_ref(conversation_id, row),
-                sent_at=row.sent_at.isoformat(timespec="seconds"),
-                sender_name=row.sender_name,
-                from_owner=row.sender_key == owner,
-                subject=row.subject,
-                text=row.text,
-            )
-            for conversation_id, rows in by_activity
-            for row in rows
-        ),
-        key=lambda m: (m.sent_at, m.external_ref),
+    messages = _sorted_messages(
+        _export_message(conversation_id, row.sent_at, row.sender_key == owner, row.sender_name, row.subject, row.text)
+        for conversation_id, rows in by_activity
+        for row in rows
     )
     return SuggestionCandidate(
         ref=suggestion_ref(latest.sender_url, latest.sender_name),
@@ -346,4 +373,78 @@ def _candidate(person: list[tuple[str, list[_Row]]], owner: str) -> SuggestionCa
         counterpart_profile_url=latest.sender_url,
         conversation_ids=tuple(conversation_id for conversation_id, _rows in by_activity),
         messages=tuple(messages),
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def _export_message(
+    conversation_id: str, sent_at: datetime, from_owner: bool, sender_name: str, subject: str, text: str
+) -> ExportMessage:
+    sent_at_iso = sent_at.astimezone(UTC).replace(microsecond=0).isoformat()
+    return ExportMessage(
+        external_ref=message_ref(conversation_id, sent_at_iso, from_owner, text),
+        sent_at=sent_at_iso,
+        sender_name=sender_name,
+        from_owner=from_owner,
+        subject=subject,
+        text=text,
+    )
+
+
+def _sorted_messages(messages: Iterable[ExportMessage]) -> tuple[ExportMessage, ...]:
+    """Oldest first, one per ref (a capture can hold the same message twice)."""
+    unique = {message.external_ref: message for message in messages}
+    return tuple(sorted(unique.values(), key=lambda m: (m.sent_at, m.external_ref)))
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@dataclass(frozen=True)
+class CapturedMessage:
+    """One message of a captured thread, as LinkedIn's messaging data has it."""
+
+    sent_at: datetime  # deliveredAt (UTC); cut to whole seconds like the export's DATE
+    from_owner: bool
+    sender_name: str
+    subject: str
+    text: str
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@dataclass(frozen=True)
+class CapturedConversation:
+    """One LinkedIn thread the user captured with the extension."""
+
+    conversation_id: str  # the 2-... id from /messaging/thread/<id>/
+    counterpart_name: str
+    counterpart_profile_url: str  # linkedin.com/in/<member id> -- never the vanity form
+    messages: tuple[CapturedMessage, ...]
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def captured_candidate(capture: CapturedConversation) -> SuggestionCandidate:
+    """The capture as an import candidate: its messages get the refs the same
+    messages get from an export, so either can come first without duplicates. The
+    ref is the member-id form of suggestion_ref(); lead_suggestions.py swaps it for
+    the person's existing ref when the conversation (or their name) is already known."""
+    if not capture.messages:
+        raise ValueError("a captured conversation needs at least one message")
+    messages = _sorted_messages(
+        _export_message(
+            capture.conversation_id,
+            message.sent_at,
+            message.from_owner,
+            message.sender_name.strip(),
+            message.subject.strip(),
+            _message_text(message.text),
+        )
+        for message in capture.messages
+    )
+    return SuggestionCandidate(
+        ref=suggestion_ref(capture.counterpart_profile_url, capture.counterpart_name),
+        # LinkedIn titles a thread by its subject line; replies can leave it blank.
+        title=next((m.subject for m in reversed(messages) if m.subject), ""),
+        counterpart_name=capture.counterpart_name.strip() or "Unknown",
+        counterpart_profile_url=capture.counterpart_profile_url,
+        conversation_ids=(capture.conversation_id,),
+        messages=messages,
     )

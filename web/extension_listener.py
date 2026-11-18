@@ -28,6 +28,7 @@ import logging
 import signal
 import sys
 import threading
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -38,6 +39,8 @@ from backend.db import BROWSER_QUEUE_CLAIM_BATCH_SIZE
 from backend.error_tracking import init_error_tracking
 from backend.extension_auth.token_service import ExtensionTokenService
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.leads.lead_suggestions import capture_conversation
+from backend.leads.linkedin_messages import CapturedConversation
 from backend.logging_setup import configure_logging
 from backend.queue_websocket import QueueWebSocketServer, start_queue_websocket_server
 from backend.resume.resume_file_service import ResumeFileService
@@ -47,6 +50,7 @@ from backend.scanning.import_listener import (
     start_job_import_listener,
 )
 from backend.security.client_ip import Network, parse_trusted_proxies
+from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.utils import get_repos
 from routes.applications import submit_closed_req_capture
 from routes.import_ import queue_import_capture
@@ -160,6 +164,16 @@ def _claim_linkedin_outreach_draft(user_id: int, page_url: str) -> dict | None:
     }
 
 
+# ai: claude-opus-5-5 | 2026-11-18
+def _capture_linkedin_conversation(user_id: int, capture: CapturedConversation) -> dict[str, Any]:
+    """Called when the user captures a LinkedIn thread from the extension."""
+    with get_repos(user_id) as repos:
+        outcome = capture_conversation(user_id, repos, capture, datetime.now(UTC).isoformat(timespec="seconds"))
+        repos["conn"].commit()
+    get_user_events().publish(user_id, UserEventTopic.LEAD_SUGGESTIONS)
+    return asdict(outcome)
+
+
 # ai: claude-opus-5-5 | 2026-11-05
 def start_extension_servers(
     trusted_proxies: tuple[Network, ...],
@@ -180,6 +194,7 @@ def start_extension_servers(
         suggest_answers=suggest_application_answers,
         record_answer_use=record_application_answer_use,
         claim_outreach_draft=_claim_linkedin_outreach_draft,
+        capture_conversation=_capture_linkedin_conversation,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,
     )

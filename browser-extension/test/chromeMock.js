@@ -93,6 +93,7 @@ function makeTabs() {
   const onRemoved = makeEvent();
   return {
     query: vi.fn().mockResolvedValue([]),
+    get: vi.fn().mockResolvedValue({ id: 1, url: "" }), // ai: claude-opus-5-5 | 2026-11-18
     create: vi.fn().mockResolvedValue({ id: 1 }),
     sendMessage: vi.fn().mockResolvedValue(undefined),
     remove: vi.fn(() => Promise.resolve()),

@@ -107,6 +107,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab.id;
 
+  // ai: claude-opus-5-5 | 2026-11-18
+  // A LinkedIn conversation isn't a job page: offer to capture the thread for
+  // the app's suggested-leads inbox instead of probing for jobs or a form.
+  if (jhaLinkedInThreadId(tab.url)) {
+    showLinkedInConversationCapture();
+    return;
+  }
+
   // ai: claude-sonnet-5 | 2026-10-12
   // Inject into every frame (not just frame 0) and probe each one via
   // window.__jhaDetectPage, same executeScript({allFrames, func}) pattern as
@@ -528,6 +536,49 @@ function showStatus(text, type) {
 
 function hideStatus() {
   document.getElementById('status-row').style.display = 'none';
+}
+
+// ai: claude-opus-5-5 | 2026-11-18
+function showLinkedInConversationCapture() {
+  document.getElementById('site-name').textContent = 'LinkedIn conversation';
+  document.getElementById('site-desc').textContent =
+    'Saves the messages LinkedIn has loaded for this conversation to Leads › Suggested. ' +
+    'Scroll up in the thread first to include older ones.';
+  document.getElementById('send-btn').style.display = 'none';
+  const btn = document.getElementById('capture-conversation-btn');
+  btn.style.display = 'flex';
+  btn.addEventListener('click', handleCaptureConversation);
+}
+
+async function handleCaptureConversation() {
+  const btn = document.getElementById('capture-conversation-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div>Capturing…';
+  hideStatus();
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({ action: 'captureLinkedInConversation', tabId: activeTabId });
+  } catch (err) {
+    result = { ok: false, error: String(err?.message || err) };
+  }
+  btn.disabled = false;
+  btn.textContent = 'Capture this conversation';
+  if (result?.ok) showStatus(`✓ ${captureResultText(result)}`, 'success');
+  else showStatus(result?.error || 'Could not capture this conversation.', 'error');
+}
+
+// What the listener's capture reply (lead_suggestions.CaptureOutcome) means to the user.
+function captureResultText({ status, added, counterpart_name: name, messages, messages_logged: logged }) {
+  const count = `${messages} message${messages === 1 ? '' : 's'}`;
+  if (status === 'accepted') {
+    return logged
+      ? `${logged} new message${logged === 1 ? '' : 's'} added to ${name}'s timeline.`
+      : `${name}'s timeline already has these ${count}.`;
+  }
+  if (status === 'dismissed') return `Saved ${count} with ${name}; you dismissed them before (Leads › Suggested › Dismissed).`;
+  return added
+    ? `Saved ${count} with ${name} to Leads › Suggested.`
+    : `Updated ${name}'s suggestion in Leads › Suggested (${count}).`;
 }
 
 function showNoAccess() {

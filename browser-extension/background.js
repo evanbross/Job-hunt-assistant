@@ -27,7 +27,7 @@
 
 'use strict';
 
-importScripts('extension-auth.js');
+importScripts('extension-auth.js', 'linkedin-thread.js');
 
 // ─── Queue capture state ───────────────────────────────────────────────────
 // _queueTabs: tabId → { url, siteName } — tabs currently loading for the queue.
@@ -854,7 +854,74 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     readStashedAnswers().then(sendResponse);
     return true;
   }
+
+  // ai: claude-opus-5-5 | 2026-11-18 -- the popup's "Capture this conversation".
+  if (message.action === 'captureLinkedInConversation') {
+    captureLinkedInConversation(message.tabId).then(sendResponse);
+    return true;
+  }
 });
+
+// ─── Capture a LinkedIn conversation ───────────────────────────────────────
+// ai: claude-opus-5-5 | 2026-11-18
+// Sends the thread open in the tab to the app's suggested-leads inbox
+// (backend/leads/lead_suggestions.py's capture_conversation). The messages come
+// from linkedinMessagesRecorder.js, which kept what LinkedIn's page fetched --
+// nothing extra is requested from LinkedIn.
+const _LINKEDIN_CAPTURE_ERRORS = {
+  no_recorder: 'Reload the LinkedIn tab, then capture again.',
+  not_seen: 'Reload this conversation, then capture again.',
+  no_reply: 'There is nothing from the other person in this conversation yet.',
+  group: 'Only one-to-one conversations can be captured, not group ones.',
+};
+
+async function captureLinkedInConversation(tabId) {
+  let conversationId;
+  try {
+    conversationId = jhaLinkedInThreadId((await chrome.tabs.get(tabId)).url);
+  } catch {
+    conversationId = null;
+  }
+  if (!conversationId) return { ok: false, error: 'Open a LinkedIn conversation first.' };
+
+  let thread;
+  try {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: (id) => (window.__jhaLinkedInThread ? window.__jhaLinkedInThread(id) : { error: 'no_recorder' }),
+      args: [conversationId],
+    });
+    thread = result?.result;
+  } catch (err) {
+    console.error('[JHA] reading the LinkedIn conversation failed:', err?.message || err);
+    return { ok: false, error: "Couldn't read this LinkedIn tab." };
+  }
+  if (!thread || thread.error) {
+    return { ok: false, error: _LINKEDIN_CAPTURE_ERRORS[thread?.error] || _LINKEDIN_CAPTURE_ERRORS.no_recorder };
+  }
+
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/linkedin-messages/capture`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify(thread),
+    });
+    jhaReportAuth(res);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.status === 401 ? JHA_AUTH_ERROR_MESSAGE : data.error || `Error ${res.status}`,
+      };
+    }
+    return { ok: true, ...data };
+  } catch (err) {
+    console.error('[JHA] capturing the LinkedIn conversation failed:', err?.message || err);
+    return { ok: false, error: 'Could not reach Job Hunt App. Is it running?' };
+  }
+}
 
 // ─── Learned application answers ───────────────────────────────────────────
 // ai: claude-opus-5-5 | 2026-11-17

@@ -20,67 +20,35 @@ import json
 from typing import Any
 
 import pytest
-from flask import Flask
 
-import config
 from backend.ai_provider import AIProviderError
-from backend.db import PostgresUserAccountRepository, get_connection
 from backend.leads import lead_suggestions
 from backend.leads.lead_suggestions import classify_conversations
 from backend.task_progress import TaskProgress
 from backend.user_events import UserEventTopic
-from routes.contacts import contacts_bp
 from routes.lead_suggestions import (
     SuggestionCheckState,
     check_waiting_conversations,
-    lead_suggestions_bp,
     run_lead_suggestion_check_task,
 )
-from routes.leads import leads_bp
-from tests.db_roles import runtime_database_url
+from tests.lead_suggestion_fixtures import (
+    ROWS,
+    inbox_tab,
+    suggestion_named,
+    suggestions_client,
+    upload,
+)
 from tests.linkedin_export_fixtures import (
     ME,
     message_row,
-    messages_csv,
     profile_url,
-    zip_of,
 )
-from tests.login_session import sign_in
 from tests.task_doubles import RecordedDelays
-
-# Each other person started a conversation with the user; Pat (the user) also
-# started one, which is never a candidate.
-ROWS = [
-    message_row("c-rita", "Rita Recruiter", profile_url("rita-r") + "/", ME, "2026-11-01 09:00:00", "Open to a Staff role?"),
-    message_row("c-rita", "Pat Seeker", ME, profile_url("rita-r"), "2026-11-01 10:00:00", "Tell me more"),
-    message_row("c-tom", "Tom Titled", profile_url("tom-t"), ME, "2026-11-02 09:00:00", "Hi Pat"),
-    message_row("c-nora", "Nora Notone", profile_url("nora-n"), ME, "2026-11-03 09:00:00", "Coffee?"),
-    message_row("c-sam", "Sam Stranger", profile_url("sam-s"), ME, "2026-11-04 09:00:00", "We're hiring a Principal", subject="Principal role"),
-    message_row("c-sam", "Pat Seeker", ME, profile_url("sam-s"), "2026-11-04 12:00:00", "Interested"),
-    message_row("c-mine", "Pat Seeker", ME, profile_url("friend"), "2026-11-05 09:00:00", "Hey"),
-]
 
 
 @pytest.fixture
 def client_and_user(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, int]:
-    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
-    conn = get_connection(pg_dsn)
-    try:
-        account = PostgresUserAccountRepository(conn).create_pending(
-            "suggestions@example.com", "seed-suggestions", "2099-01-01"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-    app = Flask(__name__)
-    app.secret_key = "test"
-    for blueprint in (lead_suggestions_bp, leads_bp, contacts_bp):
-        app.register_blueprint(blueprint, url_prefix="/api")
-    client = app.test_client()
-    with client.session_transaction() as sess:
-        sign_in(sess, account["id"])
-
-    return client, int(account["id"])
+    return suggestions_client(pg_dsn, monkeypatch)
 
 
 def _add_contact(client: Any, recruiter_type: Any = "absent", **fields: Any) -> int:
@@ -103,48 +71,29 @@ def _seed_contacts(client: Any) -> dict[str, int]:
     }
 
 
-def _upload(client: Any, rows: list[dict[str, str]], *, use_ai: bool = False, days: int = 0, name: str = "messages.csv") -> Any:
-    raw = zip_of({"messages.csv": messages_csv(rows)}) if name.endswith(".zip") else messages_csv(rows).encode()
-    return client.post(
-        "/api/lead-suggestions/linkedin-messages",
-        data={"file": (io.BytesIO(raw), name), "use_ai": "true" if use_ai else "false", "active_within_days": str(days)},
-        content_type="multipart/form-data",
-    )
-
-
-def _tab(client: Any, status: str = "suggested") -> dict[str, Any]:
-    response = client.get(f"/api/lead-suggestions?status={status}")
-    assert response.status_code == 200, response.get_json()
-    return response.get_json()
-
-
-def _by_name(client: Any, name: str, status: str = "suggested") -> dict[str, Any]:
-    return next(s for s in _tab(client, status)["suggestions"] if s["counterpart_name"] == name)
-
-
 def test_import_rules_on_what_contacts_knows_and_leaves_the_rest(
     client_and_user: tuple[Any, int], isolated_user_events: Any
 ) -> None:
     client, user_id = client_and_user
     contacts = _seed_contacts(client)
 
-    response = _upload(client, ROWS, name="export.zip")
+    response = upload(client, ROWS, name="export.zip")
 
     assert response.status_code == 201, response.get_json()
     body = response.get_json()
     assert (body["conversations"], body["candidates"], body["people"], body["added"], body["refreshed"]) == (5, 4, 4, 4, 0)
     assert body["skipped"] == {"started_by_you": 1}
     assert (body["waiting_for_ai"], body["check_started"]) == (1, False)
-    listing = _tab(client)
+    listing = inbox_tab(client)
     assert listing["counts"] == {"unclassified": 1, "suggested": 2, "not_recruiter": 1, "accepted": 0, "dismissed": 0}
     assert listing["check"]["running"] is False
-    rita = _by_name(client, "Rita Recruiter")
+    rita = suggestion_named(client, "Rita Recruiter")
     assert (rita["detection"], rita["contact_id"], rita["message_count"]) == ("contact", contacts["rita"], 2)
     assert [m["from_owner"] for m in rita["messages"]] == [False, True]
-    assert _by_name(client, "Tom Titled")["reason"] == "Title: Technical Recruiter"
-    nora = _by_name(client, "Nora Notone", "not_recruiter")
+    assert suggestion_named(client, "Tom Titled")["reason"] == "Title: Technical Recruiter"
+    nora = suggestion_named(client, "Nora Notone", "not_recruiter")
     assert (nora["contact_id"], nora["reason"]) == (contacts["nora"], "Marked as not a recruiter in Contacts")
-    assert _by_name(client, "Sam Stranger", "unclassified")["contact_id"] is None
+    assert suggestion_named(client, "Sam Stranger", "unclassified")["contact_id"] is None
     assert (user_id, UserEventTopic.LEAD_SUGGESTIONS) in isolated_user_events.published
 
 
@@ -159,10 +108,10 @@ def test_one_suggestion_per_person_across_their_conversations(client_and_user: t
                     "Same role, via InMail", subject="Principal role (InMail)", title="Principal role (InMail)"),
     ]
 
-    body = _upload(client, [*ROWS, *second]).get_json()
+    body = upload(client, [*ROWS, *second]).get_json()
 
     assert (body["conversations"], body["candidates"], body["people"], body["added"]) == (6, 5, 4, 4)
-    sam = _by_name(client, "Sam Stranger", "unclassified")
+    sam = suggestion_named(client, "Sam Stranger", "unclassified")
     assert sam["external_ref"] == "person:sam-s"
     assert [m["text"] for m in sam["messages"]] == ["We're hiring a Principal", "Interested", "Same role, via InMail"]
     assert (sam["message_count"], sam["first_message_at"], sam["last_message_at"]) == (
@@ -171,8 +120,8 @@ def test_one_suggestion_per_person_across_their_conversations(client_and_user: t
     assert sam["conversation_title"] == "Principal role (InMail)"  # the most recently active conversation's
 
     without_first = [r for r in ROWS if r["CONVERSATION ID"] != "c-sam"]
-    assert _upload(client, [*without_first, *second]).get_json()["refreshed"] == 4
-    sam = _by_name(client, "Sam Stranger", "unclassified")
+    assert upload(client, [*without_first, *second]).get_json()["refreshed"] == 4
+    sam = suggestion_named(client, "Sam Stranger", "unclassified")
     assert sam["message_count"] == 3
     assert sam["first_message_at"] == "2026-11-04T09:00:00+00:00"
 
@@ -184,7 +133,7 @@ def test_import_with_ai_starts_one_background_check(
     delays = RecordedDelays()
     monkeypatch.setattr(run_lead_suggestion_check_task, "delay", delays)
 
-    body = _upload(client, ROWS, use_ai=True).get_json()
+    body = upload(client, ROWS, use_ai=True).get_json()
 
     assert body["check_started"] is True
     assert delays.calls == [((user_id,), {})]
@@ -194,7 +143,7 @@ def test_the_check_classifies_waiting_rows_and_stops_cleanly_on_an_ai_failure(
     client_and_user: tuple[Any, int], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     client, user_id = client_and_user
-    _upload(client, ROWS)  # nobody is in Contacts: all four wait for the AI
+    upload(client, ROWS)  # nobody is in Contacts: all four wait for the AI
 
     def failing(user: int, rows: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         raise AIProviderError("Rate limited")
@@ -203,7 +152,7 @@ def test_the_check_classifies_waiting_rows_and_stops_cleanly_on_an_ai_failure(
     published: list[dict[str, Any]] = []
     check_waiting_conversations(user_id, TaskProgress(SuggestionCheckState(), published.append))
     assert published[-1]["error"] == "Rate limited"
-    assert _tab(client)["counts"]["unclassified"] == 4  # nothing lost; retry later
+    assert inbox_tab(client)["counts"]["unclassified"] == 4  # nothing lost; retry later
 
     seen: list[list[str]] = []
 
@@ -225,16 +174,16 @@ def test_the_check_classifies_waiting_rows_and_stops_cleanly_on_an_ai_failure(
         "running": False, "checked": 4, "suggested": 1, "error": None,
         "message": "Checked 4 conversations; 1 look like recruiters.",
     }
-    sam = _by_name(client, "Sam Stranger")
+    sam = suggestion_named(client, "Sam Stranger")
     assert (sam["detection"], sam["role_guess"]) == ("ai", "Principal Engineer")
-    assert _tab(client)["counts"]["not_recruiter"] == 3
+    assert inbox_tab(client)["counts"]["not_recruiter"] == 3
 
 
 def test_accepting_creates_the_lead_and_logs_the_conversation_once(client_and_user: tuple[Any, int]) -> None:
     client, _ = client_and_user
     rita = _seed_contacts(client)["rita"]
-    _upload(client, ROWS)
-    suggestion = _by_name(client, "Rita Recruiter")
+    upload(client, ROWS)
+    suggestion = suggestion_named(client, "Rita Recruiter")
 
     response = client.post(
         f"/api/lead-suggestions/{suggestion['id']}/accept",
@@ -253,20 +202,20 @@ def test_accepting_creates_the_lead_and_logs_the_conversation_once(client_and_us
         ("inbound", "linkedin", "linkedin_import"), ("outbound", "linkedin", "linkedin_import"),
     ]
     assert timeline[0]["body_html"] == "<p>Open to a Staff role?</p>"
-    assert _tab(client)["counts"]["accepted"] == 1
+    assert inbox_tab(client)["counts"]["accepted"] == 1
     assert client.post(f"/api/lead-suggestions/{suggestion['id']}/accept", json={}).status_code == 404
 
     # The same export again adds nothing; a later one logs only the new message.
-    assert _upload(client, ROWS).get_json()["messages_logged"] == 0
+    assert upload(client, ROWS).get_json()["messages_logged"] == 0
     later = [*ROWS, message_row("c-rita", "Rita Recruiter", profile_url("rita-r"), ME, "2026-11-06 09:00:00", "Following up")]
-    assert _upload(client, later).get_json()["messages_logged"] == 1
+    assert upload(client, later).get_json()["messages_logged"] == 1
     assert len(client.get(f"/api/leads/{result['job_id']}").get_json()["interactions"]) == 3
 
 
 def test_accepting_an_unknown_sender_adds_them_as_a_recruiter_contact(client_and_user: tuple[Any, int]) -> None:
     client, _ = client_and_user
-    _upload(client, ROWS)
-    sam = _by_name(client, "Sam Stranger", "unclassified")
+    upload(client, ROWS)
+    sam = suggestion_named(client, "Sam Stranger", "unclassified")
 
     response = client.post(
         f"/api/lead-suggestions/{sam['id']}/accept",
@@ -291,12 +240,12 @@ def test_accepting_onto_an_existing_lead_keeps_its_primary_recruiter(client_and_
     client, _ = client_and_user
     contacts = _seed_contacts(client)
     lead = client.post("/api/leads", json={"company": "Client Co", "contact_id": contacts["tom"]}).get_json()["id"]
-    _upload(client, ROWS)
-    rita = _by_name(client, "Rita Recruiter")
+    upload(client, ROWS)
+    rita = suggestion_named(client, "Rita Recruiter")
 
     missing = client.post(f"/api/lead-suggestions/{rita['id']}/accept", json={"lead": "existing", "job_id": lead + 999})
     assert missing.status_code == 404
-    assert _tab(client)["counts"]["accepted"] == 0  # rolled back
+    assert inbox_tab(client)["counts"]["accepted"] == 0  # rolled back
 
     response = client.post(f"/api/lead-suggestions/{rita['id']}/accept", json={"lead": "existing", "job_id": lead})
     assert response.status_code == 200, response.get_json()
@@ -307,17 +256,17 @@ def test_accepting_onto_an_existing_lead_keeps_its_primary_recruiter(client_and_
 def test_dismiss_and_restore(client_and_user: tuple[Any, int]) -> None:
     client, _ = client_and_user
     _seed_contacts(client)
-    _upload(client, ROWS)
-    tom = _by_name(client, "Tom Titled")
+    upload(client, ROWS)
+    tom = suggestion_named(client, "Tom Titled")
 
     assert client.post(f"/api/lead-suggestions/{tom['id']}/dismiss").get_json()["status"] == "dismissed"
-    assert _by_name(client, "Tom Titled", "dismissed")["decided_at"] is not None
+    assert suggestion_named(client, "Tom Titled", "dismissed")["decided_at"] is not None
     assert client.post(f"/api/lead-suggestions/{tom['id']}/restore").get_json()["status"] == "suggested"
     assert client.post(f"/api/lead-suggestions/{tom['id']}/restore").status_code == 404
     # A re-import never resurrects a dismissed conversation.
     client.post(f"/api/lead-suggestions/{tom['id']}/dismiss")
-    _upload(client, ROWS)
-    assert _by_name(client, "Tom Titled", "dismissed")["id"] == tom["id"]
+    upload(client, ROWS)
+    assert suggestion_named(client, "Tom Titled", "dismissed")["id"] == tom["id"]
 
 
 @pytest.mark.parametrize(

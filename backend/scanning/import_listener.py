@@ -44,6 +44,7 @@ import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.message import Message
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -55,7 +56,9 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 import config
 from backend.ai_provider import AIProviderError
 from backend.application_answer_suggestions import FormQuestion, SuggestionResult
+from backend.contacts.contact_identity import linkedin_profile_slug
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.leads.linkedin_messages import CapturedConversation, CapturedMessage
 from backend.security.client_ip import Network, resolve_client_address
 from backend.security.rate_limiter import (
     Decision,
@@ -87,6 +90,65 @@ RecordAnswerUse = Callable[[int, list[int]], int]
 # ai: claude-opus-5-5 | 2026-10-14 -- (user_id, page_url) -> staged LinkedIn
 # outreach draft for that profile page, or None.
 ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
+# ai: claude-opus-5-5 | 2026-11-18 -- (user_id, conversation) -> what was stored
+# (lead_suggestions.CaptureOutcome as a dict): "Capture this conversation".
+CaptureConversation = Callable[[int, CapturedConversation], dict[str, Any]]
+
+# ai: claude-opus-5-5 | 2026-11-18
+class CapturedMessageIn(BaseModel):
+    """One message as the extension's LinkedIn recorder kept it."""
+
+    sent_at_ms: int = Field(gt=0)  # LinkedIn's deliveredAt, epoch milliseconds
+    from_owner: bool
+    sender_name: str = Field(default="", max_length=300)
+    subject: str = Field(default="", max_length=1000)
+    text: str = Field(default="", max_length=100_000)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+class CaptureConversationRequest(BaseModel):
+    """POST /linkedin-messages/capture body: the one-to-one LinkedIn thread open in
+    the user's tab, from the messaging data the page itself loaded."""
+
+    conversation_id: str = Field(pattern=r"^2-[A-Za-z0-9+/=_-]+$", max_length=200)
+    counterpart_name: str = Field(max_length=300)
+    counterpart_profile_url: str = Field(max_length=500)
+    messages: list[CapturedMessageIn] = Field(min_length=1, max_length=2000)
+
+    @field_validator("counterpart_name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("counterpart_profile_url")
+    @classmethod
+    def _linkedin_profile(cls, value: str) -> str:
+        stripped = value.strip()
+        if linkedin_profile_slug(stripped) is None:
+            raise ValueError("must be a linkedin.com/in/ link")
+        return stripped
+
+    def to_capture(self) -> CapturedConversation:
+        return CapturedConversation(
+            conversation_id=self.conversation_id,
+            counterpart_name=self.counterpart_name,
+            counterpart_profile_url=self.counterpart_profile_url,
+            messages=tuple(
+                CapturedMessage(
+                    # Whole seconds, cut not rounded -- how the export's DATE has it.
+                    sent_at=datetime.fromtimestamp(m.sent_at_ms // 1000, UTC),
+                    from_owner=m.from_owner,
+                    sender_name=m.sender_name,
+                    subject=m.subject,
+                    text=m.text,
+                )
+                for m in self.messages
+            ),
+        )
+
 
 # ai: claude-opus-5-5 | 2026-11-17
 class LearnedAnswer(BaseModel):
@@ -348,6 +410,7 @@ class JobImportListener:
         suggest_answers: SuggestAnswers | None = None,
         record_answer_use: RecordAnswerUse | None = None,
         claim_outreach_draft: ClaimOutreachDraft | None = None,
+        capture_conversation: CaptureConversation | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
         rate_limiter: RateLimiter | None = None,
@@ -367,6 +430,7 @@ class JobImportListener:
         self._suggest_answers = suggest_answers
         self._record_answer_use = record_answer_use
         self._claim_outreach_draft = claim_outreach_draft
+        self._capture_conversation = capture_conversation
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -392,6 +456,7 @@ class JobImportListener:
         suggest_answers = self._suggest_answers
         record_answer_use = self._record_answer_use
         claim_outreach_draft = self._claim_outreach_draft
+        capture_conversation = self._capture_conversation
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
         limiter = self._rate_limiter or get_rate_limiter()
@@ -699,6 +764,36 @@ class JobImportListener:
                         )
                     return
 
+                # ai: claude-opus-5-5 | 2026-11-18
+                # The extension's "Capture this conversation" on a LinkedIn thread.
+                if path == "/linkedin-messages/capture":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        capture = CaptureConversationRequest.model_validate(payload).to_capture()
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "That doesn't look like a one-to-one LinkedIn conversation."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if capture_conversation is None:
+                        self._send_json(
+                            {"error": "Conversation capture unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    try:
+                        self._send_json(capture_conversation(user_id, capture), HTTPStatus.CREATED)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("LinkedIn conversation capture failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not save the conversation."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
                 raw_body = self._read_body()
                 if raw_body is None:
                     return
@@ -901,6 +996,7 @@ def start_job_import_listener(
     suggest_answers: SuggestAnswers | None = None,
     record_answer_use: RecordAnswerUse | None = None,
     claim_outreach_draft: ClaimOutreachDraft | None = None,
+    capture_conversation: CaptureConversation | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
@@ -938,6 +1034,7 @@ def start_job_import_listener(
             suggest_answers=suggest_answers,
             record_answer_use=record_answer_use,
             claim_outreach_draft=claim_outreach_draft,
+            capture_conversation=capture_conversation,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
         )

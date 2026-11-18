@@ -17,6 +17,9 @@ conversations (an InMail plus a message, a pitch sent twice) showed up twice. A
 suggestion's external_ref is now linkedin_messages.suggestion_ref() -- the person --
 and this folds each person's old rows into one:
 
+How rows fold is PostgresLeadSuggestionRepository.fold / merged_row (shared with
+the import, which folds a captured conversation's row into the person's export row):
+
 - **The kept row** has the strongest status: accepted, then suggested, then
   unclassified, then dismissed, then not_recruiter (a person with one conversation
   still suggested stays visible even if another was dismissed); the most recently
@@ -39,8 +42,7 @@ import logging
 from collections import defaultdict
 from typing import Any
 
-from psycopg2.extras import Json
-
+from backend.db.repositories.lead_suggestions import PostgresLeadSuggestionRepository
 from backend.leads.linkedin_messages import (
     SUGGESTION_REF_PREFIX,
     SUGGESTION_SOURCE,
@@ -48,22 +50,6 @@ from backend.leads.linkedin_messages import (
 )
 
 logger = logging.getLogger(__name__)
-
-# Strongest first: which status a person's merged row keeps.
-_STATUS_RANK: dict[str, int] = {
-    "accepted": 4,
-    "suggested": 3,
-    "unclassified": 2,
-    "dismissed": 1,
-    "not_recruiter": 0,
-}
-_FALLBACK_FIELDS: tuple[str, ...] = (
-    "role_guess",
-    "hiring_company_guess",
-    "recruiter_company_guess",
-    "contact_id",
-    "job_id",
-)
 
 
 def merge_lead_suggestions_by_person(conn: Any) -> int:
@@ -82,60 +68,13 @@ def merge_lead_suggestions_by_person(conn: Any) -> int:
         people[(row["user_id"], suggestion_ref(row["counterpart_profile_url"], row["counterpart_name"]))].append(row)
 
     folded = 0
-    for (_user_id, ref), rows in people.items():
+    repo = PostgresLeadSuggestionRepository(conn)
+    for (user_id, ref), rows in people.items():
         if len(rows) == 1 and rows[0]["external_ref"] == ref:
             continue
-        kept, merged = merged_row(rows)
-        others = [row["id"] for row in rows if row["id"] != kept["id"]]
-        if others:
-            # First, so the kept row can take the ref one of them may already hold.
-            cur.execute("DELETE FROM lead_suggestions WHERE id = ANY(%s)", (others,))
-            folded += len(others)
-        cur.execute(
-            """
-            UPDATE lead_suggestions SET
-                external_ref = %s, counterpart_name = %s, counterpart_profile_url = %s,
-                conversation_title = %s, first_message_at = %s, last_message_at = %s,
-                message_count = %s, messages = %s, imported_at = %s, role_guess = %s,
-                hiring_company_guess = %s, recruiter_company_guess = %s, contact_id = %s,
-                job_id = %s
-            WHERE id = %s
-            """,
-            (
-                ref, merged["counterpart_name"], merged["counterpart_profile_url"],
-                merged["conversation_title"], merged["first_message_at"], merged["last_message_at"],
-                len(merged["messages"]), Json(merged["messages"]), merged["imported_at"],
-                merged["role_guess"], merged["hiring_company_guess"], merged["recruiter_company_guess"],
-                merged["contact_id"], merged["job_id"], kept["id"],
-            ),
-        )
+        repo.fold(user_id, rows, ref)  # ai: claude-opus-5-5 | 2026-11-18 -- moved to the repository
+        folded += len(rows) - 1
     conn.commit()
     if folded:
         logger.info("Suggested leads: %d per-conversation row(s) folded into one row per person.", folded)
     return folded
-
-
-def merged_row(rows: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """The row to keep for one person, and the field values it takes."""
-    kept = max(rows, key=lambda r: (_STATUS_RANK[r["status"]], r["last_message_at"], r["id"]))
-    latest = max(rows, key=lambda r: (r["last_message_at"], r["id"]))
-    messages: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        for message in row["messages"]:
-            messages.setdefault(message["external_ref"], message)
-    ordered = sorted(messages.values(), key=lambda m: (m["sent_at"], m["external_ref"]))
-    merged: dict[str, Any] = {
-        "counterpart_name": latest["counterpart_name"],
-        "counterpart_profile_url": latest["counterpart_profile_url"],
-        "conversation_title": latest["conversation_title"],
-        "first_message_at": min(r["first_message_at"] for r in rows),
-        "last_message_at": max(r["last_message_at"] for r in rows),
-        "imported_at": max(r["imported_at"] for r in rows),
-        "messages": ordered,
-    }
-    for name in _FALLBACK_FIELDS:
-        merged[name] = kept[name] if kept[name] is not None else next(
-            (r[name] for r in sorted(rows, key=lambda r: r["last_message_at"], reverse=True) if r[name] is not None),
-            None,
-        )
-    return kept, merged

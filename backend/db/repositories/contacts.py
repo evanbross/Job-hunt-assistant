@@ -283,6 +283,22 @@ class PostgresContactRepository(_BaseRepo):
         )
         return cur.rowcount > 0
 
+    # ai: claude-opus-5-5 | 2026-11-18
+    def replace_member_id_url(self, user_id: int, contact_id: int, member_id_url: str, vanity_url: str) -> bool:
+        """Give a hand-added contact made from a captured LinkedIn conversation
+        (linkedin.com/in/<member id>) the same person's vanity URL, which a later
+        Connections.csv import will use. Only while the contact still has that exact
+        URL, and not when another contact already has the vanity one (the dedup_key
+        is the profile URL, as contact_dedup_key makes it). False when nothing changed."""
+        cur = self._execute(
+            "UPDATE contacts SET profile_url = %s, dedup_key = %s"
+            " WHERE id = %s AND user_id = %s AND source = 'manual' AND profile_url = %s"
+            " AND NOT EXISTS (SELECT 1 FROM contacts o WHERE o.user_id = %s AND o.id <> %s"
+            "   AND (o.profile_url = %s OR o.dedup_key = %s))",
+            (vanity_url, vanity_url, contact_id, user_id, member_id_url, user_id, contact_id, vanity_url, vanity_url),
+        )
+        return cur.rowcount > 0
+
     def count(self, user_id: int) -> int:
         cur = self._execute("SELECT COUNT(*) AS cnt FROM contacts WHERE user_id = %s", (user_id,))
         return int(cur.fetchone()["cnt"])

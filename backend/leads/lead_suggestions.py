@@ -22,19 +22,30 @@ Three steps, each confirm-first:
 3. accept_suggestion() turns a suggestion into a contact with the conversation
    logged on their timeline, optionally attached to a new or existing lead.
 
+capture_conversation() feeds one thread the user captured with the extension into
+the same inbox. A capture knows the person only by member id, an export only by
+vanity name (linkedin_messages.py's docstring), so the two meet through their
+conversation: a capture joins the row already holding its conversation (or the one
+row with the person's name), and an import folds a captured row into the person's
+export row.
+
 Nothing here commits; the route or task does, once per step."""
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from backend.ai_provider import AIMessage, AIProviderClient, json_object_from_reply
-from backend.contacts.contact_identity import linkedin_profile_slug
+from backend.contacts.contact_identity import (
+    is_linkedin_member_id_url,
+    linkedin_profile_slug,
+)
 from backend.contacts.title_suggestion_rules import classify_title_tier1
+from backend.db.repositories.lead_suggestions import merged_row
 from backend.leads.lead_service import (
     DEFAULT_LEAD_STAGE,
     LeadService,
@@ -42,9 +53,12 @@ from backend.leads.lead_service import (
     NewLead,
 )
 from backend.leads.linkedin_messages import (
+    LOGGED_MESSAGE_SOURCE,
     SUGGESTION_SOURCE,
+    CapturedConversation,
     ExportScan,
     SuggestionCandidate,
+    captured_candidate,
 )
 from backend.utils.rich_text import plain_text_to_html, sanitize_rich_text
 
@@ -148,7 +162,7 @@ def _message_fields(
         "kind": "message",
         "summary": (message.get("subject") or "")[:_MAX_SUBJECT_CHARS] or None,
         "body_html": sanitize_rich_text(plain_text_to_html(message.get("text") or "")),
-        "source": "linkedin_import",
+        "source": LOGGED_MESSAGE_SOURCE,
         "external_ref": message["external_ref"],
     }
 
@@ -183,37 +197,133 @@ def import_conversations(
         unreadable_rows=scan.unreadable_rows,
     )
     for conversation in scan.candidates:
+        _fold_captured_rows(user_id, repos, conversation)  # ai: claude-opus-5-5 | 2026-11-18
         contact = index.match(conversation)
-        verdict = contacts_verdict(contact)
-        messages = [m.as_json() for m in conversation.messages]
-        stored = repos["lead_suggestions"].upsert(
-            user_id,
-            {
-                "source": SUGGESTION_SOURCE,
-                "external_ref": conversation.ref,  # ai: claude-opus-5-5 | 2026-11-16
-                "status": verdict.status,
-                "detection": verdict.detection,
-                "reason": verdict.reason,
-                "counterpart_name": conversation.counterpart_name,
-                "counterpart_profile_url": conversation.counterpart_profile_url,
-                "contact_id": contact["id"] if contact else None,
-                "conversation_title": conversation.title or None,
-                "first_message_at": conversation.first_message_at,
-                "last_message_at": conversation.last_message_at,
-                "message_count": len(messages),
-                "messages": messages,
-            },
-            now_iso,
-        )
+        stored, logged = _store_candidate(user_id, repos, conversation, contacts_verdict(contact), contact, now_iso)
         if stored["inserted"]:
             outcome.added += 1
         else:
             outcome.refreshed += 1
-        if stored["status"] == "accepted" and stored["contact_id"] is not None:
-            outcome.messages_logged += _log_messages(
-                repos, user_id, messages, stored["contact_id"], stored["job_id"], now_iso
-            )
+        outcome.messages_logged += logged
     return outcome
+
+
+# ai: claude-opus-5-5 | 2026-11-11 -- the body of import_conversations' loop until 2026-11-18
+def _store_candidate(
+    user_id: int, repos: dict[str, Any], candidate: SuggestionCandidate, verdict: Verdict,
+    contact: dict[str, Any] | None, now_iso: str,
+) -> tuple[dict[str, Any], int]:
+    """Upsert one person's suggestion; for a person already accepted, also log any
+    message not on their timeline yet. Returns the upsert's result and how many
+    messages were logged."""
+    messages = [m.as_json() for m in candidate.messages]
+    stored = repos["lead_suggestions"].upsert(
+        user_id,
+        {
+            "source": SUGGESTION_SOURCE,
+            "external_ref": candidate.ref,
+            "status": verdict.status,
+            "detection": verdict.detection,
+            "reason": verdict.reason,
+            "counterpart_name": candidate.counterpart_name,
+            "counterpart_profile_url": candidate.counterpart_profile_url,
+            "contact_id": contact["id"] if contact else None,
+            "conversation_title": candidate.title or None,
+            "first_message_at": candidate.first_message_at,
+            "last_message_at": candidate.last_message_at,
+            "message_count": len(messages),
+            "messages": messages,
+        },
+        now_iso,
+    )
+    logged = 0
+    if stored["status"] == "accepted" and stored["contact_id"] is not None:
+        logged = _log_messages(repos, user_id, messages, stored["contact_id"], stored["job_id"], now_iso)
+    return stored, logged
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def _fold_captured_rows(user_id: int, repos: dict[str, Any], candidate: SuggestionCandidate) -> None:
+    """Before an export candidate is stored: rows holding its conversations under
+    another ref -- a capture, keyed by the person's member id -- fold into the
+    export's ref, so the upsert merges into them instead of adding the person
+    twice. A contact made by hand from such a row takes the vanity URL."""
+    suggestions = repos["lead_suggestions"]
+    holders = [
+        row for row in suggestions.holding_conversations(user_id, list(candidate.conversation_ids))
+        if row["external_ref"] != candidate.ref
+    ]
+    if not holders:
+        return
+    own = suggestions.with_ref(user_id, SUGGESTION_SOURCE, candidate.ref)
+    suggestions.fold(user_id, holders + ([own] if own else []), candidate.ref)
+    vanity_url = candidate.counterpart_profile_url
+    if not vanity_url or is_linkedin_member_id_url(vanity_url):
+        return
+    for row in holders:
+        member_id_url = row["counterpart_profile_url"]
+        if row["contact_id"] is not None and is_linkedin_member_id_url(member_id_url):
+            repos["contacts"].replace_member_id_url(user_id, row["contact_id"], member_id_url, vanity_url)
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+@dataclass(frozen=True)
+class CaptureOutcome:
+    suggestion_id: int
+    status: str
+    added: bool  # a new suggestion, rather than joining the person's existing one
+    counterpart_name: str
+    messages: int  # in the capture
+    messages_logged: int  # newly on an accepted person's timeline
+
+
+def _known_person(user_id: int, repos: dict[str, Any], candidate: SuggestionCandidate) -> SuggestionCandidate:
+    """The capture under the ref, name and URL of the person's existing row: the
+    one holding this conversation, else the only one with their name. Several rows
+    holding the conversation are folded into one first."""
+    suggestions = repos["lead_suggestions"]
+    holders = suggestions.holding_conversations(user_id, list(candidate.conversation_ids))
+    if holders:
+        kept, _ = merged_row(holders)
+        if len(holders) > 1:
+            suggestions.fold(user_id, holders, kept["external_ref"])
+            kept = suggestions.with_ref(user_id, SUGGESTION_SOURCE, kept["external_ref"]) or kept
+    else:
+        named = suggestions.with_counterpart_name(user_id, candidate.counterpart_name)
+        if len(named) != 1:
+            return candidate
+        kept = named[0]
+    return replace(
+        candidate,
+        ref=kept["external_ref"],
+        counterpart_name=kept["counterpart_name"],
+        counterpart_profile_url=kept["counterpart_profile_url"] or candidate.counterpart_profile_url,
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+def capture_conversation(
+    user_id: int, repos: dict[str, Any], capture: CapturedConversation, now_iso: str
+) -> CaptureOutcome:
+    """Store one conversation captured from LinkedIn as the person's suggestion
+    (joining their existing one when known). Capturing says "this is a recruiter",
+    so it is suggested unless Contacts already says so with a reason of its own --
+    and, as with an import, a person already accepted gets the new messages on
+    their timeline."""
+    candidate = _known_person(user_id, repos, captured_candidate(capture))
+    contact = ContactIndex(repos["contacts"].get_all(user_id)).match(candidate)
+    verdict = contacts_verdict(contact)
+    if verdict.status != "suggested":
+        verdict = Verdict("suggested", None, "Captured from LinkedIn")
+    stored, logged = _store_candidate(user_id, repos, candidate, verdict, contact, now_iso)
+    return CaptureOutcome(
+        suggestion_id=int(stored["id"]),
+        status=stored["status"],
+        added=bool(stored["inserted"]),
+        counterpart_name=candidate.counterpart_name,
+        messages=len(candidate.messages),
+        messages_logged=logged,
+    )
 
 
 # ai: claude-opus-5-5 | 2026-11-11

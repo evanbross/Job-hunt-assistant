@@ -49,6 +49,7 @@ from backend.crypto import (
     encrypt_bytes,
     encrypt_secret,
 )
+from backend.db.lead_message_ref_rekey import rekey_linkedin_message_refs
 from backend.db.lead_suggestion_person_merge import merge_lead_suggestions_by_person
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.db.repositories.user_accounts import (
@@ -1815,6 +1816,8 @@ def migrate_schema(conn: Any) -> None:
     _migrate_legacy_outreach_to_interactions(conn)
     # ai: claude-opus-5-5 | 2026-11-16 -- one suggested lead per person, not per conversation
     merge_lead_suggestions_by_person(conn)
+    # ai: claude-opus-5-5 | 2026-11-18 -- message refs no longer hash the sender's profile slug
+    rekey_linkedin_message_refs(conn)
 
 
 # ai: claude-opus-5-5 | 2026-11-11

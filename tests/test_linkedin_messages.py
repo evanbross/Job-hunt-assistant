@@ -26,7 +26,13 @@ from backend.leads.linkedin_messages import (
     SKIP_SPAM,
     SKIP_STARTED_BY_YOU,
     SKIP_TOO_OLD,
+    CapturedConversation,
+    CapturedMessage,
     MessagesFormatError,
+    captured_candidate,
+    conversation_of,
+    is_current_message_ref,
+    message_ref,
     read_messages_upload,
     scan_export,
 )
@@ -158,3 +164,63 @@ def test_an_oversized_member_is_refused_without_reading_it_all(monkeypatch: pyte
     monkeypatch.setattr(linkedin_messages, "MAX_MESSAGES_CSV_BYTES", 100)
     with pytest.raises(MessagesFormatError, match="larger than"):
         read_messages_upload("export.zip", zip_of({"messages.csv": "x" * 101}))
+
+
+# --- captured conversations (the extension's "Capture this conversation") ------------
+# ai: claude-opus-5-5 | 2026-11-18
+
+# A made-up member id in LinkedIn's linkedin.com/in/<member id> form.
+RITA_MEMBER_URL = "https://www.linkedin.com/in/ACoAAB1rItAx" + "x" * 27
+
+
+def _capture(*messages: CapturedMessage, conversation_id: str = "c-recruiter") -> CapturedConversation:
+    return CapturedConversation(
+        conversation_id=conversation_id,
+        counterpart_name="Rita Recruiter",
+        counterpart_profile_url=RITA_MEMBER_URL,
+        messages=messages,
+    )
+
+
+def _captured(sent_at: datetime, text: str, *, from_owner: bool = False, subject: str = "Staff role") -> CapturedMessage:
+    return CapturedMessage(
+        sent_at=sent_at,
+        from_owner=from_owner,
+        sender_name="Pat Seeker" if from_owner else "Rita Recruiter",
+        subject=subject,
+        text=text,
+    )
+
+
+def test_a_capture_and_an_export_give_the_same_message_the_same_ref() -> None:
+    """The contract checked live 2026-11-18: the export's DATE is LinkedIn's
+    deliveredAt cut to whole seconds, its CONTENT the message text -- but the sender
+    is a vanity link in one and a member-id link in the other. The refs must agree
+    anyway, or capturing and then importing would log every message twice."""
+    [exported] = scan_export(messages_csv(ROWS), None).candidates[:1]
+    capture = _capture(
+        _captured(datetime(2026, 11, 1, 10, 30, 0, 640_000, tzinfo=UTC), "Sure, call me ", from_owner=True, subject=""),
+        _captured(datetime(2026, 11, 1, 9, 0, 0, 120_000, tzinfo=UTC), "Hi Pat,\nA Staff role & more"),
+    )
+
+    captured = captured_candidate(capture)
+
+    assert [m.external_ref for m in captured.messages] == [m.external_ref for m in exported.messages]
+    assert [m.sent_at for m in captured.messages] == ["2026-11-01T09:00:00+00:00", "2026-11-01T10:30:00+00:00"]
+    assert captured.ref == "person:" + RITA_MEMBER_URL.rsplit("/", 1)[1].lower()
+    assert (captured.counterpart_profile_url, captured.conversation_ids) == (RITA_MEMBER_URL, ("c-recruiter",))
+    assert captured.title == "Staff role"
+
+
+def test_a_capture_holding_a_message_twice_keeps_it_once() -> None:
+    message = _captured(datetime(2026, 11, 1, 9, 0, tzinfo=UTC), "Hello")
+    assert len(captured_candidate(_capture(message, message)).messages) == 1
+
+
+def test_message_refs_name_their_conversation_and_scheme() -> None:
+    ref = message_ref("2-abc/def==", "2026-11-01T09:00:00+00:00", False, "Hi")
+    assert conversation_of(ref) == "2-abc/def=="  # base64 ids can hold a "/"
+    assert is_current_message_ref(ref)
+    assert not is_current_message_ref("2-abc/def==/0123456789abcdef01234567")  # scheme 1
+    # Direction is part of the identity; the sender's spelling isn't.
+    assert ref != message_ref("2-abc/def==", "2026-11-01T09:00:00+00:00", True, "Hi")

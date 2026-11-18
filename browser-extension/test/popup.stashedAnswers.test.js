@@ -19,6 +19,8 @@ import { describe, expect, it, vi } from "vitest";
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const POPUP_HTML = fs.readFileSync(path.join(DIR, "popup.html"), "utf8");
 const POPUP_JS = fs.readFileSync(path.join(DIR, "popup.js"), "utf8");
+// ai: claude-opus-5-5 | 2026-11-18 -- popup.html loads it before popup.js
+const LINKEDIN_THREAD_JS = fs.readFileSync(path.join(DIR, "linkedin-thread.js"), "utf8");
 
 const STASHED = {
   pageUrl: "https://jobs.lever.co/acme/1/apply",
@@ -54,6 +56,7 @@ function openPopup({ learnResponse = { ok: true } } = {}) {
     tabs: { query: async () => [{ id: 1 }], sendMessage: () => {} },
     scripting: { executeScript: async () => [] },
   };
+  window.eval(LINKEDIN_THREAD_JS);
   window.eval(POPUP_JS);
   if (window.document.readyState !== "loading") {
     window.document.dispatchEvent(new window.Event("DOMContentLoaded"));

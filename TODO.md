@@ -14,9 +14,14 @@ or reprioritized.
       2026-11-16. Phase 3 follow-up reminders built 2026-11-18: a "needs attention"
       badge on the Leads tab (follow-up date reached or gone quiet, judged on the
       account's own date from Your Timezone) and an opt-in daily email at a chosen
-      local time (Settings > Leads), sent once a day by Celery beat. Remaining, in
-      order: (3) one-thread capture button in the extension, Gmail "Recruiter"
-      label import; (4) optional live LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
+      local time (Settings > Leads), sent once a day by Celery beat. One-thread
+      capture built 2026-11-18 (extension 1.38.0): on a LinkedIn conversation the
+      popup's "Capture this conversation" sends the messages LinkedIn's page already
+      loaded (MAIN-world recorder, no extra requests) into the Suggested inbox,
+      merging with messages.csv imports either way round (message refs no longer
+      hash the sender's URL; captured people are matched by conversation).
+      Remaining, in order: (3) Gmail "Recruiter" label import; (4) optional live
+      LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
 - [x] **Generic-site pagination in the browser extension** — done 2026-09-29
       (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
       detected "Next page" control (`rel="next"`, then an aria-label match,

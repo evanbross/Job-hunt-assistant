@@ -20,6 +20,8 @@ import { describe, expect, it, vi } from "vitest";
 const DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const POPUP_HTML = fs.readFileSync(path.join(DIR, "popup.html"), "utf8");
 const POPUP_JS = fs.readFileSync(path.join(DIR, "popup.js"), "utf8");
+// ai: claude-opus-5-5 | 2026-11-18 -- popup.html loads it before popup.js
+const LINKEDIN_THREAD_JS = fs.readFileSync(path.join(DIR, "linkedin-thread.js"), "utf8");
 
 const CLERA_SCAN = {
   site: "Clera",
@@ -60,6 +62,7 @@ async function openPopup({ stored = {} } = {}) {
         func && String(func).includes("__jhaDetectPage") ? [{ frameId: 0, result: CLERA_SCAN }] : [],
     },
   };
+  window.eval(LINKEDIN_THREAD_JS);
   window.eval(POPUP_JS);
   // jsdom fires DOMContentLoaded itself once parsing finishes; firing it again
   // would run the popup's startup twice (double listeners), which Chrome never does.

@@ -48,6 +48,7 @@ from backend.application_answer_suggestions import (
     SuggestionResult,
 )
 from backend.extension_auth.ws_tickets import WebSocketTicketStore
+from backend.leads.linkedin_messages import CapturedConversation
 from backend.queue_websocket import QueueWebSocketServer
 from backend.scanning.import_listener import (
     AI_ANSWER_SUGGESTIONS,
@@ -223,6 +224,7 @@ class _Recorder:
         self.captured: list[tuple[int, dict[str, Any]]] = []
         self.claimed_for: list[int] = []
         self.outreach_claims: list[tuple[int, str]] = []
+        self.conversations: list[tuple[int, CapturedConversation]] = []  # ai: claude-opus-5-5 | 2026-11-18
         self.auth_calls: list[str] = []
         self.auth_failure: Exception | None = None
 
@@ -270,6 +272,11 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             return None
         return {"contact_id": 5, "full_name": "Jane", "message": f"Hi from user {user_id}"}
 
+    # ai: claude-opus-5-5 | 2026-11-18
+    def fake_capture_conversation(user_id: int, conversation: CapturedConversation) -> dict[str, Any]:
+        recorder.conversations.append((user_id, conversation))
+        return {"suggestion_id": 7, "status": "suggested", "added": True, "messages": len(conversation.messages)}
+
     def fake_claim(user_id: int) -> list[dict[str, Any]]:
         recorder.claimed_for.append(user_id)
         return [{"url": f"https://example.com/for-user-{user_id}"}]
@@ -290,6 +297,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         suggest_answers=fake_suggest_answers,
         record_answer_use=lambda user_id, ids: recorder.answer_uses.append((user_id, ids)) or len(ids),
         claim_outreach_draft=fake_claim_outreach_draft,
+        capture_conversation=fake_capture_conversation,
         ws_tickets=tickets,
     )
     listener.start()
@@ -378,6 +386,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/application-answers/suggest"),
     ("POST", "/ws-ticket"),
     ("POST", "/linkedin-outreach/claim"),
+    ("POST", "/linkedin-messages/capture"),  # ai: claude-opus-5-5 | 2026-11-18
 ]
 
 
@@ -624,6 +633,54 @@ def test_linkedin_outreach_claim_rejects_bad_bodies(running_listener: Any, paylo
     )
     assert status == HTTPStatus.BAD_REQUEST
     assert recorder.outreach_claims == []
+
+
+# ai: claude-opus-5-5 | 2026-11-18
+_MEMBER_URL = "https://www.linkedin.com/in/ACoAAB1rItA" + "x" * 28
+_CONVERSATION = {
+    "conversation_id": "2-MzEyODlk+Yz/UtMTNmNi00==",
+    "counterpart_name": "  Rita Recruiter ",
+    "counterpart_profile_url": _MEMBER_URL,
+    "messages": [
+        {"sent_at_ms": 1_762_298_888_637, "from_owner": False, "sender_name": "Rita Recruiter",
+         "subject": "Staff role", "text": "Hi!"},
+        {"sent_at_ms": 1_762_299_278_440, "from_owner": True, "text": "Tell me more"},
+    ],
+}
+
+
+def test_a_captured_conversation_is_stored_for_the_caller(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+
+    status, body, _ = _post_json(listener, "/linkedin-messages/capture", _CONVERSATION, token=USER_B_TOKEN)
+
+    assert status == HTTPStatus.CREATED
+    assert json.loads(body) == {"suggestion_id": 7, "status": "suggested", "added": True, "messages": 2}
+    [(user_id, conversation)] = recorder.conversations
+    assert user_id == USER_B
+    assert (conversation.conversation_id, conversation.counterpart_name) == ("2-MzEyODlk+Yz/UtMTNmNi00==", "Rita Recruiter")
+    first, reply = conversation.messages
+    # deliveredAt's milliseconds are cut (not rounded), as the export's DATE has it.
+    assert first.sent_at.isoformat() == "2025-11-04T23:28:08+00:00"
+    assert (first.subject, first.text, reply.from_owner, reply.subject) == ("Staff role", "Hi!", True, "")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"conversation_id": "not-a-thread"},
+        {"counterpart_name": "   "},
+        {"counterpart_profile_url": "https://example.com/in/rita"},
+        {"messages": []},
+        {"messages": [{"sent_at_ms": 0, "from_owner": False, "text": "x"}]},
+    ],
+)
+def test_a_capture_that_isnt_a_linkedin_thread_is_refused(running_listener: Any, change: dict[str, Any]) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(listener, "/linkedin-messages/capture", {**_CONVERSATION, **change})
+    assert status == HTTPStatus.BAD_REQUEST
+    assert "LinkedIn conversation" in json.loads(body)["error"]
+    assert recorder.conversations == []
 
 
 def test_capture_is_submitted_for_the_authenticated_user(running_listener: Any) -> None:
