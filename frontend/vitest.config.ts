@@ -37,5 +37,11 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // ai: claude-opus-5-5 | 2026-11-18
+    // Half the cores, not vitest's default of nearly all of them: each worker
+    // builds a jsdom per file, and at full width a ~100ms test stretched past
+    // the 5s timeout often enough to fail the pre-push gate about 1 run in 3.
+    // Measured on 8 cores: same ~42s wall time, slowest test 1.7s instead of 3-5s+.
+    maxWorkers: "50%",
   },
 });
