@@ -83,6 +83,11 @@ def _c_no_control(method: str, rule: str, payload: dict[str, Any] | None = None,
 
 CASES: list[Case] = [
     _c("DELETE", "/api/application-answers/<int:answer_id>", answer_id="answer"),
+    # ai: claude-opus-5-5 | 2026-11-17 -- POST /api/application-answers/merge names its ids
+    # in the body (no path id, so not listable here); see
+    # test_merge_rejects_another_users_answer_and_changes_nothing.
+    _c("PUT", "/api/application-answers/<int:answer_id>", {"question_text": "x?", "answer_text": "y"}, answer_id="answer"),
+    _c("DELETE", "/api/application-answers/aliases/<int:alias_id>", alias_id="answer_alias"),
     _c("PUT", "/api/applications/<int:job_id>", {"company": "x", "job_title": "y"}, job_id="job"),
     _c("POST", "/api/applications/<int:job_id>/stages", job_id="job"),
     _c("DELETE", "/api/browser-capture-queue/<int:item_id>", item_id="queue_item"),
@@ -372,6 +377,10 @@ class Tenants:
             )
             ins(cur, "job_contacts", job_id=lead_id, contact_id=contact_id, created_at=_TS)  # ai: claude-opus-5-5 | 2026-11-11
             ins(cur, "job_sightings", job_id=job_id, seen_at=_TS, source=_MARKER, channel="email")  # ai: claude-opus-5-5 | 2026-11-15
+            self.ids["answer_alias"] = ins(  # ai: claude-opus-5-5 | 2026-11-17
+                cur, "application_answer_aliases", answer_id=self.ids["answer"],
+                question_text=f"{_MARKER} alias?", question_normalized=f"{_MARKER.lower()}-alias-{next(_SEQUENCE)}",
+            )
             # ai: claude-opus-5-5 | 2026-11-11 -- one suggestion per status the routes start from
             for kind, status in (("suggestion", "suggested"), ("dismissed_suggestion", "dismissed")):
                 self.ids[kind] = ins(

@@ -96,6 +96,48 @@ describe("saved answers", () => {
     expect(page.document.querySelector('input[value="opt2"]').checked).toBe(true);
     expect(results.filled).toEqual(expect.arrayContaining(["Do you hold a security clearance?", "Willing to work onsite?"]));
   });
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  it("matches a merged answer by any of its wordings, exactly", async () => {
+    const page = openForm();
+    await page.runAutofill({
+      profile: PROFILE,
+      answers: [{
+        id: 7,
+        question_text: "Current city",
+        answer_text: "Raleigh",
+        aliases: [{ id: 70, question_text: "City" }],
+      }],
+    });
+
+    // An exact alias match overrides the profile rule, as an exact question does.
+    expect(page.document.getElementById("city").value).toBe("Raleigh");
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  it("reports each saved answer it filled once, for the usage counts", async () => {
+    const page = openForm();
+    await page.runAutofill({
+      profile: PROFILE,
+      answers: [
+        { id: 4, question_text: "What is your notice period?", answer_text: "2 weeks" },
+        { id: 5, question_text: "Do you hold a security clearance?", answer_text: "No", aliases: [{ id: 50, question_text: "Why this company?" }] },
+        { id: 6, question_text: "Unasked question?", answer_text: "x" },
+      ],
+    });
+
+    const reports = page.sentMessages.filter((m) => m.action === "recordAnswerUse");
+    expect(reports).toHaveLength(1);
+    expect(reports[0].answerIds.sort()).toEqual([4, 5]);
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  it("reports nothing when no saved answer was used", async () => {
+    const page = openForm();
+    await page.runAutofill({ profile: PROFILE, answers: [] });
+
+    expect(page.sentMessages.some((m) => m.action === "recordAnswerUse")).toBe(false);
+  });
 });
 
 describe("answer review panel", () => {

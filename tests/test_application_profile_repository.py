@@ -17,8 +17,15 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
+from backend.db.repositories.application_answers import (
+    AnswerNotFoundError,
+    QuestionTakenError,
+)
 from backend.db.row_level_security import set_current_user
-from web.extension_listener import learn_application_answers
+from web.extension_listener import (
+    learn_application_answers,
+    record_application_answer_use,
+)
 
 # ai: claude-sonnet-5 | 2026-08-13
 # ai: claude-sonnet-5 | 2026-08-20 — every repo call below now takes a
@@ -242,5 +249,264 @@ def test_learn_application_answers_saves_the_batch_through_the_real_schema(pg_ds
         assert set(rows) == {"What is your notice period?", "Willing to relocate?"}
         assert rows["What is your notice period?"]["answer_text"] == "2 weeks"
         assert rows["Willing to relocate?"]["platform"] == "Greenhouse"
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+# Usage counts, merging and aliases -- run against the real tables, since the
+# upsert's alias routing and the merge are multi-statement SQL a fake can't check.
+
+
+def _other_user_id(conn) -> int:
+    account = PostgresUserAccountRepository(conn).create_pending(
+        "second@example.com", "seed-second@example.com", "2099-01-01"
+    )
+    conn.commit()
+    return account["id"]
+
+
+def test_answers_start_unused_with_no_aliases(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        saved = repo.upsert(user_id, question_text="Notice period?", answer_text="2 weeks")
+        conn.commit()
+
+        assert saved["use_count"] == 0
+        assert saved["last_used_at"] is None
+        assert saved["aliases"] == []
+    finally:
+        conn.close()
+
+
+def test_record_answer_use_counts_each_answer_once_per_fill(pg_dsn: str) -> None:
+    """Through the listener's callback: duplicates in one report count once,
+    another user's id is ignored, and updated_at (the last edit) is left alone."""
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        other_user = _other_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        set_current_user(conn.cursor(), other_user)
+        theirs = repo.upsert(other_user, question_text="Theirs?", answer_text="B")
+        conn.commit()
+        set_current_user(conn.cursor(), user_id)
+        first = repo.upsert(user_id, question_text="Notice period?", answer_text="2 weeks")
+        second = repo.upsert(user_id, question_text="Relocate?", answer_text="No")
+        conn.commit()
+
+        ids = [first["id"], first["id"], second["id"], theirs["id"]]
+        assert record_application_answer_use(user_id, ids) == 2
+        assert record_application_answer_use(user_id, [first["id"]]) == 1
+
+        notice = repo.get(user_id, first["id"])
+        assert notice["use_count"] == 2
+        assert notice["last_used_at"] is not None
+        assert notice["updated_at"] == first["updated_at"]
+        assert repo.get(user_id, second["id"])["use_count"] == 1
+        set_current_user(conn.cursor(), other_user)
+        assert repo.get(other_user, theirs["id"])["use_count"] == 0
+    finally:
+        conn.close()
+
+
+def test_merge_moves_questions_and_aliases_and_adds_usage(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Do you need sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Will you require a visa?", answer_text="no")
+        third = repo.upsert(user_id, question_text="Need H-1B sponsorship?", answer_text="Nope")
+        absorbed = repo.upsert(user_id, question_text="Sponsorship needed?", answer_text="No")
+        repo.record_use(user_id, [keep["id"], other["id"], third["id"]])
+        repo.record_use(user_id, [other["id"]])
+        # third already carries an alias, which has to follow it into keep.
+        repo.merge(user_id, third["id"], [absorbed["id"]])
+        unrelated = repo.upsert(user_id, question_text="Relocate?", answer_text="No")
+        conn.commit()
+
+        merged = repo.merge(
+            user_id, keep["id"], [other["id"], third["id"], keep["id"]], answer_text="No, not now or later."
+        )
+        conn.commit()
+
+        assert merged["id"] == keep["id"]
+        assert merged["question_text"] == "Do you need sponsorship?"
+        assert merged["answer_text"] == "No, not now or later."
+        assert merged["use_count"] == 4
+        assert merged["last_used_at"] is not None
+        assert sorted(a["question_text"] for a in merged["aliases"]) == [
+            "Need H-1B sponsorship?",
+            "Sponsorship needed?",
+            "Will you require a visa?",
+        ]
+        assert {row["id"] for row in repo.get_all(user_id)} == {keep["id"], unrelated["id"]}
+    finally:
+        conn.close()
+
+
+def test_merge_without_answer_text_keeps_the_kept_answer(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Q one?", answer_text="Kept")
+        other = repo.upsert(user_id, question_text="Q two?", answer_text="Dropped")
+        merged = repo.merge(user_id, keep["id"], [other["id"]])
+        conn.commit()
+
+        assert merged["answer_text"] == "Kept"
+        assert merged["use_count"] == 0
+        assert merged["last_used_at"] is None
+    finally:
+        conn.close()
+
+
+def test_merge_rejects_another_users_answer_and_changes_nothing(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        other_user = _other_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        set_current_user(conn.cursor(), other_user)
+        theirs = repo.upsert(other_user, question_text="Theirs?", answer_text="B")
+        conn.commit()
+        set_current_user(conn.cursor(), user_id)
+        mine = repo.upsert(user_id, question_text="Mine?", answer_text="A")
+        conn.commit()
+
+        with pytest.raises(AnswerNotFoundError):
+            repo.merge(user_id, mine["id"], [theirs["id"]])
+        conn.rollback()
+
+        assert repo.get(user_id, mine["id"])["aliases"] == []
+        set_current_user(conn.cursor(), other_user)
+        assert [row["id"] for row in repo.get_all(other_user)] == [theirs["id"]]
+    finally:
+        conn.close()
+
+
+def test_upsert_of_an_alias_wording_updates_the_merged_answer(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Do you need sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Will you require a visa?", answer_text="No")
+        repo.merge(user_id, keep["id"], [other["id"]])
+        conn.commit()
+
+        # The extension saves a correction under the alias wording.
+        saved = repo.upsert(
+            user_id, question_text="  will you require a VISA?", answer_text="Yes", platform="Lever"
+        )
+        conn.commit()
+
+        assert saved["id"] == keep["id"]
+        assert saved["question_text"] == "Do you need sponsorship?"
+        assert saved["answer_text"] == "Yes"
+        assert saved["platform"] == "Lever"
+        assert len(repo.get_all(user_id)) == 1
+    finally:
+        conn.close()
+
+
+def test_update_edits_in_place_and_refuses_another_answers_wording(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        target = repo.upsert(user_id, question_text="Clearance?", answer_text="None")
+        keep = repo.upsert(user_id, question_text="Do you need sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Will you require a visa?", answer_text="No")
+        repo.merge(user_id, keep["id"], [other["id"]])
+        conn.commit()
+
+        edited = repo.update(
+            user_id, target["id"], question_text="Security clearance?", answer_text="Secret", platform=None
+        )
+        conn.commit()
+        assert edited["id"] == target["id"]
+        assert edited["question_normalized"] == "security clearance?"
+        assert edited["answer_text"] == "Secret"
+        assert len(repo.get_all(user_id)) == 2
+
+        for taken in ("do you need sponsorship?", "Will you require a visa?"):
+            with pytest.raises(QuestionTakenError):
+                repo.update(user_id, target["id"], question_text=taken, answer_text="x", platform=None)
+            conn.rollback()
+
+        with pytest.raises(AnswerNotFoundError):
+            repo.update(user_id, 999_999, question_text="New?", answer_text="x", platform=None)
+        conn.rollback()
+    finally:
+        conn.close()
+
+
+def test_update_to_its_own_alias_wording_promotes_it(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Will you require a visa?", answer_text="No")
+        repo.merge(user_id, keep["id"], [other["id"]])
+        conn.commit()
+
+        edited = repo.update(
+            user_id, keep["id"], question_text="Will you require a visa?", answer_text="No", platform=None
+        )
+        conn.commit()
+
+        assert edited["question_text"] == "Will you require a visa?"
+        assert edited["aliases"] == []
+    finally:
+        conn.close()
+
+
+def test_delete_alias_stops_matching_that_wording(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Visa?", answer_text="No")
+        [alias] = repo.merge(user_id, keep["id"], [other["id"]])["aliases"]
+        conn.commit()
+
+        repo.delete_alias(user_id, alias["id"])
+        conn.commit()
+        assert repo.get(user_id, keep["id"])["aliases"] == []
+
+        with pytest.raises(AnswerNotFoundError):
+            repo.delete_alias(user_id, alias["id"])
+        conn.rollback()
+
+        # The freed wording starts its own answer again.
+        fresh = repo.upsert(user_id, question_text="Visa?", answer_text="Maybe")
+        conn.commit()
+        assert fresh["id"] != keep["id"]
+    finally:
+        conn.close()
+
+
+def test_deleting_an_answer_deletes_its_aliases(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationAnswerRepository(conn)
+        keep = repo.upsert(user_id, question_text="Sponsorship?", answer_text="No")
+        other = repo.upsert(user_id, question_text="Visa?", answer_text="No")
+        repo.merge(user_id, keep["id"], [other["id"]])
+        repo.delete(user_id, keep["id"])
+        conn.commit()
+
+        fresh = repo.upsert(user_id, question_text="Visa?", answer_text="Yes")
+        conn.commit()
+        assert fresh["aliases"] == []
+        assert len(repo.get_all(user_id)) == 1
     finally:
         conn.close()

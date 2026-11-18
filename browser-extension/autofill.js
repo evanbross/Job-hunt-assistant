@@ -673,12 +673,20 @@
   }
 
   // ai: claude-opus-5-5 | 2026-11-17
+  // Every wording a saved answer matches: its question plus the aliases it
+  // collected when answers were merged on the Application Profile tab.
+  function answerWordings(answer) {
+    const aliases = Array.isArray(answer.aliases) ? answer.aliases : [];
+    return [answer.question_text, ...aliases.map((alias) => alias.question_text)];
+  }
+
+  // ai: claude-opus-5-5 | 2026-11-17
   // Only an exact (normalized) match is trusted enough to override the
   // built-in category rules -- see fillControl.
   function findExactBankAnswer(label, answers) {
     const norm = normalize(label);
     if (!norm) return null;
-    return answers.find((a) => normalize(a.question_text) === norm) || null;
+    return answers.find((a) => answerWordings(a).some((q) => normalize(q) === norm)) || null;
   }
 
   function findBankAnswer(label, answers) {
@@ -691,13 +699,15 @@
     let best = null;
     let bestScore = 0;
     for (const answer of answers) {
-      const qTokens = new Set(normalize(answer.question_text).split(/\W+/).filter((w) => w.length > 2));
-      if (qTokens.size === 0) continue;
-      const overlap = [...labelTokens].filter((t) => qTokens.has(t)).length;
-      const score = overlap / Math.max(labelTokens.size, qTokens.size);
-      if (score > bestScore) {
-        bestScore = score;
-        best = answer;
+      for (const wording of answerWordings(answer)) { // ai: claude-opus-5-5 | 2026-11-17
+        const qTokens = new Set(normalize(wording).split(/\W+/).filter((w) => w.length > 2));
+        if (qTokens.size === 0) continue;
+        const overlap = [...labelTokens].filter((t) => qTokens.has(t)).length;
+        const score = overlap / Math.max(labelTokens.size, qTokens.size);
+        if (score > bestScore) {
+          bestScore = score;
+          best = answer;
+        }
       }
     }
     return bestScore >= 0.6 ? best : null;
@@ -1736,6 +1746,7 @@
         if (exactAnswer && await fillWithAnswer(control, exactAnswer.answer_text, platform)) {
           markFilled(control.el);
           filled.push(label);
+          usedAnswerIds.add(exactAnswer.id); // ai: claude-opus-5-5 | 2026-11-17
           return;
         }
 
@@ -1885,6 +1896,7 @@
         if (bankAnswer && await fillWithAnswer(control, bankAnswer.answer_text, platform)) {
           markFilled(control.el);
           filled.push(label);
+          usedAnswerIds.add(bankAnswer.id); // ai: claude-opus-5-5 | 2026-11-17
           return;
         }
 
@@ -1906,6 +1918,7 @@
     // second pass only touches genuinely new controls instead of
     // re-clicking ones pass one already filled.
     const processedEls = new Set();
+    const usedAnswerIds = new Set(); // ai: claude-opus-5-5 | 2026-11-17 -- see reportAnswerUse
     const unfilledControls = []; // ai: claude-opus-5-5 | 2026-11-17 -- for suggestForUnresolved
     async function processPass() {
       const newControls = discoverControls().filter(
@@ -1930,6 +1943,7 @@
     // reveal and cheap to extend if that's ever confirmed needed.
     await processPass();
     await processPass();
+    reportAnswerUse(usedAnswerIds); // ai: claude-opus-5-5 | 2026-11-17
 
     // ai: claude-opus-5-5 | 2026-11-17
     const ai = await suggestForUnresolved(unfilledControls, platform);
@@ -1941,6 +1955,21 @@
     renderReviewPanel();
 
     return { filled, unresolved: stillUnresolved, suggested: ai.suggested, suggestionError: ai.error };
+  }
+
+  // ai: claude-opus-5-5 | 2026-11-17
+  // Tells the app which saved answers this run filled, for the usage counts
+  // on the Application Profile tab. Fire-and-forget: a failure only costs a
+  // count, never the fill. Ids are checked because a row added by the review
+  // panel during this session has none until the next fetch.
+  function reportAnswerUse(answerIds) {
+    const ids = [...answerIds].filter((id) => Number.isInteger(id));
+    if (ids.length === 0) return;
+    try {
+      chrome.runtime.sendMessage({ action: 'recordAnswerUse', answerIds: ids }).catch(() => {});
+    } catch (err) {
+      console.warn('[JHA] could not report answer use', err);
+    }
   }
 
   function base64ToUint8Array(base64) {

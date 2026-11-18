@@ -219,6 +219,7 @@ class _Recorder:
         self.learned: list[tuple[int, list[tuple[str, str]], str | None]] = []
         self.suggested: list[tuple[int, list[FormQuestion], str | None]] = []  # ai: claude-opus-5-5 | 2026-11-17
         self.suggest_failure: Exception | None = None
+        self.answer_uses: list[tuple[int, list[int]]] = []  # ai: claude-opus-5-5 | 2026-11-17
         self.captured: list[tuple[int, dict[str, Any]]] = []
         self.claimed_for: list[int] = []
         self.outreach_claims: list[tuple[int, str]] = []
@@ -287,6 +288,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         ],
         learn_answers=fake_learn_answers,
         suggest_answers=fake_suggest_answers,
+        record_answer_use=lambda user_id, ids: recorder.answer_uses.append((user_id, ids)) or len(ids),
         claim_outreach_draft=fake_claim_outreach_draft,
         ws_tickets=tickets,
     )
@@ -493,6 +495,28 @@ def test_listener_learn_answers_rejects_invalid_batches(
     status, _, _ = _post_json(listener, "/application-answers", payload)
     assert status == HTTPStatus.BAD_REQUEST
     assert recorder.learned == []
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+def test_listener_records_answer_use_for_the_caller(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener, "/application-answers/used", {"answer_ids": [4, 7]}, token=USER_B_TOKEN
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {"recorded": 2}
+    assert recorder.answer_uses == [(USER_B, [4, 7])]
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@pytest.mark.parametrize("payload", [{"answer_ids": []}, {"answer_ids": ["x"]}, {}])
+def test_listener_record_answer_use_rejects_invalid_requests(
+    running_listener: Any, payload: dict[str, Any]
+) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(listener, "/application-answers/used", payload)
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.answer_uses == []
 
 
 # ai: claude-opus-5-5 | 2026-11-17

@@ -29,39 +29,15 @@
 // ai: claude-sonnet-5 | 2026-08-13
 import { useEffect, useState } from "react";
 import type { CSSProperties } from "react";
+import ApplicationAnswerBank from "./ApplicationAnswerBank.tsx";
+import { fieldStyle, sectionHeaderStyle } from "./applicationProfileStyles.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
-import type { ApplicationAnswer, ApplicationProfile } from "../types/applicationProfile.ts";
+import type { ApplicationProfile } from "../types/applicationProfile.ts";
 import type { ApiErrorBody } from "../types/common.ts";
-import type { AppConfigResponse } from "../types/settings.ts";
 
 const titleStyle: CSSProperties = { fontSize: "18px", fontWeight: 700, lineHeight: 1.2 };
 const summaryStyle: CSSProperties = { color: "var(--text-muted)", fontSize: "12px", marginTop: "2px" };
-const sectionHeaderStyle: CSSProperties = {
-  fontSize: "11px",
-  fontWeight: "600",
-  color: "var(--text-muted)",
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  marginBottom: "10px",
-};
-const fieldStyle: CSSProperties = {
-  width: "100%",
-  fontSize: "13px",
-  padding: "7px 10px",
-  borderRadius: "var(--radius)",
-  border: "1px solid var(--border)",
-  background: "var(--surface)",
-  color: "var(--text)",
-  fontFamily: "inherit",
-  boxSizing: "border-box",
-};
 const labelStyle: CSSProperties = { fontSize: "12px", fontWeight: "600", color: "var(--text)", marginBottom: "4px", display: "block" };
-const rowStyle: CSSProperties = {
-  border: "1px solid var(--border)",
-  borderRadius: "var(--radius)",
-  padding: "10px 12px",
-  marginBottom: "8px",
-};
 
 // Local form-state shape: text fields always hold a string (never null) so
 // the unconditional .trim() calls in handleSaveProfile are safe -- see the
@@ -114,14 +90,6 @@ const emptyProfile: ProfileFormState = {
   previous_employers: [],
 };
 
-interface AnswerFormState {
-  question_text: string;
-  answer_text: string;
-  platform: string;
-}
-
-const emptyAnswerForm: AnswerFormState = { question_text: "", answer_text: "", platform: "" };
-
 // ai: claude-sonnet-5 | 2026-08-25
 // The standard OFCCP EEO-1 race/ethnicity categories, confirmed live against
 // a Lever posting's native <select name="eeo[race]"> — Greenhouse's EEO
@@ -167,66 +135,6 @@ function TriStateSelect({ value, onChange, yesLabel, noLabel }: TriStateSelectPr
   );
 }
 
-// ai: claude-opus-5-5 | 2026-11-17
-// The user setting backend/application_answer_suggestions.py checks before
-// each AI call (registry key autofill_ai_suggestions, default on). Stored as
-// a string like every generic user setting in GET/PUT /api/config.
-const AI_SUGGESTIONS_SETTING = "autofill_ai_suggestions";
-
-function AiSuggestionsToggle() {
-  const [enabled, setEnabled] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/config")
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(`Failed to load (${res.status})`))))
-      .then((cfg: AppConfigResponse) => setEnabled(String(cfg[AI_SUGGESTIONS_SETTING] ?? "true") !== "false"))
-      .catch(() => setEnabled(null));
-  }, []);
-
-  const toggle = async (next: boolean) => {
-    setSaving(true);
-    try {
-      const res = await fetch("/api/config", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ [AI_SUGGESTIONS_SETTING]: String(next) }),
-      });
-      if (!res.ok) {
-        const data: ApiErrorBody = await res.json().catch(() => ({}));
-        window.alert(data.error || `Save failed: ${res.status}`);
-        return;
-      }
-      setEnabled(next);
-    } catch (e) {
-      window.alert(describeFetchError(e));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (enabled === null) return null;
-  return (
-    <label style={{ display: "flex", gap: "8px", alignItems: "flex-start", fontSize: "13px", marginBottom: "12px" }}>
-      <input
-        type="checkbox"
-        checked={enabled}
-        disabled={saving}
-        onChange={(e) => toggle(e.target.checked)}
-        style={{ marginTop: "2px" }}
-      />
-      <span>
-        Let AI suggest answers to questions the extension doesn&apos;t recognize
-        <span style={{ display: "block", color: "var(--text-muted)", fontSize: "12px" }}>
-          Uses your AI provider (one request per Fill Application) and only what you&apos;ve told
-          the app. Suggestions are outlined in blue to check, and never cover gender, race,
-          veteran or disability questions, consent boxes or signatures.
-        </span>
-      </span>
-    </label>
-  );
-}
-
 /**
  * Full-page nav tab for the browser extension's application-form autofill data:
  * structured profile fields (name, city, work authorization, visa sponsorship, ...)
@@ -239,14 +147,6 @@ export default function ApplicationProfilePanel() {
   const [savingProfile, setSavingProfile] = useState(false);
   const [newEmployerInput, setNewEmployerInput] = useState("");
   const [scanningResume, setScanningResume] = useState(false);
-
-  const [answers, setAnswers] = useState<ApplicationAnswer[]>([]);
-  const [loadingAnswers, setLoadingAnswers] = useState(true);
-  const [answersError, setAnswersError] = useState<string | null>(null);
-  const [addForm, setAddForm] = useState<AnswerFormState>(emptyAnswerForm);
-  const [savingAnswer, setSavingAnswer] = useState(false);
-  const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState<AnswerFormState>(emptyAnswerForm);
 
   const fetchProfile = async () => {
     setLoadingProfile(true);
@@ -278,24 +178,8 @@ export default function ApplicationProfilePanel() {
     }
   };
 
-  const fetchAnswers = async () => {
-    setLoadingAnswers(true);
-    setAnswersError(null);
-    try {
-      const res = await fetch("/api/application-answers");
-      if (!res.ok) throw new Error(`Failed to load (${res.status})`);
-      const data: ApplicationAnswer[] = await res.json();
-      setAnswers(Array.isArray(data) ? data : []);
-    } catch (e) {
-      setAnswersError(describeFetchError(e));
-    } finally {
-      setLoadingAnswers(false);
-    }
-  };
-
   useEffect(() => {
     fetchProfile();
-    fetchAnswers();
   }, []);
 
   const handleSaveProfile = async () => {
@@ -385,88 +269,6 @@ export default function ApplicationProfilePanel() {
       setScanningResume(false);
     }
   }
-
-  const handleAddAnswer = async () => {
-    const question_text = addForm.question_text.trim();
-    const answer_text = addForm.answer_text.trim();
-    if (!question_text || !answer_text) {
-      window.alert("Question and answer are both required.");
-      return;
-    }
-    setSavingAnswer(true);
-    try {
-      const res = await fetch("/api/application-answers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question_text, answer_text, platform: addForm.platform.trim() || null }),
-      });
-      if (!res.ok) {
-        const data: ApiErrorBody = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Save failed (${res.status})`);
-      }
-      setAddForm(emptyAnswerForm);
-      await fetchAnswers();
-    } catch (e) {
-      window.alert("Save failed: " + describeFetchError(e));
-    } finally {
-      setSavingAnswer(false);
-    }
-  };
-
-  const startEdit = (answer: ApplicationAnswer) => {
-    setEditingId(answer.id);
-    setEditForm({
-      question_text: answer.question_text || "",
-      answer_text: answer.answer_text || "",
-      platform: answer.platform || "",
-    });
-  };
-
-  const cancelEdit = () => {
-    setEditingId(null);
-    setEditForm(emptyAnswerForm);
-  };
-
-  const handleEditSave = async () => {
-    const question_text = editForm.question_text.trim();
-    const answer_text = editForm.answer_text.trim();
-    if (!question_text || !answer_text) {
-      window.alert("Question and answer are both required.");
-      return;
-    }
-    try {
-      // The answer bank is keyed by normalized question text, so editing the
-      // question text re-targets (or merges into) a different bank entry rather
-      // than renaming this row in place — POST (upsert) is correct here, not PUT.
-      const res = await fetch("/api/application-answers", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question_text, answer_text, platform: editForm.platform.trim() || null }),
-      });
-      if (!res.ok) {
-        const data: ApiErrorBody = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Save failed (${res.status})`);
-      }
-      cancelEdit();
-      await fetchAnswers();
-    } catch (e) {
-      window.alert("Save failed: " + describeFetchError(e));
-    }
-  };
-
-  const handleDeleteAnswer = async (id: number) => {
-    if (!window.confirm("Delete this saved answer?")) return;
-    try {
-      const res = await fetch(`/api/application-answers/${id}`, { method: "DELETE" });
-      if (!res.ok) {
-        const data: ApiErrorBody = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Delete failed (${res.status})`);
-      }
-      await fetchAnswers();
-    } catch (e) {
-      window.alert("Delete failed: " + describeFetchError(e));
-    }
-  };
 
   return (
     <div>
@@ -762,119 +564,7 @@ export default function ApplicationProfilePanel() {
           </div>
         )}
 
-        <p style={sectionHeaderStyle}>Answer bank</p>
-        <p style={{ fontSize: "12px", color: "var(--text-muted)", marginTop: "-4px", marginBottom: "12px" }}>
-          {/* ai: claude-opus-5-5 | 2026-11-17 -- describes the extension's review panel */}
-          Application questions and your answers to them (e.g. "Do you have a security
-          clearance?"). The extension matches new questions against these by wording and reuses
-          the answer across postings and platforms, in text boxes, dropdowns and Yes/No buttons
-          alike. An answer saved for an exact question wins over the profile above, so it also
-          holds your corrections.
-        </p>
-        <AiSuggestionsToggle />
-
-        {loadingAnswers && <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>Loading…</p>}
-        {answersError && <p style={{ fontSize: "13px", color: "var(--red, #e05252)" }}>{answersError}</p>}
-        {!loadingAnswers && !answersError && answers.length === 0 && (
-          <p style={{ fontSize: "13px", color: "var(--text-muted)" }}>
-            No saved answers yet. After you fill an application with the extension, it offers
-            to save whatever you typed, picked or corrected; or add one manually below.
-          </p>
-        )}
-
-        {answers.map((answer) => (
-          <div key={answer.id} style={rowStyle}>
-            {editingId === answer.id ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-                <input
-                  type="text"
-                  value={editForm.question_text}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, question_text: e.target.value }))}
-                  placeholder="Question"
-                  style={fieldStyle}
-                />
-                <textarea
-                  value={editForm.answer_text}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, answer_text: e.target.value }))}
-                  rows={2}
-                  style={{ ...fieldStyle, resize: "vertical" }}
-                />
-                <input
-                  type="text"
-                  value={editForm.platform}
-                  onChange={(e) => setEditForm((prev) => ({ ...prev, platform: e.target.value }))}
-                  placeholder="Platform (optional, e.g. Ashby)"
-                  style={fieldStyle}
-                />
-                <div style={{ display: "flex", gap: "6px" }}>
-                  <button className="btn-primary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={handleEditSave}>
-                    Save
-                  </button>
-                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={cancelEdit}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {answer.platform && (
-                  <span style={{ fontSize: "10px", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                    {answer.platform}
-                  </span>
-                )}
-                <div style={{ fontSize: "13px", fontWeight: "600", color: "var(--text)", marginTop: "2px", marginBottom: "4px" }}>
-                  {answer.question_text}
-                </div>
-                <p style={{ fontSize: "13px", lineHeight: "1.6", color: "var(--text)", whiteSpace: "pre-wrap", margin: "0 0 8px 0" }}>
-                  {answer.answer_text}
-                </p>
-                <div style={{ display: "flex", gap: "6px" }}>
-                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={() => startEdit(answer)}>
-                    Edit
-                  </button>
-                  <button className="btn-secondary" style={{ fontSize: "11px", padding: "3px 10px" }} onClick={() => handleDeleteAnswer(answer.id)}>
-                    Delete
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        ))}
-
-        <div style={{ marginTop: "16px", borderTop: "1px solid var(--border)", paddingTop: "14px" }}>
-          <p style={sectionHeaderStyle}>Add a new answer</p>
-          <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-            <input
-              type="text"
-              value={addForm.question_text}
-              onChange={(e) => setAddForm((prev) => ({ ...prev, question_text: e.target.value }))}
-              placeholder="Question, as the application asks it"
-              style={fieldStyle}
-            />
-            <textarea
-              value={addForm.answer_text}
-              onChange={(e) => setAddForm((prev) => ({ ...prev, answer_text: e.target.value }))}
-              placeholder="Your answer"
-              rows={2}
-              style={{ ...fieldStyle, resize: "vertical" }}
-            />
-            <input
-              type="text"
-              value={addForm.platform}
-              onChange={(e) => setAddForm((prev) => ({ ...prev, platform: e.target.value }))}
-              placeholder="Platform (optional, e.g. Ashby)"
-              style={fieldStyle}
-            />
-            <button
-              className="btn-primary"
-              disabled={savingAnswer}
-              onClick={handleAddAnswer}
-              style={{ fontSize: "12px", padding: "6px 12px", alignSelf: "flex-start" }}
-            >
-              {savingAnswer ? "Saving…" : "Save answer"}
-            </button>
-          </div>
-        </div>
+        <ApplicationAnswerBank />
       </div>
     </div>
   );

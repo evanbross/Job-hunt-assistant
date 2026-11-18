@@ -51,6 +51,23 @@ describe("learnAnswers", () => {
   });
 });
 
+// ai: claude-opus-5-5 | 2026-11-17
+describe("recordAnswerUse", () => {
+  it("posts the used answer ids to the listener without a reply to wait on", async () => {
+    const env = new MockChromeEnvironment();
+    env.fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ recorded: 2 }) });
+    const background = await env.loadBackgroundScript();
+
+    const results = background.dispatchMessage({ action: "recordAnswerUse", answerIds: [3, 8] });
+    await flushAsync();
+
+    expect(results.some((r) => r.keptOpen === true)).toBe(false);
+    const [, init] = env.fetchMock.mock.calls.find(([u]) => String(u).endsWith("/application-answers/used"));
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body)).toEqual({ answer_ids: [3, 8] });
+  });
+});
+
 describe("answers stashed on submit", () => {
   it("keeps one entry per application page until it is cleared", async () => {
     const env = new MockChromeEnvironment();

@@ -38,8 +38,12 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
-from pydantic import BaseModel, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from backend.db.repositories.application_answers import (
+    AnswerNotFoundError,
+    QuestionTakenError,
+)
 from backend.resume_employer_scan_service import scan_resume_for_previous_employers
 from backend.utils.utils import current_user_id, get_repos
 
@@ -124,6 +128,23 @@ class ApplicationAnswerCreate(BaseModel):
         return stripped
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+class ApplicationAnswerMerge(BaseModel):
+    """POST /application-answers/merge body: fold merge_ids into keep_id,
+    optionally replacing keep_id's answer with answer_text."""
+
+    keep_id: int
+    merge_ids: list[int] = Field(min_length=1, max_length=200)
+    answer_text: str | None = None
+
+    @field_validator("answer_text")
+    @classmethod
+    def _blank_answer_means_keep(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
 @application_profile_bp.route("/application-profile", methods=["GET"])
 def get_application_profile() -> ResponseReturnValue:
     with get_repos() as repos:
@@ -199,6 +220,69 @@ def upsert_application_answer() -> ResponseReturnValue:
         )
         repos["conn"].commit()
     return jsonify(answer), 201
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+# Edits in place, question wording included. (The tab used to POST an edit,
+# which upserts by wording, so changing a question's wording left the old
+# answer behind as a second row.)
+@application_profile_bp.route("/application-answers/<int:answer_id>", methods=["PUT"])
+def update_application_answer(answer_id: int) -> ResponseReturnValue:
+    try:
+        body = ApplicationAnswerCreate.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "question_text and answer_text are required"}), 400
+
+    with get_repos() as repos:
+        try:
+            answer = repos["application_answers"].update(
+                current_user_id(),
+                answer_id,
+                question_text=body.question_text,
+                answer_text=body.answer_text,
+                platform=body.platform,
+            )
+        except AnswerNotFoundError:
+            return jsonify({"error": "Saved answer not found"}), 404
+        except QuestionTakenError:
+            return jsonify(
+                {"error": "Another saved answer already has that question. Merge the two instead."}
+            ), 409
+        repos["conn"].commit()
+    return jsonify(answer)
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@application_profile_bp.route("/application-answers/merge", methods=["POST"])
+def merge_application_answers() -> ResponseReturnValue:
+    try:
+        body = ApplicationAnswerMerge.model_validate(request.get_json(silent=True) or {})
+    except ValidationError:
+        return jsonify({"error": "keep_id and a non-empty merge_ids list are required"}), 400
+    if set(body.merge_ids) <= {body.keep_id}:
+        return jsonify({"error": "Pick at least one other answer to merge"}), 400
+
+    with get_repos() as repos:
+        try:
+            answer = repos["application_answers"].merge(
+                current_user_id(), body.keep_id, body.merge_ids, body.answer_text
+            )
+        except AnswerNotFoundError:
+            return jsonify({"error": "One of those saved answers no longer exists"}), 404
+        repos["conn"].commit()
+    return jsonify(answer)
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+@application_profile_bp.route("/application-answers/aliases/<int:alias_id>", methods=["DELETE"])
+def delete_application_answer_alias(alias_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        try:
+            repos["application_answers"].delete_alias(current_user_id(), alias_id)
+        except AnswerNotFoundError:
+            return jsonify({"error": "Question wording not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"deleted": alias_id})
 
 
 @application_profile_bp.route("/application-answers/<int:answer_id>", methods=["DELETE"])

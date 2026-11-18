@@ -136,6 +136,15 @@ def learn_application_answers(
     return saved
 
 
+# ai: claude-opus-5-5 | 2026-11-17
+def record_application_answer_use(user_id: int, answer_ids: list[int]) -> int:
+    """Count a use of each saved answer the extension's autofill just filled."""
+    with get_repos(user_id) as repos:
+        recorded = repos["application_answers"].record_use(user_id, answer_ids)
+        repos["conn"].commit()
+    return recorded
+
+
 # ai: claude-opus-5-5 | 2026-10-14
 def _claim_linkedin_outreach_draft(user_id: int, page_url: str) -> dict | None:
     """Called when the extension finishes loading a LinkedIn profile page."""
@@ -169,6 +178,7 @@ def start_extension_servers(
         get_answers=_get_application_answers_for_listener,
         learn_answers=learn_application_answers,
         suggest_answers=suggest_application_answers,
+        record_answer_use=record_application_answer_use,
         claim_outreach_draft=_claim_linkedin_outreach_draft,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,

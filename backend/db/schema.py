@@ -1774,6 +1774,13 @@ def migrate_schema(conn: Any) -> None:
             "ALTER TABLE contacts ADD CONSTRAINT contacts_source_check"
             " CHECK (source IN ('linkedin_import', 'manual'))"
         )
+    # ai: claude-opus-5-5 | 2026-11-17
+    # Answer-bank usage: how many applications the extension filled a saved answer
+    # into, and when it last did. Kept apart from updated_at, which is the last edit.
+    cur.execute(
+        "ALTER TABLE application_answers ADD COLUMN IF NOT EXISTS use_count INTEGER NOT NULL DEFAULT 0"
+    )
+    cur.execute("ALTER TABLE application_answers ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ")
     conn.commit()
     _migrate_legacy_outreach_to_interactions(conn)
     # ai: claude-opus-5-5 | 2026-11-16 -- one suggested lead per person, not per conversation
@@ -2185,6 +2192,27 @@ def create_tables(conn: Any) -> None:
             platform            TEXT,
             updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
+        """,
+        # ai: claude-opus-5-5 | 2026-11-17
+        # Other wordings of a saved answer's question, kept when answers are merged
+        # (backend/db/repositories/application_answers.py) so every wording still gets
+        # an exact match. A normalized wording belongs to at most one answer, as either
+        # its question_normalized or one alias -- the repository keeps the two tables
+        # from overlapping, since a UNIQUE constraint can't span them.
+        """
+        CREATE TABLE IF NOT EXISTS application_answer_aliases (
+            id                  SERIAL PRIMARY KEY,
+            user_id             INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            answer_id           INTEGER NOT NULL REFERENCES application_answers(id) ON DELETE CASCADE,
+            question_text       TEXT NOT NULL,
+            question_normalized TEXT NOT NULL,
+            created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (user_id, question_normalized)
+        )
+        """,
+        """
+        CREATE INDEX IF NOT EXISTS idx_application_answer_aliases_answer
+            ON application_answer_aliases (answer_id)
         """,
         """
         CREATE TABLE IF NOT EXISTS scanned_emails (

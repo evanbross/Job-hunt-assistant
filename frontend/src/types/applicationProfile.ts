@@ -56,6 +56,13 @@ export interface ApplicationProfile {
 }
 
 /** One row of GET /api/application-answers (application_answers table). */
+// ai: claude-opus-5-5 | 2026-11-17
+/** Another wording of a saved answer's question, collected by merging answers. */
+export interface ApplicationAnswerAlias {
+  id: number;
+  question_text: string;
+}
+
 export interface ApplicationAnswer {
   id: number;
   question_text: string;
@@ -63,4 +70,8 @@ export interface ApplicationAnswer {
   answer_text: string;
   platform: string | null;
   updated_at: string;
+  /** Applications the extension filled this answer into (since extension 1.37.0). */
+  use_count: number;
+  last_used_at: string | null;
+  aliases: ApplicationAnswerAlias[];
 }

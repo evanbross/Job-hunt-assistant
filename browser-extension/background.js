@@ -834,6 +834,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // ai: claude-opus-5-5 | 2026-11-17 -- autofill.js's reportAnswerUse.
+  if (message.action === 'recordAnswerUse') {
+    recordAnswerUse(message.answerIds);
+    return false;
+  }
+
   if (message.action === 'stashPendingAnswers') {
     stashPendingAnswers(message);
     return false;
@@ -875,6 +881,24 @@ async function saveLearnedAnswers(answers, platform) {
   } catch (err) {
     console.error('[JHA] saving learned answers failed:', err?.message || err);
     return { ok: false, error: 'Could not save your answers. Is Job Hunt App running?' };
+  }
+}
+
+// ai: claude-opus-5-5 | 2026-11-17
+// Counts a use of each saved answer autofill filled. Nothing waits on it, so
+// a failure is only logged.
+async function recordAnswerUse(answerIds) {
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/application-answers/used`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ answer_ids: answerIds }),
+    });
+    jhaReportAuth(res);
+    if (!res.ok) console.warn('[JHA] recording answer use failed:', res.status);
+  } catch (err) {
+    console.warn('[JHA] recording answer use failed:', err?.message || err);
   }
 }
 

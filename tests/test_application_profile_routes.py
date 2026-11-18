@@ -16,6 +16,12 @@ from typing import Any
 import pytest
 from flask import Flask
 
+from backend.db import PostgresUserAccountRepository, get_connection
+from backend.db.repositories.application_answers import (
+    AnswerNotFoundError,
+    QuestionTakenError,
+)
+from backend.utils.utils import get_repos
 from routes.application_profile import application_profile_bp
 
 # ai: claude-sonnet-5 | 2026-08-13
@@ -295,3 +301,123 @@ def test_delete_application_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     response = client.delete("/api/application-answers/5")
     assert response.status_code == 200
     assert repos["application_answers"].get_all(_FAKE_USER_ID) == []
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+# Editing in place, merging and removing aliases: HTTP mapping against a repo that
+# raises the real repository errors, then the same routes against the real tables.
+
+
+class _RaisingAnswerRepo:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def update(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise self.error
+
+    def merge(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise self.error
+
+    def delete_alias(self, *args: Any, **kwargs: Any) -> None:
+        raise self.error
+
+
+_ANSWER_BODY = {"question_text": "Clearance?", "answer_text": "None"}
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [(AnswerNotFoundError(1), 404), (QuestionTakenError("Clearance?"), 409)],
+)
+def test_update_application_answer_maps_repository_errors(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, expected_status: int
+) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": _RaisingAnswerRepo(error)}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put("/api/application-answers/1", json=_ANSWER_BODY)
+    assert response.status_code == expected_status
+
+
+def test_update_application_answer_requires_both_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": FakeApplicationAnswerRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put("/api/application-answers/1", json={"question_text": "Q?", "answer_text": "  "})
+    assert response.status_code == 400
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"keep_id": 1, "merge_ids": []},
+        {"keep_id": 1, "merge_ids": [1]},
+        {"merge_ids": [2]},
+        {"keep_id": "one", "merge_ids": [2]},
+    ],
+)
+def test_merge_application_answers_rejects_invalid_bodies(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any]
+) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": FakeApplicationAnswerRepo()}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.post("/api/application-answers/merge", json=body)
+    assert response.status_code == 400
+
+
+def test_merge_and_alias_delete_return_404_for_missing_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    repos = {"conn": FakeConnection(), "application_answers": _RaisingAnswerRepo(AnswerNotFoundError(9))}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    assert client.post("/api/application-answers/merge", json={"keep_id": 1, "merge_ids": [9]}).status_code == 404
+    assert client.delete("/api/application-answers/aliases/9").status_code == 404
+
+
+def test_answer_routes_against_the_real_tables(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Merge, edit in place, alias removal and listing through the real repository."""
+    conn = get_connection(pg_dsn)
+    try:
+        account = PostgresUserAccountRepository(conn).create_pending(
+            "owner@example.com", "seed-owner@example.com", "2099-01-01"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    user_id = account["id"]
+    app = Flask(__name__)
+    app.register_blueprint(application_profile_bp, url_prefix="/api")
+    monkeypatch.setattr("routes.application_profile.get_repos", lambda: get_repos(user_id))
+    monkeypatch.setattr("routes.application_profile.current_user_id", lambda: user_id)
+    client = app.test_client()
+
+    keep = client.post("/api/application-answers", json={"question_text": "Sponsorship?", "answer_text": "No"}).get_json()
+    other = client.post("/api/application-answers", json={"question_text": "Visa?", "answer_text": "no"}).get_json()
+
+    merged = client.post(
+        "/api/application-answers/merge",
+        json={"keep_id": keep["id"], "merge_ids": [other["id"]], "answer_text": " No, never "},
+    )
+    assert merged.status_code == 200
+    assert merged.get_json()["answer_text"] == "No, never"
+    [alias] = merged.get_json()["aliases"]
+    assert alias["question_text"] == "Visa?"
+
+    edited = client.put(
+        f"/api/application-answers/{keep['id']}",
+        json={"question_text": "Need sponsorship?", "answer_text": "No", "platform": "Ashby"},
+    )
+    assert edited.status_code == 200
+    assert edited.get_json()["question_text"] == "Need sponsorship?"
+
+    taken = client.post("/api/application-answers", json={"question_text": "Clearance?", "answer_text": "None"}).get_json()
+    conflict = client.put(
+        f"/api/application-answers/{taken['id']}", json={"question_text": "visa?", "answer_text": "x"}
+    )
+    assert conflict.status_code == 409
+
+    assert client.delete(f"/api/application-answers/aliases/{alias['id']}").status_code == 200
+    listed = {row["id"]: row for row in client.get("/api/application-answers").get_json()}
+    assert set(listed) == {keep["id"], taken["id"]}
+    assert listed[keep["id"]]["aliases"] == []
+    assert listed[keep["id"]]["use_count"] == 0

@@ -81,6 +81,9 @@ LearnAnswers = Callable[[int, list[tuple[str, str]], str | None], list[dict[str,
 # ai: claude-opus-5-5 | 2026-11-17 -- (user_id, questions, page_title) -> AI answer
 # suggestions for questions autofill couldn't fill itself.
 SuggestAnswers = Callable[[int, list[FormQuestion], str | None], SuggestionResult]
+# ai: claude-opus-5-5 | 2026-11-17 -- (user_id, answer_ids) -> how many were counted;
+# the saved answers autofill just filled into an application.
+RecordAnswerUse = Callable[[int, list[int]], int]
 # ai: claude-opus-5-5 | 2026-10-14 -- (user_id, page_url) -> staged LinkedIn
 # outreach draft for that profile page, or None.
 ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
@@ -106,6 +109,14 @@ class LearnAnswersRequest(BaseModel):
 
     answers: list[LearnedAnswer] = Field(min_length=1, max_length=100)
     platform: str | None = None
+
+
+# ai: claude-opus-5-5 | 2026-11-17
+class RecordAnswerUseRequest(BaseModel):
+    """POST /application-answers/used body: the ids of the saved answers one
+    "Fill Application" run filled in."""
+
+    answer_ids: list[int] = Field(min_length=1, max_length=200)
 
 
 # ai: claude-opus-5-5 | 2026-11-17
@@ -335,6 +346,7 @@ class JobImportListener:
         get_answers: GetAnswers | None = None,
         learn_answers: LearnAnswers | None = None,
         suggest_answers: SuggestAnswers | None = None,
+        record_answer_use: RecordAnswerUse | None = None,
         claim_outreach_draft: ClaimOutreachDraft | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
@@ -353,6 +365,7 @@ class JobImportListener:
         self._get_answers = get_answers
         self._learn_answers = learn_answers
         self._suggest_answers = suggest_answers
+        self._record_answer_use = record_answer_use
         self._claim_outreach_draft = claim_outreach_draft
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
@@ -377,6 +390,7 @@ class JobImportListener:
         get_answers = self._get_answers
         learn_answers = self._learn_answers
         suggest_answers = self._suggest_answers
+        record_answer_use = self._record_answer_use
         claim_outreach_draft = self._claim_outreach_draft
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
@@ -566,6 +580,36 @@ class JobImportListener:
                         logger.warning("Learning application answers failed: %s", exc)
                         self._send_json(
                             {"error": "Could not save answers."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
+                # ai: claude-opus-5-5 | 2026-11-17
+                if path == "/application-answers/used":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        use_request = RecordAnswerUseRequest.model_validate(payload)
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "answer_ids must be a non-empty list of answer ids."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if record_answer_use is None:
+                        self._send_json(
+                            {"error": "Answer bank unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    try:
+                        recorded = record_answer_use(user_id, use_request.answer_ids)
+                        self._send_json({"recorded": recorded})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Recording answer-bank use failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not record answer use."},
                             HTTPStatus.INTERNAL_SERVER_ERROR,
                         )
                     return
@@ -855,6 +899,7 @@ def start_job_import_listener(
     get_answers: GetAnswers | None = None,
     learn_answers: LearnAnswers | None = None,
     suggest_answers: SuggestAnswers | None = None,
+    record_answer_use: RecordAnswerUse | None = None,
     claim_outreach_draft: ClaimOutreachDraft | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
@@ -891,6 +936,7 @@ def start_job_import_listener(
             get_answers=get_answers,
             learn_answers=learn_answers,
             suggest_answers=suggest_answers,
+            record_answer_use=record_answer_use,
             claim_outreach_draft=claim_outreach_draft,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
