@@ -151,7 +151,11 @@ pytest:
     TEST_DATABASE_EXTRA_HOSTS: postgres
     REDIS_URL: redis://redis:6379/0
   script:
-    - uv sync --frozen --no-group devkit  # devkit is a path dep on ../infra, absent in CI
+    # ai: claude-opus-5-5 | 2026-11-19
+    # zt-common is a path dependency on ../infra/zt-common (the shared-infra repo). Fetching it
+    # with the job token needs this project on shared-infra's CI/CD job token allowlist.
+    - git clone --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/EvanRoss/shared-infra.git" ../infra
+    - uv sync --frozen
     - uv run --frozen python scripts/provision_ci_test_role.py
         postgresql://postgres:ci-only-password@postgres:5432/postgres ci-only-app-password
     - uv run --frozen pytest -q --junitxml=report.xml --cov=backend --cov=routes --cov=web --cov-report=term --cov-report=xml

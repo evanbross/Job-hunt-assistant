@@ -13,7 +13,9 @@
 # every process; the first argument picks which (deploy/docker-entrypoint.sh):
 # web | listener | worker | maintenance | beat | migrate | backup.
 #
-#   docker build -t registry.example.com/job-hunt-assistant:1.0.0 .
+#   docker build --build-context zt-common=../infra/zt-common \n#       -t registry.example.com/job-hunt-assistant:1.0.0 .
+#
+# (scripts/release.py build passes the build context itself.)
 #
 # Built to run with a read-only root filesystem and a tmpfs at /tmp
 # (deploy/docker-compose.prod.yml): nothing here expects to write anywhere else.
@@ -23,6 +25,14 @@ ARG NODE_IMAGE=node:22-bookworm-slim
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.9.4
 
 FROM ${UV_IMAGE} AS uv
+
+# ai: claude-opus-5-5 | 2026-11-19
+# ── zt-common, the shared package in the sibling ../infra repo ─────────────────
+# It's outside this build context, so the build gets it as a named context
+# (--build-context zt-common=../infra/zt-common), which replaces this stage. The stage
+# itself only runs when that was left out, to say so instead of failing obscurely.
+FROM ${UV_IMAGE} AS zt-common
+RUN echo "zt-common is missing: build with --build-context zt-common=../infra/zt-common" >&2 && exit 1
 
 # ── The built single-page frontend, served by the web process ───────────────────
 FROM ${NODE_IMAGE} AS frontend
@@ -44,9 +54,13 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_LINK_MODE=copy
 WORKDIR /src
 COPY pyproject.toml uv.lock ./
+# ai: claude-opus-5-5 | 2026-11-19
+# Where pyproject's ../infra/zt-common path points from /src. --no-editable installs a
+# real copy into /opt/venv, since /infra isn't carried into the runtime stage.
+COPY --from=zt-common pyproject.toml /infra/zt-common/pyproject.toml
+COPY --from=zt-common src/ /infra/zt-common/src/
 # The app runs from source (/app on PYTHONPATH), so the project itself isn't installed.
-# --no-default-groups, not --no-dev: also skips the devkit group (a path dep on ../infra).
-RUN uv sync --frozen --no-default-groups --no-install-project
+RUN uv sync --frozen --no-dev --no-install-project --no-editable
 
 # ── Runtime ─────────────────────────────────────────────────────────────────────
 FROM ${PYTHON_IMAGE} AS runtime

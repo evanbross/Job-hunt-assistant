@@ -34,6 +34,9 @@ dependencies = [
     "sentry-sdk>=2.40",
     "nh3>=0.3.7",
     "tzdata>=2026.2",
+    # Shared ZombieTech code (Caddy registration, SMTP) from the sibling ../infra repo.
+    # The image build gets it as a named build context (Dockerfile, scripts/release.py).
+    "zt-common",
 ]
 
 [build-system]
@@ -50,19 +53,8 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.5.0",
 ]
-# Shared dev-Caddy helpers from the sibling ../infra repo (local dev only). Its own
-# group, not `dev`, because CI installs `dev` with no ../infra checkout: CI and the
-# Dockerfile exclude it with --no-group devkit / --no-default-groups, and app.py's
-# import of it is guarded, so the app runs fine without it.
-devkit = [
-    "zt-devkit",
-]
-
-[tool.uv]
-default-groups = ["dev", "devkit"]
-
 [tool.uv.sources]
-zt-devkit = { path = "../infra/devkit", editable = true }
+zt-common = { path = "../infra/zt-common", editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

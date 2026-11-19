@@ -231,12 +231,42 @@ def test_the_image_carries_the_commit_deploy_looks_up(release: ModuleType, monke
     calls: list[list[str]] = []
     monkeypatch.setattr(release, "run", lambda argv, **_: calls.append(argv) or "")
 
-    release.Docker().build(Path("context"), IMAGE, release.Commit(sha="a" * 40, version="v1.4.0"))
+    release.Docker().build(REPO_ROOT, IMAGE, release.Commit(sha="a" * 40, version="v1.4.0"))
 
     assert "APP_RELEASE=v1.4.0" in calls[0] and f"APP_REVISION={'a' * 40}" in calls[0]
     dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert f'{release.REVISION_LABEL}="${{APP_REVISION}}"' in dockerfile
     assert 'ENV SENTRY_RELEASE="${APP_RELEASE}"' in dockerfile
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_the_build_gets_zt_common_from_where_pyproject_points(
+    release: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real pyproject.toml and ../infra: the named context the build passes is the
+    package uv installs locally, under the stage name the Dockerfile copies from."""
+    calls: list[list[str]] = []
+    monkeypatch.setattr(release, "run", lambda argv, **_: calls.append(argv) or "")
+
+    release.Docker().build(REPO_ROOT, IMAGE, release.Commit(sha="a" * 40, version="v1.4.0"))
+
+    argv = calls[0]
+    context_arg = argv[argv.index("--build-context") + 1]
+    name, _, path = context_arg.partition("=")
+    assert name == release.SHARED_PACKAGE
+    assert (Path(path) / "src" / "zt_common" / "__init__.py").is_file()
+    dockerfile = (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert f"AS {release.SHARED_PACKAGE}\n" in dockerfile
+    assert f"COPY --from={release.SHARED_PACKAGE} " in dockerfile
+
+
+def test_a_missing_infra_checkout_is_named(release: ModuleType, tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.uv.sources]\nzt-common = { path = "../no-such-infra/zt-common", editable = true }\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(release.ReleaseError, match="check out the infra repo"):
+        release.shared_package_dir(tmp_path)
 
 
 # ── host-deploy.sh, run for real with a stand-in docker ───────────────────────

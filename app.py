@@ -54,6 +54,10 @@ from pathlib import Path
 import psycopg2
 from flask import Flask
 
+# ai: claude-opus-5-5 | 2026-11-19
+# Shared Caddy client from the zt-common package (../infra/zt-common), a runtime dependency.
+from zt_common import caddy_registry as _caddy_registry
+
 import config
 from backend.candidate_profile_file_sync import start_candidate_profile_file_watcher
 from backend.celery_app import (  # ai: claude-fable-5 | 2026-07-16
@@ -74,15 +78,6 @@ from web.serving import (
     install_trusted_proxies,
     verify_database_ready,
 )
-
-# ai: claude-opus-5-5 | 2026-11-12
-# Shared dev-Caddy client from the zt-devkit package (../infra/devkit), installed by
-# `uv sync` via the `devkit` dependency group. Optional on purpose: CI, Docker and the
-# desktop build don't install it, and only the dev Caddy registration uses it.
-try:
-    from zt_devkit import caddy_registry as _caddy_registry
-except ImportError:
-    _caddy_registry = None
 
 logger = logging.getLogger(__name__)
 
@@ -383,7 +378,6 @@ def _stop_celery_process(proc: _subprocess.Popen, name: str) -> None:
 
 # ai: claude-opus-5-5 | 2026-11-12 -- deregistration now always scheduled.
 def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
-    assert _caddy_registry is not None
     # Scheduled even if registration fails now: the reconciler below may register
     # the route later, and deregister() is a no-op for a route that isn't there.
     atexit.register(_caddy_registry.deregister, name)
@@ -404,10 +398,8 @@ def _register_with_caddy(name: str, port: int, scheme: str) -> bool:
 # ai: claude-opus-5-5 | 2026-11-05 -- was inline in the __main__ block.
 def _register_caddy_routes(named_ports: list[tuple[str, int | None, str]]) -> None:
     """Register each (name, port, scheme) whose port is known with the dev Caddy and
-    keep the registrations alive. A no-op when zt-devkit (../infra/devkit) isn't installed."""
-    if _caddy_registry is None:
-        return
-    registry = _caddy_registry
+    keep the registrations alive."""
+    registry = _caddy_registry  # ai: claude-opus-5-5 | 2026-11-19 -- zt-common is now required
     # ai: claude-sonnet-5 | 2026-08-07
     # The browser extension talks to the listener servers directly (see
     # browser-extension/background.js) — registering them under stable Caddy

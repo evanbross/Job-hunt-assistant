@@ -35,15 +35,18 @@ yet. See backend/settings_registry.py for the smtp_* system-setting specs.
 
 Defaults to ../infra's Mailhog for local dev — read sent mail at
 http://mailhog.localhost, no real delivery happens locally.
+
+The SMTP conversation itself is zt_common.smtp (../infra/zt-common), shared with the
+other apps; this module supplies JHA's settings and message templates.
 """
 
 from __future__ import annotations
 
 import logging
-import smtplib
-import socket
-from email.message import EmailMessage
 from typing import TypedDict
+
+from zt_common import smtp
+from zt_common.smtp import SmtpConfig, SmtpDeliveryError
 
 from backend.settings_service import get_setting
 from backend.utils.utils import get_repos
@@ -51,13 +54,8 @@ from backend.utils.utils import get_repos
 logger = logging.getLogger(__name__)
 
 
-# ai: claude-opus-5-5 | 2026-11-10
-class SmtpDeliveryError(OSError):
-    """Sending through the SMTP relay failed. The message names the relay and the
-    reason (e.g. the host name could not be found) but never the password, so an
-    admin can be shown it. An OSError, so existing `except OSError` callers still
-    catch every failure, including a malformed port, which used to escape them
-    as a ValueError."""
+# ai: claude-opus-5-5 | 2026-11-19 -- SmtpDeliveryError now comes from zt_common.smtp.
+__all__ = ["SmtpDeliveryError", "send_email", "send_verification_email"]
 
 
 class _SmtpSettings(TypedDict):
@@ -136,47 +134,28 @@ def send_verification_email(to: str, link: str, purpose: str) -> None:
     logger.info("Sent %s verification email to %s", purpose, to)
 
 
-# ai: gpt-5 | 2026-10-04
+# ai: claude-opus-5-5 | 2026-11-19
+def _smtp_config(saved: _SmtpSettings) -> SmtpConfig:
+    """The saved settings are text; a port that isn't a number fails like any other
+    delivery problem, so the admin sees why instead of a ValueError escaping."""
+    try:
+        port = int(saved["port"])
+    except ValueError as exc:
+        raise SmtpDeliveryError(
+            f"Could not send through the SMTP relay {saved['host']!r} port {saved['port']!r}: "
+            "the port is not a number"
+        ) from exc
+    return SmtpConfig(
+        host=saved["host"],
+        port=port,
+        from_address=saved["from_address"],
+        user=saved["user"],
+        password=saved["password"],
+        use_tls=saved["use_tls"].lower() == "true",
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-19 -- delivery moved to zt_common.smtp.
 def send_email(*, to: str, subject: str, body_text: str) -> None:
     """Send a plain-text system email through the configured SMTP relay."""
-    smtp_settings = _load_smtp_settings()
-
-    message = EmailMessage()
-    message["Subject"] = subject
-    message["From"] = smtp_settings["from_address"]
-    message["To"] = to
-    message.set_content(body_text)
-
-    # ai: claude-opus-5-5 | 2026-11-10 -- the relay is quoted with repr() so stray
-    # whitespace in a saved host shows up in the error instead of hiding in it.
-    relay = f"{smtp_settings['host']!r} port {smtp_settings['port']!r}"
-    try:
-        with smtplib.SMTP(
-            smtp_settings["host"], int(smtp_settings["port"]), timeout=10
-        ) as smtp:
-            if smtp_settings["use_tls"].lower() == "true":
-                smtp.starttls()
-            if smtp_settings["user"]:
-                smtp.login(smtp_settings["user"], smtp_settings["password"])
-            smtp.send_message(message)
-    except (OSError, smtplib.SMTPException, ValueError) as exc:
-        logger.exception("SMTP delivery to %s through %s failed", to, relay)
-        raise SmtpDeliveryError(
-            f"Could not send through the SMTP relay {relay}: {_describe_failure(exc)}"
-        ) from exc
-
-
-# ai: claude-opus-5-5 | 2026-11-10
-def _describe_failure(exc: BaseException) -> str:
-    """A short reason an admin can act on, for the common failures."""
-    if isinstance(exc, socket.gaierror):
-        return f"the host name could not be found ({exc})"
-    if isinstance(exc, smtplib.SMTPAuthenticationError):
-        return "the relay rejected the SMTP user name or password"
-    if isinstance(exc, ConnectionRefusedError):
-        return "nothing is accepting connections at that host and port"
-    if isinstance(exc, TimeoutError):
-        return "the connection timed out"
-    if isinstance(exc, ValueError):
-        return "the port is not a number"
-    return f"{type(exc).__name__}: {exc}"
+    smtp.send_email(_smtp_config(_load_smtp_settings()), to=to, subject=subject, body_text=body_text)
