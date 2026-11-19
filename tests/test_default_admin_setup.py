@@ -44,6 +44,7 @@ from urllib.parse import parse_qs, urlparse
 
 import psycopg2
 import pytest
+from zt_common import smtp as zt_smtp
 
 import config
 import routes.session_auth as session_auth_module
@@ -232,7 +233,7 @@ def test_a_failed_verification_send_tells_the_admin_why(client, monkeypatch) -> 
     def _unknown_host(host: str, port: int, timeout: float) -> None:
         raise socket.gaierror(-2, "Name or service not known")
 
-    monkeypatch.setattr(smtp_sender.smtplib, "SMTP", _unknown_host)
+    monkeypatch.setattr(zt_smtp.smtplib, "SMTP", _unknown_host)  # ai: claude-opus-5-5 | 2026-11-19
     _login_default_admin(client)
     client.put("/api/settings/system", json={"smtp_host": "smtp.example.invalid", "smtp_port": "587"})
 
@@ -240,7 +241,7 @@ def test_a_failed_verification_send_tells_the_admin_why(client, monkeypatch) -> 
 
     assert resp.status_code == 502
     error = resp.get_json()["error"]
-    assert "'smtp.example.invalid' port '587'" in error
+    assert "'smtp.example.invalid' port 587" in error  # ai: claude-opus-5-5 | 2026-11-19 -- port is an int now
     assert "host name could not be found" in error
 
 

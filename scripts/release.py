@@ -39,6 +39,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -54,6 +55,9 @@ DEPLOY_FILES: tuple[str, ...] = ("deploy/docker-compose.prod.yml", "deploy/Caddy
 HOST_SCRIPT = "host-deploy.sh"
 # Node projects the full gate tests; a fresh worktree has no node_modules.
 NODE_PROJECTS: tuple[str, ...] = ("frontend", "browser-extension")
+# ai: claude-opus-5-5 | 2026-11-19
+# The shared package outside the checkout; the Dockerfile reads it from a build context of this name.
+SHARED_PACKAGE = "zt-common"
 
 _SHA = re.compile(r"[0-9a-f]{40}")
 # registry/path/name: lower-case path components, no tag or digest (the version is the tag).
@@ -169,6 +173,7 @@ class Docker:
                 "docker", "build", "--pull",
                 "--build-arg", f"APP_RELEASE={commit.version}",
                 "--build-arg", f"APP_REVISION={commit.sha}",
+                "--build-context", f"{SHARED_PACKAGE}={shared_package_dir(context)}",  # ai: claude-opus-5-5 | 2026-11-19
                 "-t", image, str(context),
             ]
         )
@@ -191,6 +196,17 @@ class Docker:
         if not _SHA.fullmatch(label):
             raise ReleaseError(f"{image} has no commit label ({REVISION_LABEL}); build it with `release.py build`")
         return label
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def shared_package_dir(context: Path) -> Path:
+    """Where the checkout's pyproject.toml ([tool.uv.sources]) says zt-common lives,
+    resolved from the checkout, so the image builds the same copy the tests ran on."""
+    sources = tomllib.loads((context / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["uv"]["sources"]
+    package_dir = (context / sources[SHARED_PACKAGE]["path"]).resolve()
+    if not (package_dir / "pyproject.toml").is_file():
+        raise ReleaseError(f"{SHARED_PACKAGE} isn't at {package_dir}: check out the infra repo next to this one")
+    return package_dir
 
 
 def run_every_check(worktree: Path, env_file: Path = REPO_ROOT / ".env") -> None:
