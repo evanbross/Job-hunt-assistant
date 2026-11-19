@@ -49,6 +49,7 @@ from backend.crypto import (
     encrypt_bytes,
     encrypt_secret,
 )
+from backend.db.job_columns import JobColumns
 from backend.db.lead_message_ref_rekey import rekey_linkedin_message_refs
 from backend.db.lead_suggestion_person_merge import merge_lead_suggestions_by_person
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
@@ -1813,11 +1814,45 @@ def migrate_schema(conn: Any) -> None:
     )
     cur.execute("ALTER TABLE application_answers ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ")
     conn.commit()
+    _install_jobs_detail_revision_trigger(conn)  # ai: claude-opus-5-5 | 2026-11-19
     _migrate_legacy_outreach_to_interactions(conn)
     # ai: claude-opus-5-5 | 2026-11-16 -- one suggested lead per person, not per conversation
     merge_lead_suggestions_by_person(conn)
     # ai: claude-opus-5-5 | 2026-11-18 -- message refs no longer hash the sender's profile slug
     rekey_linkedin_message_refs(conn)
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def _install_jobs_detail_revision_trigger(conn: Any) -> None:
+    """jobs.detail_revision counts changes to the lazy-loaded TEXT columns
+    (JobColumns.lazy_detail_columns()). The Job Queue/Triage lists omit those
+    columns, and a card that fetched its reasoning once kept showing that copy
+    after "Save & Re-score" rewrote it (job 8083, 2026-11-19). A trigger, not the
+    repository, does the counting, so every writer is covered: the description
+    save, Re-fetch from URL, re-evaluate, extension recapture, background
+    enrichment and any raw SQL UPDATE. It also pins the column to OLD's value
+    otherwise, so no caller can set the counter directly."""
+    cur = conn.cursor()
+    cur.execute("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS detail_revision INTEGER NOT NULL DEFAULT 0")
+    changed = sql.SQL(" OR ").join(
+        sql.SQL("NEW.{col} IS DISTINCT FROM OLD.{col}").format(col=sql.Identifier(column))
+        for column in sorted(JobColumns.lazy_detail_columns())
+    )
+    cur.execute(
+        sql.SQL(
+            "CREATE OR REPLACE FUNCTION jobs_bump_detail_revision() RETURNS trigger"
+            " LANGUAGE plpgsql AS $fn$"
+            " BEGIN"
+            " NEW.detail_revision := OLD.detail_revision + CASE WHEN {changed} THEN 1 ELSE 0 END;"
+            " RETURN NEW;"
+            " END $fn$"
+        ).format(changed=changed)
+    )
+    cur.execute(
+        "CREATE OR REPLACE TRIGGER jobs_detail_revision BEFORE UPDATE ON jobs"
+        " FOR EACH ROW EXECUTE FUNCTION jobs_bump_detail_revision()"
+    )
+    conn.commit()
 
 
 # ai: claude-opus-5-5 | 2026-11-11

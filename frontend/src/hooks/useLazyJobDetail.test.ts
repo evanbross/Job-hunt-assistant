@@ -222,4 +222,91 @@ describe("useLazyJobDetail", () => {
     });
     await waitFor(() => expect(result.current.loading).toBe(false));
   });
+
+  // ai: claude-opus-5-5 | 2026-11-19 — job 8083: "Save & Re-score" rewrote the
+  // reasoning, but the card kept showing the copy it had fetched before.
+  describe("detail_revision", () => {
+    it("refetches already-loaded detail when the row's revision moves on", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockResolvedValueOnce(okResponse(jobResponse({ fit_reasoning: "Before re-score" })));
+      fetchMock.mockResolvedValueOnce(okResponse(jobResponse({ fit_reasoning: "After re-score" })));
+      const { result, rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+
+      await act(async () => {
+        await result.current.ensureLoaded();
+      });
+      expect(result.current.detail?.fit_reasoning).toBe("Before re-score");
+
+      rerender({ revision: 1 });
+
+      await waitFor(() => expect(result.current.detail?.fit_reasoning).toBe("After re-score"));
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("never shows the previous revision's detail while the refetch is in flight", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockResolvedValueOnce(okResponse(jobResponse({ fit_reasoning: "Before re-score" })));
+      fetchMock.mockReturnValueOnce(new Promise(() => {}));
+      const { result, rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+      await act(async () => {
+        await result.current.ensureLoaded();
+      });
+
+      rerender({ revision: 1 });
+
+      expect(result.current.detail).toBeNull();
+    });
+
+    it("does not fetch for a revision change on a card that never loaded its detail", () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      const { rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+
+      rerender({ revision: 1 });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("does not loop when the row's revision has not caught up with the server", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockResolvedValue(okResponse(jobResponse({ detail_revision: 5 })));
+      const { result } = renderHook(() => useLazyJobDetail(1, 4));
+
+      await act(async () => {
+        await result.current.ensureLoaded();
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.current.detail?.fit_reasoning).toBe("Reasoning text");
+    });
+
+    it("stops after a failed refetch instead of retrying in a loop", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      fetchMock.mockResolvedValueOnce(okResponse(jobResponse()));
+      fetchMock.mockResolvedValueOnce(errorResponse(500));
+      const { result, rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+      await act(async () => {
+        await result.current.ensureLoaded();
+      });
+
+      rerender({ revision: 1 });
+
+      await waitFor(() => expect(result.current.error).toBe(true));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.current.detail).toBeNull();
+    });
+  });
 });

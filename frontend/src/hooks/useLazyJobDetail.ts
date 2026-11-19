@@ -26,10 +26,13 @@
  */
 
 // ai: claude-sonnet-5 | 2026-10-17
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Job } from "../types/jobs.ts";
 
 export type LazyJobDetail = Pick<Job, "job_description" | "raw_jd_snippet" | "fit_reasoning" | "certainty_reason">;
+
+// ai: claude-opus-5-5 | 2026-11-19
+type CachedDetail = { detail: LazyJobDetail; revision: number | null };
 
 /**
  * GET /jobs and GET /jobs/triage (Job Queue, Triage) now omit
@@ -39,17 +42,27 @@ export type LazyJobDetail = Pick<Job, "job_description" | "raw_jd_snippet" | "fi
  * JobColumns.display_summary() in backend/db/job_columns.py for the measured
  * cost that drove this). This hook fetches the one job's full row via the
  * existing GET /jobs/<id> the first time either toggle opens on that card,
- * and caches it for the life of the card so re-toggling doesn't re-fetch.
+ * and caches it so re-toggling doesn't re-fetch.
+ *
+ * `revision` is the list row's detail_revision, which the database bumps
+ * whenever any of those columns change. The cache is only good for the
+ * revision it was fetched at: once the row moves on (Save & Re-score,
+ * Re-fetch from URL, re-evaluate, an extension recapture) a card that had
+ * already loaded its detail refetches it, instead of showing the reasoning
+ * from before the re-score for as long as the card stays mounted.
  */
-export function useLazyJobDetail(jobId: number) {
-  const [detail, setDetail] = useState<LazyJobDetail | null>(null);
+// ai: claude-opus-5-5 | 2026-11-19 -- revision-keyed cache (was cached for the card's life)
+export function useLazyJobDetail(jobId: number, revision: number | null = null) {
+  const [cache, setCache] = useState<CachedDetail | null>(null);
   const [loading, setLoading] = useState(false);
   // ai: claude-sonnet-5 | 2026-10-18 — a failed fetch used to resolve to null
   // with nothing recorded, so a caller had no way to tell "never fetched" apart
   // from "fetched and failed" -- the toggle just opened onto an empty region
   // with no error or retry affordance (2026-10-18 full review, Medium finding).
   const [error, setError] = useState(false);
-  const inFlightRef = useRef<Promise<LazyJobDetail | null> | null>(null);
+  const inFlightRef = useRef<{ revision: number | null; request: Promise<LazyJobDetail | null> } | null>(null);
+
+  const detail = cache !== null && cache.revision === revision ? cache.detail : null;
 
   // ai: claude-sonnet-5 | 2026-10-17 — returns the resolved detail (not just
   // fire-and-forget) so a caller that needs the value synchronously after
@@ -57,11 +70,16 @@ export function useLazyJobDetail(jobId: number) {
   // description before letting the user overwrite it -- can `await` this
   // directly instead of racing React's own state-update timing.
   const ensureLoaded = useCallback((): Promise<LazyJobDetail | null> => {
-    if (detail) return Promise.resolve(detail);
-    if (inFlightRef.current) return inFlightRef.current;
+    if (cache !== null && cache.revision === revision) return Promise.resolve(cache.detail);
+    const inFlight = inFlightRef.current;
+    if (inFlight !== null && inFlight.revision === revision) return inFlight.request;
     setLoading(true);
     setError(false);
-    const request = fetch(`/api/jobs/${jobId}`)
+    // The revision this fetch was asked for, not the one in the response: if the
+    // list row hasn't caught up yet, keying on the response's newer value would
+    // never match the prop and the effect below would refetch in a loop.
+    const requestedRevision = revision;
+    const request: Promise<LazyJobDetail | null> = fetch(`/api/jobs/${jobId}`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`Load failed: ${r.status}`))))
       .then((job: Job) => {
         const loaded: LazyJobDetail = {
@@ -70,19 +88,30 @@ export function useLazyJobDetail(jobId: number) {
           fit_reasoning: job.fit_reasoning ?? null,
           certainty_reason: job.certainty_reason ?? null,
         };
-        setDetail(loaded);
+        setCache({ detail: loaded, revision: requestedRevision });
         return loaded;
       })
       .catch(() => {
-        // Allow a retry on the next call instead of getting stuck empty.
-        inFlightRef.current = null;
         setError(true);
         return null;
       })
-      .finally(() => setLoading(false));
-    inFlightRef.current = request;
+      .finally(() => {
+        // Only the latest request owns the loading flag and the in-flight slot;
+        // clearing the slot also lets a failed load be retried on the next call.
+        if (inFlightRef.current?.request === request) {
+          inFlightRef.current = null;
+          setLoading(false);
+        }
+      });
+    inFlightRef.current = { revision: requestedRevision, request };
     return request;
-  }, [detail, jobId]);
+  }, [cache, revision, jobId]);
+
+  // A card that already showed its detail refreshes it when the row's revision
+  // moves on; a card that never opened either toggle still fetches nothing.
+  useEffect(() => {
+    if (cache !== null && cache.revision !== revision) void ensureLoaded();
+  }, [cache, revision, ensureLoaded]);
 
   return { detail, loading, error, ensureLoaded };
 }

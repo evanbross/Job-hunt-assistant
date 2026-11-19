@@ -33,6 +33,9 @@ _DB_PACKAGE = Path(__file__).resolve().parent
 MIGRATION_SOURCE_FILES: tuple[Path, ...] = (
     _DB_PACKAGE / "__init__.py",
     _DB_PACKAGE / "schema.py",
+    # ai: claude-opus-5-5 | 2026-11-19 -- schema.py builds the jobs_detail_revision
+    # trigger from JobColumns.lazy_detail_columns(), so a change there needs a migrate.
+    _DB_PACKAGE / "job_columns.py",
     _DB_PACKAGE / "row_level_security.py",
     _DB_PACKAGE / "readonly_role.py",
     _DB_PACKAGE / "app_role.py",
