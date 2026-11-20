@@ -36,6 +36,7 @@ import psycopg2
 
 from backend.scoring.company_matching import normalize_company_name
 from backend.scoring.skip_reasons import REQ_CLOSED_ROW_FLAG, REQ_CLOSED_SKIP_REASON
+from backend.user_events import announce_jobs_changed_after_commit
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
@@ -731,6 +732,7 @@ class PostgresJobRepository(_BaseRepo):
             raise
         new_id = cur.fetchone()["id"]
         self._execute("RELEASE SAVEPOINT jobs_insert")
+        announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
         return new_id
 
     def update(self, user_id: int, job_id: int, fields: dict[str, Any]) -> None:
@@ -752,6 +754,7 @@ class PostgresJobRepository(_BaseRepo):
             f"UPDATE jobs SET {set_clause} WHERE id = %s AND user_id = %s",
             [*fields.values(), job_id, user_id],
         )
+        announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
 
     # ai: claude-sonnet-5 | 2026-10-05
     # Closes the SELECT-then-write status race flagged in the 2026-10-05 full
@@ -800,6 +803,8 @@ class PostgresJobRepository(_BaseRepo):
             [*fields.values(), job_id, user_id, *excluded],
         )
         row = cur.fetchone()
+        if row:
+            announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
         return _row_to_dict(row) if row else None
 
     # ai: claude-sonnet-5 | 2026-10-08
@@ -849,6 +854,8 @@ class PostgresJobRepository(_BaseRepo):
             [*fields.values(), job_id, user_id, *included],
         )
         row = cur.fetchone()
+        if row:
+            announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
         return _row_to_dict(row) if row else None
 
     # ai: claude-sonnet-5 | 2026-10-09
@@ -896,6 +903,8 @@ class PostgresJobRepository(_BaseRepo):
             [*fields.values(), job_id, user_id],
         )
         row = cur.fetchone()
+        if row:
+            announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
         return _row_to_dict(row) if row else None
 
     # ai: claude-opus-5-5 | 2026-11-19
@@ -933,7 +942,11 @@ class PostgresJobRepository(_BaseRepo):
                 judged.get(JobColumns.URL),
             ],
         )
-        return cur.rowcount == 1
+        # ai: claude-opus-5-5 | 2026-11-20
+        if cur.rowcount != 1:
+            return False
+        announce_jobs_changed_after_commit(self._conn, user_id)
+        return True
 
     # ai: claude-sonnet-5 | 2026-10-14
     def lock_for_duplicate_check(self, user_id: int) -> None:
@@ -957,8 +970,10 @@ class PostgresJobRepository(_BaseRepo):
 
     def delete(self, user_id: int, job_id: int) -> None:
         self._execute("DELETE FROM jobs WHERE id = %s AND user_id = %s", (job_id, user_id))
+        announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
 
     def delete_email_sourced(self, user_id: int) -> None:
         self._execute(
             "DELETE FROM jobs WHERE user_id = %s AND sender_email IS NOT NULL", (user_id,)
         )
+        announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20

@@ -27,7 +27,7 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Hashable
 from enum import StrEnum
 from typing import Protocol
 
@@ -52,6 +52,8 @@ class UserEventTopic(StrEnum):
     CANDIDATE_PROFILE_FILE = "candidate-profile-file"
     # GET /api/lead-suggestions  # ai: claude-opus-5-5 | 2026-11-11
     LEAD_SUGGESTIONS = "lead-suggestions"
+    # GET /api/jobs/queue and its counts/companies  # ai: claude-opus-5-5 | 2026-11-20
+    JOBS = "jobs"
 
 
 # What listen() returns: a generator, so a caller can close() it to unsubscribe.
@@ -205,3 +207,21 @@ def set_user_events(events: UserEvents | None) -> None:
     global _events
     with _lock:
         _events = events
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+class _AfterCommitConnection(Protocol):
+    def after_commit(self, key: Hashable, callback: Callable[[], None]) -> None: ...
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def announce_jobs_changed_after_commit(conn: _AfterCommitConnection, user_id: int) -> None:
+    """Signal *user_id*'s open pages that their jobs changed, once *conn*'s
+    transaction commits (backend/db/connection.py's after_commit) -- not before,
+    or a page could re-read and still see the old rows. Called by every jobs
+    write in the repositories, so a background import, capture, re-score or
+    repair refreshes the Job Queue without each caller remembering to."""
+    conn.after_commit(
+        (UserEventTopic.JOBS, user_id),
+        lambda: get_user_events().publish(user_id, UserEventTopic.JOBS),
+    )

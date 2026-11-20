@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Hashable, Iterator
 from contextlib import contextmanager
 from datetime import date, datetime
 from typing import Any
@@ -221,14 +221,30 @@ class _ReconnectingPgConn:
         self._pool = _get_pool(dsn)
         self._conn = self._pool.checkout(_POOL_ACQUIRE_TIMEOUT_SECONDS)
         self.autocommit = False
+        self._after_commit: dict[Hashable, Callable[[], None]] = {}  # ai: claude-opus-5-5 | 2026-11-20
 
     def cursor(self) -> Any:
         return self._conn.cursor()
 
+    # ai: claude-opus-5-5 | 2026-11-20
+    def after_commit(self, key: Hashable, callback: Callable[[], None]) -> None:
+        """Run *callback* once the current transaction commits -- for announcing a
+        change only after other connections can see it. One callback per *key*
+        per transaction, so a loop of writes announces once. A rollback, a
+        reconnect or close() drops the pending callbacks with the transaction.
+        Callbacks must not raise: the commit has already happened."""
+        self._after_commit.setdefault(key, callback)
+
+    # ai: claude-opus-5-5 | 2026-11-20 -- runs the after_commit callbacks
     def commit(self) -> None:
         self._conn.commit()
+        callbacks = list(self._after_commit.values())
+        self._after_commit.clear()
+        for callback in callbacks:
+            callback()
 
     def rollback(self) -> None:
+        self._after_commit.clear()  # ai: claude-opus-5-5 | 2026-11-20
         self._conn.rollback()
 
     # ai: claude-opus-5-5 | 2026-10-23
@@ -266,6 +282,7 @@ class _ReconnectingPgConn:
         checkout path re-establishes its own identity before use, this is
         redundant -- but it means a connection sitting in the pool never
         carries a previous request's tenant identity as its resting state."""
+        self._after_commit.clear()  # ai: claude-opus-5-5 | 2026-11-20
         try:
             if self._conn.closed:
                 self._pool.checkin(self._conn, close=True)
@@ -301,6 +318,7 @@ class _ReconnectingPgConn:
         """Discard the (presumably dead) connection and check out a fresh one --
         e.g. after Neon suspends an idle compute and drops every connection that
         was sitting in the pool."""
+        self._after_commit.clear()  # ai: claude-opus-5-5 | 2026-11-20 -- its transaction is gone
         try:
             self._pool.checkin(self._conn, close=True)
         except psycopg2.Error:

@@ -12,7 +12,7 @@
 // main list once read no change bus at all because JobQueue rendered the
 // provider and called the hooks itself, so every skip left its card on screen
 // -- invisible to hook tests, which always wrap the hook in a provider.
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import JobQueue from "./index.tsx";
 import type { Job, JobQueueCounts, JobQueueOptions } from "../../types/jobs.ts";
@@ -39,6 +39,27 @@ const JOB: Job = { id: 6999, company: "Cotiviti", job_title: TITLE };
 
 function ok(body: unknown) {
   return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+}
+
+// ai: claude-opus-5-5 | 2026-11-20
+/** Just enough of EventSource for useServerEvents.ts to subscribe to topics. */
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  private listeners = new Map<string, (() => void)[]>();
+
+  constructor(readonly url: string) {
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), listener]);
+  }
+
+  close(): void {}
+
+  emit(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener();
+  }
 }
 
 describe("JobQueue", () => {
@@ -69,6 +90,7 @@ describe("JobQueue", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     window.localStorage.clear();
+    FakeEventSource.instances = [];  // ai: claude-opus-5-5 | 2026-11-20
   });
 
   it.each([
@@ -101,5 +123,20 @@ describe("JobQueue", () => {
 
     await waitFor(() => expect(screen.queryByText(TITLE)).toBeNull());
     expect(approveBodies).toEqual([{ subject_pattern: "senior director software engineering" }]);
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-20
+  // Job 8411 stayed "not scored" with "Review Import" after its background
+  // scoring and repair finished, until the page was reloaded by hand.
+  it("re-reads the list when the server signals that jobs changed", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    page = [{ ...JOB, status: "pending_review" }];
+    render(<JobQueue isAuthenticated onNavigateToHistory={() => {}} />);
+    await screen.findByText(TITLE);
+
+    page = [{ ...JOB, status: "pending_review", job_title: "Scored In The Background" }];
+    act(() => FakeEventSource.instances[0].emit("jobs"));
+
+    await screen.findByText("Scored In The Background");
   });
 });

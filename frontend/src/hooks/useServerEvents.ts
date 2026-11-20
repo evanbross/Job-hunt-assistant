@@ -24,14 +24,13 @@
 // stream and relays each signal to the other tabs over a BroadcastChannel;
 // when it closes, the lock passes to another tab, which opens the stream.
 import { useEffect, useRef } from "react";
-import type { ServerEventTopic } from "../types/common.ts";
+import { SERVER_EVENT_TOPICS, type ServerEventTopic } from "../types/common.ts"; // ai: claude-opus-5-5 | 2026-11-20
 
 const STREAM_URL = "/api/events";
 const LEADER_LOCK = "jha-server-events";
 const RELAY_CHANNEL = "jha-server-events";
 // Relayed to other tabs for a (re)connect, which concerns every topic.
 const ALL_TOPICS = "*";
-const SERVER_EVENT_TOPICS: readonly ServerEventTopic[] = ["import", "candidate-profile-file", "lead-suggestions"]; // ai: claude-opus-5-5 | 2026-11-11
 export const SERVER_EVENT_FALLBACK_MS = 60_000;
 
 type Listener = () => void;

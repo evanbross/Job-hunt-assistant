@@ -214,6 +214,22 @@ describe("useJobQueueListing", () => {
   });
 
   // ai: claude-opus-5-5 | 2026-10-24
+  // ai: claude-opus-5-5 | 2026-11-20
+  it("keeps the loaded jobs when a reload fails", async () => {
+    const requests = routeFetch({ "": { jobs: [job(1), job(2)], has_more: false } });
+    const { result } = renderHook(
+      () => useJobQueueListing(FILTERS, { viewStatuses: ["pending_review", "triage"] }),
+      { wrapper: withBus(bus) },
+    );
+    await waitFor(() => expect(result.current.loaded).toBe(true));
+
+    (fetch as unknown as FetchMock).mockImplementation(() => Promise.reject(new TypeError("network down")));
+    await act(async () => bus.publish({ type: "reload" }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(requests.length + 1));
+
+    expect(result.current.jobs.map((j) => j.id)).toEqual([1, 2]);
+  });
+
   it("keeps a listed job's company summary across an update, and reloads when its company changes", async () => {
     const summary = { company_job_count: 3, company_application_statuses: { applied: 2 }, company_contacts: [] };
     const requests = routeFetch({ "": { jobs: [{ ...job(1), ...summary }], has_more: false } });
