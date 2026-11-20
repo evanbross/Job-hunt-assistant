@@ -421,3 +421,35 @@ def test_answer_routes_against_the_real_tables(pg_dsn: str, monkeypatch: pytest.
     assert set(listed) == {keep["id"], taken["id"]}
     assert listed[keep["id"]]["aliases"] == []
     assert listed[keep["id"]]["use_count"] == 0
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def test_update_application_profile_stores_us_citizenship_status_as_plain_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The column's CHECK constraint compares against the enum's plain value,
+    so the route must hand the repository "us_citizen", not the enum member."""
+    profile_repo = FakeApplicationProfileRepo()
+    repos = {"conn": FakeConnection(), "application_profile": profile_repo}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put("/api/application-profile", json={"us_citizenship_status": "us_citizen"})
+
+    assert response.status_code == 200
+    assert response.get_json()["us_citizenship_status"] == "us_citizen"
+    assert profile_repo.last_upsert_fields == {"us_citizenship_status": "us_citizen"}
+    assert type(profile_repo.last_upsert_fields["us_citizenship_status"]) is str
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def test_update_application_profile_rejects_unknown_us_citizenship_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile_repo = FakeApplicationProfileRepo()
+    repos = {"conn": FakeConnection(), "application_profile": profile_repo}
+    client = _make_app(repos, monkeypatch).test_client()
+
+    response = client.put("/api/application-profile", json={"us_citizenship_status": "citizen"})
+
+    assert response.status_code == 400
+    assert profile_repo.last_upsert_fields is None

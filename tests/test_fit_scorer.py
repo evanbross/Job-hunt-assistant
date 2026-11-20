@@ -29,7 +29,12 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer, ScorerUserContext
+
+# ai: claude-opus-5-5 | 2026-11-20 -- score() reads this from the DB itself
+_NO_BONUS_CONTEXT = ScorerUserContext(
+    timezone="", candidate_profile="", us_citizenship=None, citizenship_bonus_points=0
+)
 
 
 def test_penalty_rule_matches_complete_word_only() -> None:
@@ -145,7 +150,7 @@ def test_score_extracts_salary_range_from_ai_response() -> None:
     )
     with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client), patch.object(
         FitScorer, "_build_system_prompt", return_value="system prompt"
-    ):
+    ), patch.object(ScorerUserContext, "load", return_value=_NO_BONUS_CONTEXT):
         result = FitScorer(1).score(
             job_title="Sr Software Engineer",
             company="Prometric",
@@ -163,7 +168,7 @@ def test_score_defaults_salary_to_none_when_ai_omits_it() -> None:
     mock_client.complete.return_value = '{"score": 60, "reasoning": "Okay fit."}'
     with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=mock_client), patch.object(
         FitScorer, "_build_system_prompt", return_value="system prompt"
-    ):
+    ), patch.object(ScorerUserContext, "load", return_value=_NO_BONUS_CONTEXT):
         result = FitScorer(1).score(
             job_title="Engineer",
             company="Acme",

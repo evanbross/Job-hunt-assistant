@@ -279,6 +279,17 @@ SETTINGS: dict[str, SettingSpec] = {
         label="Your Timezone", group="Career Profile",
         help_text="Used to flag remote jobs whose stated timezone window excludes your location.",
     ),
+    # ai: claude-opus-5-5 | 2026-11-20
+    "citizenship_requirement_bonus_points": SettingSpec(
+        scope="user", is_secret=False, default=str(config.DEFAULT_CITIZENSHIP_REQUIREMENT_BONUS),
+        label="Citizenship Requirement Bonus (points)", group="Career Profile",
+        placeholder=str(config.DEFAULT_CITIZENSHIP_REQUIREMENT_BONUS),
+        help_text=(
+            "Added to a job's fit score when it requires US-person status or US "
+            "citizenship that you meet. Set your status under Application Profile "
+            "(no bonus while it's unset). 0 turns the bonus off."
+        ),
+    ),
     "ai_provider": SettingSpec(
         scope="user", is_secret=False, default=config.AI_PROVIDER,
         label="AI Provider", group="AI Provider",

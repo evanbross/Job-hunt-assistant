@@ -29,7 +29,7 @@ from backend.db import (
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
 from backend.db.schema import _migrate_legacy_candidate_profiles
-from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer, ScorerUserContext
 from backend.utils.utils import (
     CandidateProfileMissingError,
     get_candidate_profile,
@@ -146,7 +146,9 @@ def test_fit_scoring_prompt_contains_only_the_scored_users_profile(
     _save(pg_dsn, second_id, "PROFILE-OF-THE-SECOND-USER")
 
     with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=MagicMock()):
-        prompt = FitScorer(second_id)._build_system_prompt("resume", [], [])
+        prompt = FitScorer(second_id)._build_system_prompt(
+            ScorerUserContext.load(second_id), "resume", [], []
+        )
 
     assert "PROFILE-OF-THE-SECOND-USER" in prompt
     assert "PROFILE-OF-THE-FIRST-USER" not in prompt

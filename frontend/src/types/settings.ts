@@ -64,6 +64,7 @@ export interface AppConfigResponse {
   scanned_email_label?: string;
   move_successfully_processed_emails?: boolean;
   candidate_timezone?: string;
+  citizenship_requirement_bonus_points?: number; // ai: claude-opus-5-5 | 2026-11-20
   ai_provider?: string;
   anthropic_model?: string;
   openai_model?: string;
