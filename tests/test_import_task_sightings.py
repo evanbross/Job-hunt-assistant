@@ -100,3 +100,39 @@ def test_queued_recapture_records_no_sighting(tracked: tuple[int, int], pg_dsn: 
     ).get()
 
     assert _sightings(pg_dsn, user_id, job_id) == []
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_capture_that_fills_a_blank_company_queues_a_certainty_rejudge(
+    tracked: tuple[int, int],
+    pg_dsn: str,
+    queued_certainty_rejudges: list[tuple[int, int]],
+) -> None:
+    """repair_existing_job_company fills the company from the capture; the job's
+    certainty_reason, written while it was blank, must be re-judged (job 8335)."""
+    user_id, job_id = tracked
+    repos = open_repositories(pg_dsn)
+    try:
+        set_current_user(repos["conn"].cursor(), user_id)
+        repos["jobs"].update(user_id, job_id, {"company": ""})
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+    result = tasks.run_import_task.apply(
+        args=(user_id, _capture(), None, {"import_trigger": "listener"})
+    ).get()
+
+    assert result["repaired"] == 1
+    assert queued_certainty_rejudges == [(user_id, job_id)]
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_capture_that_repairs_nothing_queues_no_certainty_rejudge(
+    tracked: tuple[int, int], queued_certainty_rejudges: list[tuple[int, int]]
+) -> None:
+    user_id, _job_id = tracked
+
+    tasks.run_import_task.apply(args=(user_id, _capture(), None, {"import_trigger": "listener"})).get()
+
+    assert queued_certainty_rejudges == []

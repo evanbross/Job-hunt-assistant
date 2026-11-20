@@ -67,9 +67,9 @@ _TEST_USER_ID = 1
 
 
 class FakeJobsRepo:
-    """Enough of IJobRepository for create_manual_job(): get_all_ordered() is
-    read before ingest() runs, get_by_url() is read in the duplicate-recovery
-    branch after ingest() raises."""
+    """Enough of IJobRepository for create_manual_job(): the not-a-fit feedback
+    is read for ScoringInputs before prepare() runs, get_by_url() in the
+    duplicate-recovery branch after save() raises."""
 
     def __init__(self, existing_job: dict[str, Any]) -> None:
         self._existing_job = existing_job
@@ -82,6 +82,23 @@ class FakeJobsRepo:
         assert user_id == _TEST_USER_ID
         return dict(self._existing_job) if url == self._existing_job["url"] else None
 
+    # ai: claude-opus-5-5 | 2026-11-19
+    def get_not_a_fit_with_feedback(self, user_id: int) -> list[dict[str, Any]]:
+        assert user_id == _TEST_USER_ID
+        return []
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+class FakeResumeRepo:
+    def get_latest(self, user_id: int) -> dict[str, Any] | None:
+        return None
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+class FakePenaltyRepo:
+    def get_enabled(self, user_id: int) -> list[dict[str, Any]]:
+        return []
+
 
 class _RaisingIngestService:
     """Stand-in for ManualJobIngestService that always loses the insert race,
@@ -91,7 +108,11 @@ class _RaisingIngestService:
     def __init__(self, *args: object, **kwargs: object) -> None:
         pass
 
-    def ingest(self, *args: object, **kwargs: object) -> None:
+    # ai: claude-opus-5-5 | 2026-11-19 -- ingest() split into prepare() + save()
+    def prepare(self, *args: object, **kwargs: object) -> object:
+        return object()
+
+    def save(self, *args: object, **kwargs: object) -> None:
         raise DuplicateJobUrlError("https://example.com/jobs/dup")
 
 
@@ -108,8 +129,8 @@ def test_manual_job_returns_existing_job_on_duplicate_url_race(
     repos = {
         "conn": FakeConnection(),
         "jobs": FakeJobsRepo(existing_job),
-        "resume": object(),
-        "penalties": object(),
+        "resume": FakeResumeRepo(),
+        "penalties": FakePenaltyRepo(),
     }
     monkeypatch.setattr("routes.jobs.get_repos", make_fake_get_repos(repos))
     monkeypatch.setattr("routes.jobs.ManualJobIngestService", _RaisingIngestService)

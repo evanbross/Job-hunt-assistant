@@ -245,6 +245,7 @@ def repair_client(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, in
 def test_fix_unknown_companies_repairs_jobgether_row_via_live_page_fetch(
     repair_client: tuple[Any, int],
     monkeypatch: pytest.MonkeyPatch,
+    queued_certainty_rejudges: list[tuple[int, int]],  # ai: claude-opus-5-5 | 2026-11-19
 ) -> None:
     """A Jobgether job with a blank company (e.g. job 6071/EnergyHub, captured
     2026-10-08 — the extension's client-side extraction came up empty) must be
@@ -287,10 +288,13 @@ def test_fix_unknown_companies_repairs_jobgether_row_via_live_page_fetch(
     finally:
         conn.close()
     assert updated["company"] == "TestCo"
+    # ai: claude-opus-5-5 | 2026-11-19 -- its capture-time "company missing" reason is now stale
+    assert queued_certainty_rejudges == [(user_id, job_id)]
 
 
 def test_fix_unknown_companies_still_repairs_non_jobgether_rows(
     repair_client: tuple[Any, int],
+    queued_certainty_rejudges: list[tuple[int, int]],  # ai: claude-opus-5-5 | 2026-11-19
 ) -> None:
     """Non-Jobgether missing-company rows must still go through the existing
     (fast, no-network) ATS-URL repair path unaffected by the Jobgether branch."""
@@ -326,6 +330,7 @@ def test_fix_unknown_companies_still_repairs_non_jobgether_rows(
     finally:
         conn.close()
     assert updated["company"] == "Acmeco"
+    assert queued_certainty_rejudges == [(user_id, job_id)]  # ai: claude-opus-5-5 | 2026-11-19
 
 
 # ai: claude-sonnet-5 | 2026-10-09

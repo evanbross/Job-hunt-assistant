@@ -113,6 +113,13 @@ class IJobRepository(Protocol):
     def update_if_company_missing(
         self, user_id: int, job_id: int, fields: dict[str, Any]
     ) -> dict[str, Any] | None: ...
+    def update_certainty_if_identity_unchanged(  # ai: claude-opus-5-5 | 2026-11-19
+        self,
+        user_id: int,
+        job_id: int,
+        judged: dict[str, Any],
+        certainty: dict[str, Any],
+    ) -> bool: ...
     def delete(self, user_id: int, job_id: int) -> None: ...
     def delete_email_sourced(self, user_id: int) -> None: ...
 

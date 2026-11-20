@@ -58,7 +58,7 @@ from backend.scanning.import_repair import (
     repair_linkedin_company,
 )
 from backend.scanning.platform_detection import platform_for_site_url, platform_label
-from backend.tasks import run_import_task
+from backend.tasks import queue_certainty_rejudge, run_import_task
 from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.url_safety import UnsafeUrlError
 from backend.utils.utils import (
@@ -732,6 +732,7 @@ def fix_unknown_companies() -> ResponseReturnValue:
                 if repaired:
                     fixed += 1
                     repos["conn"].commit()
+                    queue_certainty_rejudge(user_id, int(job["id"]))  # ai: claude-opus-5-5 | 2026-11-19
                     updated_job = repos["jobs"].get_by_id(user_id, int(job["id"]))
                     if updated_job:
                         post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
@@ -775,6 +776,7 @@ def fix_unknown_companies() -> ResponseReturnValue:
                         continue
                     fixed += 1
                     repos["conn"].commit()
+                    queue_certainty_rejudge(user_id, job_id)  # ai: claude-opus-5-5 | 2026-11-19
                     post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
                     repos["conn"].commit()
             except Exception as exc:

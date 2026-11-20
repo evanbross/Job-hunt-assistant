@@ -21,11 +21,12 @@ from werkzeug.security import generate_password_hash
 import config
 from backend.scanning.career_site_scanner import CareerSiteJob
 from backend.scoring import jd_enrichment
-from backend.scoring.fit_scorer import ScoreResult
+from backend.scoring.fit_scorer import ScoreResult, ScoringInputs
 from backend.scoring.jd_enrichment import (
     JobHasNoUrlError,
     JobNotFoundError,
     refresh_job_description_from_url,
+    rescore_description,
     status_after_rescore,
 )
 from backend.utils.utils import get_repos
@@ -197,3 +198,68 @@ def test_missing_job_and_missing_url_raise(user_id: int) -> None:
 )
 def test_status_after_rescore(current: str, score: int, expected: str | None) -> None:
     assert status_after_rescore(current, score) == expected
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+_INPUTS = ScoringInputs(resume_text="Backend engineer", penalty_rules=[], fit_feedback=[])
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_rescore_then_apply_saves_the_description_score_and_queue_status(
+    user_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = _insert_job(user_id, fit_score=20)
+    _fake_score(monkeypatch, 82)
+
+    rescore = rescore_description(user_id, _job(user_id, job_id), _JD, _INPUTS)
+    with get_repos(user_id) as repos:
+        rescore.apply(user_id, repos["jobs"])
+        repos["conn"].commit()
+
+    stored = _job(user_id, job_id)
+    assert (stored["job_description"], stored["fit_score"], stored["status"]) == (_JD, 82, "pending_review")
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_apply_keeps_an_apply_that_landed_during_the_score_call(
+    user_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The score runs with no connection held, so the user can act on the job
+    meanwhile; the rescore's queue status must not undo that."""
+    job_id = _insert_job(user_id, fit_score=20)
+    job = _job(user_id, job_id)
+
+    def user_applies() -> None:
+        with get_repos(user_id) as repos:
+            repos["jobs"].update(user_id, job_id, {"status": "applied"})
+            repos["conn"].commit()
+
+    _fake_score(monkeypatch, 82, during=user_applies)
+
+    rescore = rescore_description(user_id, job, _JD, _INPUTS)
+    with get_repos(user_id) as repos:
+        rescore.apply(user_id, repos["jobs"])
+        repos["conn"].commit()
+
+    stored = _job(user_id, job_id)
+    assert (stored["job_description"], stored["fit_score"], stored["status"]) == (_JD, 82, "applied")
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_rescore_keeps_the_richer_description_when_scoring_fails(
+    user_id: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = _insert_job(user_id, fit_score=20)
+
+    def scorer_down(self: object, **kwargs: Any) -> ScoreResult:
+        raise ValueError("Scorer returned invalid JSON")
+
+    monkeypatch.setattr(jd_enrichment.FitScorer, "score", scorer_down)
+
+    rescore = rescore_description(user_id, _job(user_id, job_id), _JD, _INPUTS)
+    with get_repos(user_id) as repos:
+        rescore.apply(user_id, repos["jobs"])
+        repos["conn"].commit()
+
+    stored = _job(user_id, job_id)
+    assert (stored["job_description"], stored["fit_score"], stored["status"]) == (_JD, 20, "triage")

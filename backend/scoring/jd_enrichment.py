@@ -14,19 +14,16 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from http.client import HTTPException
 from typing import Any
 from urllib.parse import urlparse
 
-from backend.db import (
-    CaptureQueueOrigin,
-    IJobRepository,
-    IPenaltyRuleRepository,
-    IResumeRepository,
-)
+from backend.ai_provider import AIProviderError
+from backend.db import CaptureQueueOrigin, IJobRepository
 from backend.db.job_columns import JobColumns
 from backend.scanning.career_site_scanner import CareerSiteScanner
-from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer, ScoringInputs
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
@@ -126,36 +123,60 @@ def unenriched_skip_reason(
     )
 
 
-def enrich_job_description(
-    user_id: int,
-    repos: dict[str, Any],
-    job: dict[str, Any],
-    description: str,
-    *,
-    resume_text: str,
-    penalty_rules: list[dict],
-    fit_feedback: list[dict],
-) -> None:
-    """Overwrite a job's description and re-score it against the candidate profile.
+# ai: claude-opus-5-5 | 2026-11-19
+@dataclass(frozen=True)
+class DescriptionRescore:
+    """A richer description for a job and its fresh fit score, ready to write.
 
-    Does not change status for applied or skipped jobs.
+    Split from the old enrich_job_description(), which ran the AI score between
+    two writes on its caller's connection -- so each of its callers (import
+    task, career-site scan) held a pooled connection across the call.
+    """
+
+    job_id: int
+    fields: dict[str, Any]
+    new_status: str | None
+
+    def apply(self, user_id: int, jobs_repo: IJobRepository) -> None:
+        """Write it through *jobs_repo*; the caller commits. The status change is
+        conditional, so an Apply/Skip landing during the score call survives."""
+        jobs_repo.update(user_id, self.job_id, self.fields)
+        if self.new_status is not None:
+            jobs_repo.update_if_status_not_in(
+                user_id, self.job_id, {"status": self.new_status}, _RESCORE_KEEPS_STATUS
+            )
+
+
+# ai: claude-opus-5-5 | 2026-11-19 -- replaces enrich_job_description(); no DB access
+def rescore_description(
+    user_id: int, job: dict[str, Any], description: str, inputs: ScoringInputs
+) -> DescriptionRescore:
+    """Score *description* for *job* (an AI call; hold no connection across it).
+
+    A scoring failure still yields the description fields, as before, so the
+    richer text is kept even when the score couldn't be refreshed.
     """
     job_id = int(job["id"])
     # ai: claude-opus-5-5 | 2026-11-13 -- description/warning fields now shared
     # with refresh_job_description_from_url via description_fields.
     update_fields = description_fields(job, description)
-    repos["jobs"].update(user_id, job_id, update_fields)
     try:
         result = FitScorer(user_id).score(
             job_title=str(job.get("job_title") or ""),
             company=str(job.get("company") or ""),
             email_body=description,
-            resume_text=resume_text,
-            penalty_rules=penalty_rules,
-            fit_feedback=fit_feedback,
+            resume_text=inputs.resume_text,
+            penalty_rules=inputs.penalty_rules,
+            fit_feedback=inputs.fit_feedback,
         )
-        score = int(result["score"])
-        score_updates: dict[str, Any] = {
+    except (AIProviderError, ValueError) as exc:
+        logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
+        return DescriptionRescore(job_id=job_id, fields=update_fields, new_status=None)
+    score = int(result["score"])
+    return DescriptionRescore(
+        job_id=job_id,
+        fields={
+            **update_fields,
             "fit_score": score,
             "fit_reasoning": result["reasoning"],
             "salary_min": result["salary_min"],
@@ -165,15 +186,11 @@ def enrich_job_description(
             "import_warnings": remove_import_warning(
                 update_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
             ),
-        }
+        },
         # ai: claude-opus-5-5 | 2026-11-13 -- was its own {"skipped", "applied"}
         # copy, which let enrichment pull a possible_duplicate out of review.
-        new_status = status_after_rescore(str(job.get("status") or ""), score)
-        if new_status is not None:
-            score_updates["status"] = new_status
-        repos["jobs"].update(user_id, job_id, score_updates)
-    except Exception as exc:
-        logger.warning("Re-scoring failed for enriched job %d: %s", job_id, exc)
+        new_status=status_after_rescore(str(job.get("status") or ""), score),
+    )
 
 
 # ai: claude-opus-5-5 | 2026-11-13
@@ -272,10 +289,7 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
         url = str(job.get("url") or "").strip()
         if not url:
             raise JobHasNoUrlError(f"Job {job_id} has no URL")
-        resume_row = repos["resume"].get_latest(user_id)
-        resume_text = str(resume_row.get("content") or "") if resume_row else ""
-        penalty_rules = repos["penalties"].get_enabled(user_id)
-        fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
+        inputs = ScoringInputs.load(repos, user_id)  # ai: claude-opus-5-5 | 2026-11-19
 
     t0 = time.monotonic()
     try:
@@ -302,9 +316,9 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
         job_title=str(job.get("job_title") or ""),
         company=str(job.get("company") or ""),
         email_body=new_text,
-        resume_text=resume_text,
-        penalty_rules=penalty_rules,
-        fit_feedback=fit_feedback,
+        resume_text=inputs.resume_text,
+        penalty_rules=inputs.penalty_rules,
+        fit_feedback=inputs.fit_feedback,
     )
     fit_score = int(score_result["score"])
 
@@ -349,15 +363,8 @@ def rescore_active_queue_jobs(user_id: int) -> dict[str, int]:
     must commit the profile change first -- the scorer reads the profile
     through its own connection."""
     with get_repos(user_id) as repos:
-        jobs_repo: IJobRepository = repos["jobs"]
-        resume_repo: IResumeRepository = repos["resume"]
-        penalties_repo: IPenaltyRuleRepository = repos["penalties"]
-
-        queue_jobs = jobs_repo.get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
-        resume_row = resume_repo.get_latest(user_id)
-        resume_text: str = resume_row["content"] if resume_row else ""
-        penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
-        fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
+        queue_jobs = repos["jobs"].get_by_statuses(user_id, list(ACTIVE_JOB_STATUSES))
+        inputs = ScoringInputs.load(repos, user_id)  # ai: claude-opus-5-5 | 2026-11-19
     scorer = FitScorer(user_id)
 
     rescored = 0
@@ -372,9 +379,9 @@ def rescore_active_queue_jobs(user_id: int) -> dict[str, int]:
                 job_title=job.get("job_title", ""),
                 company=job.get("company", ""),
                 email_body=scoring_text,
-                resume_text=resume_text,
-                penalty_rules=penalty_rules,
-                fit_feedback=fit_feedback,
+                resume_text=inputs.resume_text,
+                penalty_rules=inputs.penalty_rules,
+                fit_feedback=inputs.fit_feedback,
             )
             # ai: claude-opus-5-5 | 2026-10-28 -- a failed write is discarded when
             # get_repos closes the uncommitted connection, so no explicit rollback.

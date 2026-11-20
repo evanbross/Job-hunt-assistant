@@ -34,14 +34,19 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from backend.db.job_columns import JobColumns
-from backend.email.email_parser import EmailParser, ParsedJob
+from backend.email.email_parser import (
+    EmailParser,
+    KnownJobFields,
+    ParsedJob,
+    best_parsed_match,
+)
 from backend.scanning.career_site_scanner import (
     UNTITLED_JOB_TITLE,
     CareerSiteScanner,
     split_linkedin_page_title,
 )
 from backend.scoring.duplicate_checker import DuplicateChecker
-from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer, ScoringInputs
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     import_warnings_to_json,
@@ -69,22 +74,23 @@ _MIN_DESCRIPTION_CHARS = 400
 class IJobRepository(Protocol):
     def insert(self, user_id: int, job: dict[str, Any]) -> int: ...
     def get_by_id(self, user_id: int, job_id: int) -> dict[str, Any] | None: ...
-    def get_not_a_fit_with_feedback(
-        self, user_id: int, limit: int = 20
-    ) -> list[dict[str, Any]]: ...
     def get_all_ordered(self, user_id: int) -> list[dict[str, Any]]: ...
     # ai: claude-sonnet-5 | 2026-10-14
     def lock_for_duplicate_check(self, user_id: int) -> None: ...
 
 
-@runtime_checkable
-class IResumeRepository(Protocol):
-    def get_latest(self, user_id: int) -> dict[str, Any] | None: ...
+# ai: claude-opus-5-5 | 2026-11-19
+@dataclass(frozen=True)
+class PreparedJob:
+    """A capture parsed, fetched and scored by prepare(), not yet saved.
 
+    `fields` is the job row minus what save() decides under the duplicate lock
+    (status, duplicate_hint, duplicate_of_id).
+    """
 
-@runtime_checkable
-class IPenaltyRuleRepository(Protocol):
-    def get_enabled(self, user_id: int) -> list[dict[str, Any]]: ...
+    fields: dict[str, Any]
+    fit_score: int
+    parsed_job_count: int
 
 
 @dataclass(frozen=True)
@@ -101,14 +107,18 @@ class ManualJobIngestResult:
 
 
 class ManualJobIngestService:
-    """Create a queue entry from manually pasted job-listing text."""
+    """Create a queue entry from a captured or pasted job listing.
 
+    Two phases, so no pooled DB connection is held across the slow ones
+    (PYTHON_STANDARDS.md, connection lifetime): prepare() parses, fetches and
+    scores with no DB access at all; save() takes the duplicate lock, checks
+    and inserts on the connection its caller opens just for that.
+    """
+
+    # ai: claude-opus-5-5 | 2026-11-19 -- no repositories held: save() gets its own
     def __init__(
         self,
         user_id: int,
-        jobs_repo: IJobRepository,
-        resume_repo: IResumeRepository,
-        penalty_repo: IPenaltyRuleRepository,
         *,
         parser: EmailParser | None = None,
         scorer: FitScorer | None = None,
@@ -116,28 +126,30 @@ class ManualJobIngestService:
         career_site_scanner: CareerSiteScanner | None = None,
     ) -> None:
         self._user_id = user_id
-        self._jobs_repo = jobs_repo
-        self._resume_repo = resume_repo
-        self._penalty_repo = penalty_repo
         self._parser = parser or EmailParser(user_id)
         self._scorer = scorer or FitScorer(user_id)
         self._duplicate_checker = duplicate_checker or DuplicateChecker()
         self._career_site_scanner = career_site_scanner or CareerSiteScanner()
 
-    def ingest(
+    # ai: claude-opus-5-5 | 2026-11-19 -- the slow half of the old ingest()
+    def prepare(
         self,
         listing_text: str,
         *,
+        inputs: ScoringInputs,
         source_url: str = "",
         source_name: str = "",
         company_override: str = "",
         job_title_override: str = "",
         linkedin_ai_insight: str = "",
-        sheet_jobs: list[dict[str, Any]] | None = None,
         trigger: str = "ui",
         prefetched_jd: dict[str, dict[str, Any] | None] | None = None,  # ai: claude-sonnet-5 | 2026-08-26
-    ) -> ManualJobIngestResult:
-        """prefetched_jd, when given, maps job URL to an already-fetched
+    ) -> PreparedJob:
+        """Parse, fetch and score a listing. No DB access: call it with no
+        connection held. Raises ValueError when there is nothing to identify
+        the job by.
+
+        prefetched_jd, when given, maps job URL to an already-fetched
         CareerSiteJob (or None if that fetch was attempted and failed). A
         caller processing many jobs at once (see backend/tasks.py's
         run_import_task) can fetch these concurrently ahead of time via
@@ -179,9 +191,16 @@ class ManualJobIngestService:
                 email_subject,
                 f"{email_id_prefix}@local",
                 normalized_text,
+                # ai: claude-opus-5-5 | 2026-11-19 -- the overrides win below; the
+                # parser must see them too or its certainty_reason contradicts them.
+                known=KnownJobFields(
+                    company=normalized_company_override,
+                    job_title=normalized_job_title_override,
+                    url=normalized_source_url,
+                ),
             )
             if parsed_jobs:
-                parsed = self._select_best_match(parsed_jobs)
+                parsed = best_parsed_match(parsed_jobs)  # ai: claude-opus-5-5 | 2026-11-19
 
             # ai: claude-sonnet-4-6 | 2026-06-14
             # Browser-extension captures sometimes carry only a title + URL (e.g.
@@ -337,11 +356,50 @@ class ManualJobIngestService:
             job_title=job_title,
             company=company,
             email_body=score_body,
-            resume_text=self._resume_text(),
-            penalty_rules=self._penalty_repo.get_enabled(self._user_id),
-            fit_feedback=self._jobs_repo.get_not_a_fit_with_feedback(self._user_id),
+            resume_text=inputs.resume_text,
+            penalty_rules=inputs.penalty_rules,
+            fit_feedback=inputs.fit_feedback,
         )
         fit_score = score_result["score"]
+        return PreparedJob(
+            fields={
+                JobColumns.DEDUP_KEY: f"{email_id_prefix}:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}",
+                "company": company,
+                "job_title": job_title,
+                "url": url,
+                "source": source,
+                JobColumns.RAW_JD_SNIPPET: score_body[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
+                "fit_score": fit_score,
+                "fit_reasoning": score_result["reasoning"],
+                "salary_min": score_result["salary_min"],
+                "salary_max": score_result["salary_max"],
+                JobColumns.CERTAINTY_LEVEL: parsed.get("certainty_level", "low"),
+                JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
+                "date_found": datetime.now(UTC).date().isoformat(),
+                "sender_email": None,
+                JobColumns.CAPTURE_LABEL: email_subject,
+                JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
+                JobColumns.LINKEDIN_AI_INSIGHT: normalized_linkedin_ai_insight or None,
+            },
+            fit_score=fit_score,
+            parsed_job_count=max(1, len(parsed_jobs)),
+        )
+
+    # ai: claude-opus-5-5 | 2026-11-19 -- the DB half of the old ingest()
+    def save(
+        self,
+        prepared: PreparedJob,
+        jobs_repo: IJobRepository,
+        *,
+        sheet_jobs: list[dict[str, Any]] | None = None,
+    ) -> ManualJobIngestResult:
+        """Insert *prepared* through *jobs_repo* unless it is a tracked posting
+        already; the caller commits (or rolls back). Raises DuplicateJobUrlError
+        when a concurrent writer inserted the same URL first."""
+        fields = prepared.fields
+        job_title = str(fields["job_title"])
+        company = str(fields["company"])
+        url = str(fields["url"])
 
         # ai: claude-sonnet-5 | 2026-10-14
         # Decide the duplicate match last, immediately before the insert,
@@ -356,10 +414,8 @@ class ManualJobIngestService:
         # Confirmed on jobs 5563/5582: two identical "Senior Software
         # Engineer" / "Clover Health" Jobgether captures that never saw each
         # other (or an older matching job) because of this exact staleness.
-        self._jobs_repo.lock_for_duplicate_check(self._user_id)
-        live_sheet_jobs = list(sheet_jobs or []) + self._jobs_repo.get_all_ordered(
-            self._user_id
-        )
+        jobs_repo.lock_for_duplicate_check(self._user_id)
+        live_sheet_jobs = list(sheet_jobs or []) + jobs_repo.get_all_ordered(self._user_id)
         duplicate_hint, duplicate_of_id = self._duplicate_hint_for(
             job_title=job_title,
             company=company,
@@ -369,29 +425,13 @@ class ManualJobIngestService:
 
         status = "possible_duplicate"
         if not duplicate_hint:
-            status = "pending_review" if fit_score >= 70 else "triage"
+            status = "pending_review" if prepared.fit_score >= 70 else "triage"
 
         job_dict: dict = {
-            JobColumns.DEDUP_KEY: f"{email_id_prefix}:{datetime.now(UTC).date().isoformat()}:{secrets.token_hex(8)}",
-            "company": company,
-            "job_title": job_title,
-            "url": url,
-            "source": source,
-            JobColumns.RAW_JD_SNIPPET: score_body[:RAW_JD_SNIPPET_MAX_CHARS],  # ai: claude-opus-5-5 | 2026-10-30
-            "fit_score": fit_score,
-            "fit_reasoning": score_result["reasoning"],
-            "salary_min": score_result["salary_min"],
-            "salary_max": score_result["salary_max"],
+            **fields,
             "status": status,
-            JobColumns.CERTAINTY_LEVEL: parsed.get("certainty_level", "low"),
-            JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
-            "date_found": datetime.now(UTC).date().isoformat(),
             "duplicate_hint": duplicate_hint,
             "duplicate_of_id": duplicate_of_id,
-            "sender_email": None,
-            JobColumns.CAPTURE_LABEL: email_subject,
-            JobColumns.CERTAINTY_SCORE: parsed.get("certainty_score", 50),
-            JobColumns.LINKEDIN_AI_INSIGHT: normalized_linkedin_ai_insight or None,
         }
         job_dict, import_warnings = normalize_and_validate(job_dict)
         job_dict["import_warnings"] = import_warnings_to_json(import_warnings)
@@ -401,24 +441,24 @@ class ManualJobIngestService:
         # ai: claude-opus-5-5 | 2026-11-15
         # The same posting is already a job: hand that job back for the caller to
         # record this capture as a sighting of, instead of inserting a second row.
-        tracked = self._same_posting_job(str(job_dict.get("url") or ""), live_sheet_jobs)
+        tracked = self._same_posting_job(
+            jobs_repo, str(job_dict.get("url") or ""), live_sheet_jobs
+        )
         if tracked is not None:
             return ManualJobIngestResult(
                 job=tracked,
-                parsed_job_count=max(1, len(parsed_jobs)),
+                parsed_job_count=prepared.parsed_job_count,
                 already_tracked=True,
                 capture=job_dict,
             )
 
-        job_id = self._jobs_repo.insert(self._user_id, job_dict)
+        job_id = jobs_repo.insert(self._user_id, job_dict)
 
-        created_job = self._jobs_repo.get_by_id(self._user_id, job_id)
+        created_job = jobs_repo.get_by_id(self._user_id, job_id)
         if created_job is None:
             raise ValueError("Job was created but could not be loaded.")
 
-        return ManualJobIngestResult(
-            job=created_job, parsed_job_count=max(1, len(parsed_jobs))
-        )
+        return ManualJobIngestResult(job=created_job, parsed_job_count=prepared.parsed_job_count)
 
     # ai: claude-sonnet-5 | 2026-08-26
     @staticmethod
@@ -433,20 +473,6 @@ class ManualJobIngestService:
             return False
         is_linkedin_job = "linkedin.com/jobs" in job_url.lower()
         return len(captured_text) < _MIN_DESCRIPTION_CHARS or is_linkedin_job
-
-    def _resume_text(self) -> str:
-        resume_row = self._resume_repo.get_latest(self._user_id)
-        return str(resume_row.get("content") or "") if resume_row else ""
-
-    @staticmethod
-    def _select_best_match(parsed_jobs: list[ParsedJob]) -> ParsedJob:
-        def sort_key(row: ParsedJob) -> tuple[int, int, int]:
-            has_title = 1 if row.get("job_title", "").strip() else 0
-            has_company = 1 if row.get("company", "").strip() else 0
-            certainty_score = int(row.get("certainty_score", 0))
-            return (certainty_score, has_title, has_company)
-
-        return max(parsed_jobs, key=sort_key)
 
     # ai: claude-sonnet-4-6 | 2026-06-09
     def _duplicate_hint_for(
@@ -478,7 +504,7 @@ class ManualJobIngestService:
 
     # ai: claude-opus-5-5 | 2026-11-15
     def _same_posting_job(
-        self, url: str, sheet_jobs: list[dict[str, Any]]
+        self, jobs_repo: IJobRepository, url: str, sheet_jobs: list[dict[str, Any]]
     ) -> dict[str, Any] | None:
         """The tracked job that is the same posting as *url*, freshly loaded."""
         if not url:
@@ -491,7 +517,7 @@ class ManualJobIngestService:
             ),
             None,
         )
-        return self._jobs_repo.get_by_id(self._user_id, int(match["id"])) if match else None
+        return jobs_repo.get_by_id(self._user_id, int(match["id"])) if match else None
 
     @staticmethod
     def _manual_email_id() -> str:
