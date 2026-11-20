@@ -105,7 +105,7 @@ function JobCard({
   defaultSnoozeDays,
 }: JobCardProps) {
   // ai: claude-sonnet-5 | 2026-10-17
-  const { detail: lazyDetail, error: lazyDetailError, ensureLoaded: ensureLazyDetailLoaded } = useLazyJobDetail(job.id);
+  const { detail: lazyDetail, error: lazyDetailError, ensureLoaded: ensureLazyDetailLoaded } = useLazyJobDetail(job.id, job.detail_revision ?? null); // ai: claude-opus-5-5 | 2026-11-19
   const [reasoningOpen, setReasoningOpen] = useState(false);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [descriptionEditOpen, setDescriptionEditOpen] = useState(false);

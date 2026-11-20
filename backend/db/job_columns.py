@@ -79,6 +79,12 @@ class JobColumns:
     ORIGIN = "origin"
     NEXT_FOLLOW_UP = "next_follow_up"
     SUMMARY_HTML = "summary_html"
+    # ai: claude-opus-5-5 | 2026-11-19 -- bumped by the jobs_detail_revision
+    # trigger (backend/db/schema.py) whenever any lazy_detail_columns() value
+    # changes, and never writable otherwise. The list views ship this instead of
+    # the large TEXT columns, so a card that already lazy-loaded its reasoning or
+    # description can tell that copy is stale after a re-score and refetch it.
+    DETAIL_REVISION = "detail_revision"
 
     @classmethod
     def all(cls) -> frozenset[str]:
@@ -128,6 +134,13 @@ class JobColumns:
         # summary is only ever shown in its lead drawer.
         {"job_description", "raw_jd_snippet", "fit_reasoning", "certainty_reason", "summary_html"}
     )
+
+    # ai: claude-opus-5-5 | 2026-11-19
+    @classmethod
+    def lazy_detail_columns(cls) -> frozenset[str]:
+        """The columns the list views leave out and cards fetch on demand; a change
+        to any of them bumps DETAIL_REVISION."""
+        return cls._DISPLAY_LAZY_ONLY
 
     @classmethod
     def display_summary(cls) -> tuple[str, ...]:

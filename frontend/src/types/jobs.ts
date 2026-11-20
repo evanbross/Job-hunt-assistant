@@ -75,6 +75,9 @@ export interface Job {
   origin?: JobOrigin;
   next_follow_up?: string | null;
   summary_html?: string | null;
+  // ai: claude-opus-5-5 | 2026-11-19 — bumped by the DB whenever a lazy-only column
+  // changes; useLazyJobDetail() refetches a card's cached detail when it moves.
+  detail_revision?: number;
   // ai: claude-sonnet-5 | 2026-10-17 — present only on GET /jobs/queue's
   // responses (JobColumns.display_summary() +
   // _display_flag_columns_sql() in backend/db/repositories/jobs.py), which omit
