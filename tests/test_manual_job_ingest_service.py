@@ -31,7 +31,11 @@ import pytest
 
 from backend.db import DuplicateJobUrlError
 from backend.email.email_parser import KnownJobFields
-from backend.scanning.manual_job_ingest_service import ManualJobIngestService
+from backend.scanning.manual_job_ingest_service import (
+    ManualJobIngestResult,
+    ManualJobIngestService,
+)
+from backend.scoring.fit_scorer import ScoringInputs
 
 _TEST_USER_ID = 1
 
@@ -135,6 +139,28 @@ class StubCareerSiteScanner:
         return dict(self._job)
 
 
+
+# ai: claude-opus-5-5 | 2026-11-19
+class IngestHarness:
+    """prepare() then save(), as every caller now runs them (with no connection
+    held in between). ScoringInputs comes through the real ScoringInputs.load()
+    from the stub repositories, so the loader is exercised too."""
+
+    def __init__(self, job_repo: StubJobRepo, **service_kwargs: object) -> None:
+        self.job_repo = job_repo
+        self.service = ManualJobIngestService(_TEST_USER_ID, **service_kwargs)  # type: ignore[arg-type]
+
+    def ingest(
+        self, listing_text: str, *, sheet_jobs: list[dict] | None = None, **prepare_kwargs: object
+    ) -> ManualJobIngestResult:
+        inputs = ScoringInputs.load(
+            {"resume": StubResumeRepo(), "penalties": StubPenaltyRepo(), "jobs": self.job_repo},
+            _TEST_USER_ID,
+        )
+        prepared = self.service.prepare(listing_text, inputs=inputs, **prepare_kwargs)  # type: ignore[arg-type]
+        return self.service.save(prepared, self.job_repo, sheet_jobs=sheet_jobs)
+
+
 def test_ingest_creates_pending_review_job_from_best_match() -> None:
     job_repo = StubJobRepo()
     parser = StubParser(
@@ -159,11 +185,8 @@ def test_ingest_creates_pending_review_job_from_best_match() -> None:
             },
         ]
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=88),
     )
@@ -202,11 +225,8 @@ def test_ingest_ignores_synthetic_sender_as_parsed_source() -> None:
             }
         ]
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
     )
@@ -218,11 +238,8 @@ def test_ingest_ignores_synthetic_sender_as_parsed_source() -> None:
 
 def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
     job_repo = StubJobRepo()
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser(
             [
                 {
@@ -268,11 +285,8 @@ def test_ingest_shows_the_parser_the_fields_its_overrides_will_store() -> None:
             }
         ]
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         StubJobRepo(),
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(),
         career_site_scanner=StubCareerSiteScanner(),
@@ -295,11 +309,8 @@ def test_ingest_shows_the_parser_the_fields_its_overrides_will_store() -> None:
 
 def test_ingest_stores_linkedin_ai_insight_when_given() -> None:
     job_repo = StubJobRepo()
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser(
             [
                 {
@@ -328,11 +339,8 @@ def test_ingest_stores_linkedin_ai_insight_when_given() -> None:
 
 def test_ingest_leaves_linkedin_ai_insight_null_when_not_given() -> None:
     job_repo = StubJobRepo()
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser(
             [
                 {
@@ -369,11 +377,8 @@ def test_ingest_marks_possible_duplicate_when_sheet_match_exists() -> None:
             }
         ]
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=91),
     )
@@ -418,11 +423,8 @@ def test_ingest_enriches_thin_listener_text_from_job_url() -> None:
             "confidence_score": 90,
         }
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
         career_site_scanner=scanner,
@@ -466,11 +468,8 @@ def test_ingest_keeps_short_text_when_enrichment_returns_too_little() -> None:
         }
     )
     short_text = "Senior Software Engineer\nURL: https://job-boards.greenhouse.io/breezeway/jobs/5222431008"
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
         career_site_scanner=scanner,
@@ -518,11 +517,8 @@ def test_ingest_prefers_fetched_company_and_title_for_linkedin_over_wrong_dom_ca
             "company": "Rythm",
         }
     )
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
         career_site_scanner=scanner,
@@ -540,11 +536,8 @@ def test_ingest_prefers_fetched_company_and_title_for_linkedin_over_wrong_dom_ca
 
 def test_ingest_from_public_job_url_without_pasted_text() -> None:
     job_repo = StubJobRepo()
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser([]),
         scorer=StubScorer(score=79),
         career_site_scanner=StubCareerSiteScanner(),
@@ -562,11 +555,8 @@ def test_ingest_from_public_job_url_without_pasted_text() -> None:
 
 
 def test_ingest_rejects_empty_text() -> None:
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         StubJobRepo(),
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser([]),
         scorer=StubScorer(),
     )
@@ -591,11 +581,8 @@ def test_ingest_propagates_duplicate_job_url_error() -> None:
             assert user_id == _TEST_USER_ID
             raise DuplicateJobUrlError(job.get("url") or "")
 
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         RaisingJobRepo(),
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser(
             [
                 {
@@ -666,11 +653,8 @@ def test_ingest_uses_prefetched_jd_instead_of_calling_scanner() -> None:
     )
     scanner = StubCareerSiteScanner()
     long_description = "Full job description text. " * 30  # >= 400 chars
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
         career_site_scanner=scanner,
@@ -712,11 +696,8 @@ def test_ingest_treats_failed_prefetch_as_no_enrichment() -> None:
     )
     scanner = StubCareerSiteScanner()
     short_text = f"Senior Software Engineer\nURL: {job_url}"
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=parser,
         scorer=StubScorer(score=85),
         career_site_scanner=scanner,
@@ -743,11 +724,8 @@ def test_ingest_returns_the_tracked_job_for_the_same_posting_without_inserting()
         {"company": "Acme", "job_title": "Staff Engineer", "url": "https://www.linkedin.com/jobs/view/4455555555/", "status": "applied"},
     )
     captured_url = "https://www.linkedin.com/jobs/view/4455555555/?trackingId=abc"
-    service = ManualJobIngestService(
-        _TEST_USER_ID,
+    service = IngestHarness(
         job_repo,
-        StubResumeRepo(),
-        StubPenaltyRepo(),
         parser=StubParser(
             [
                 {

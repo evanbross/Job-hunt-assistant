@@ -56,6 +56,7 @@ from pydantic import (
 
 import config
 from backend.active_tasks import get_active_tasks
+from backend.ai_provider import AIProviderError
 from backend.app_mode import is_hosted
 from backend.celery_app import celery_app
 from backend.db import CaptureQueueOrigin, DuplicateJobUrlError, SightingChannel
@@ -113,13 +114,14 @@ from backend.scoring.duplicate_matching import (
     dismissed_duplicate_ids,
     is_near_certain_duplicate,
 )
-from backend.scoring.fit_scorer import FitScorer
+from backend.scoring.fit_scorer import FitScorer, ScoringInputs
 from backend.scoring.jd_enrichment import (  # ai: claude-opus-5-5 | 2026-11-13
     JobHasNoUrlError,
     JobNotFoundError,
     description_fields,
     queue_tracking_link_jd_capture,
     refresh_job_description_from_url,
+    scoring_text_for_job,
 )
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
@@ -675,20 +677,21 @@ def create_manual_job() -> ResponseReturnValue:
         return invalid_request_response(exc)
 
     try:
+        # ai: claude-opus-5-5 | 2026-11-19 -- read, release, parse/fetch/score, reopen
+        # to save: no pooled connection held across the AI calls and JD fetch.
         with get_repos() as repos:
-            service = ManualJobIngestService(
-                user_id,
-                repos["jobs"],
-                repos["resume"],
-                repos["penalties"],
-            )
-            result = service.ingest(
-                body.listing_text,
-                source_url=body.source_url,
-                source_name=body.source_name,
-                company_override=body.company_override,
-                job_title_override=body.job_title_override,
-            )
+            inputs = ScoringInputs.load(repos, user_id)
+        service = ManualJobIngestService(user_id)
+        prepared = service.prepare(
+            body.listing_text,
+            inputs=inputs,
+            source_url=body.source_url,
+            source_name=body.source_name,
+            company_override=body.company_override,
+            job_title_override=body.job_title_override,
+        )
+        with get_repos() as repos:
+            result = service.save(prepared, repos["jobs"])
             # ai: claude-opus-5-5 | 2026-11-15
             if result.already_tracked and result.capture is not None:
                 record_sighting_from_job_data(
@@ -1234,11 +1237,44 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
     except ValidationError as exc:
         return invalid_request_response(exc)
 
+    # ai: claude-opus-5-5 | 2026-11-19 -- read, release, score an unscored job,
+    # reopen to write: no pooled connection held across the AI call.
     with get_repos() as repos:
         job = repos["jobs"].get_by_id(user_id, job_id)
         if not job:
             return jsonify({"error": "Job not found"}), 404
+        inputs = ScoringInputs.load(repos, user_id) if job.get("fit_score") is None else None
 
+    from_status = str(job.get("status") or "")
+    prev_fit_score = job.get("fit_score")
+    prev_fit_reasoning = job.get("fit_reasoning")
+    updates: dict = {"status": "pending_review"}
+
+    if inputs is not None:
+        try:
+            result = FitScorer(user_id).score(
+                job_title=str(job.get("job_title") or ""),
+                company=str(job.get("company") or ""),
+                # ai: claude-opus-5-5 | 2026-11-19 -- was raw_jd_snippet alone: None for
+                # some jobs (a TypeError the old except Exception hid, leaving the job
+                # unscored), and it ignored a fuller job_description.
+                email_body=scoring_text_for_job(job),
+                resume_text=inputs.resume_text,
+                penalty_rules=inputs.penalty_rules,
+                fit_feedback=inputs.fit_feedback,
+            )
+            updates["fit_score"] = result["score"]
+            updates["fit_reasoning"] = result["reasoning"]
+            updates["salary_min"] = result["salary_min"]
+            updates["salary_max"] = result["salary_max"]
+            # ai: claude-sonnet-5 | 2026-09-21
+            updates["import_warnings"] = remove_import_warning(
+                job.get("import_warnings"), SCORING_FAILED_WARNING
+            )
+        except (AIProviderError, ValueError) as exc:
+            logger.warning("Scoring failed during approval: %s", exc)
+
+    with get_repos() as repos:
         sender = job.get("sender_email", "")
         subject_pattern = body.subject_pattern
         if sender:
@@ -1252,37 +1288,6 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
                     "created_at": datetime.now(UTC).isoformat(),
                 },
             )
-
-        from_status = str(job.get("status") or "")
-        prev_fit_score = job.get("fit_score")
-        prev_fit_reasoning = job.get("fit_reasoning")
-        updates: dict = {"status": "pending_review"}
-
-        if job.get("fit_score") is None:
-            try:
-                resume_row = repos["resume"].get_latest(user_id)
-                resume_text = resume_row["content"] if resume_row else ""
-                penalty_rules = repos["penalties"].get_enabled(user_id)
-                fit_feedback = repos["jobs"].get_not_a_fit_with_feedback(user_id)
-                scorer = FitScorer(user_id)
-                result = scorer.score(
-                    job_title=job.get("job_title", ""),
-                    company=job.get("company", ""),
-                    email_body=job.get("raw_jd_snippet", ""),
-                    resume_text=resume_text,
-                    penalty_rules=penalty_rules,
-                    fit_feedback=fit_feedback,
-                )
-                updates["fit_score"] = result["score"]
-                updates["fit_reasoning"] = result["reasoning"]
-                updates["salary_min"] = result["salary_min"]
-                updates["salary_max"] = result["salary_max"]
-                # ai: claude-sonnet-5 | 2026-09-21
-                updates["import_warnings"] = remove_import_warning(
-                    job.get("import_warnings"), SCORING_FAILED_WARNING
-                )
-            except Exception as exc:
-                logger.warning("Scoring failed during approval: %s", exc)
 
         repos["jobs"].update(user_id, job_id, updates)
         repos["job_status_history"].insert(

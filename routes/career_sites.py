@@ -51,11 +51,7 @@ from backend.active_tasks import get_active_tasks
 from backend.celery_app import celery_app
 from backend.db import (
     DuplicateJobUrlError,
-    ICareerRejectionRuleRepository,
-    ICareerScanResultRepository,
     IJobRepository,
-    IPenaltyRuleRepository,
-    IResumeRepository,
 )
 from backend.db.job_columns import JobColumns
 from backend.scanning.career_scan_digest import send_career_scan_digest
@@ -71,8 +67,12 @@ from backend.scoring.auto_reject_rules import (
 )
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.duplicate_matching import db_match_for_job
-from backend.scoring.fit_scorer import FitScorer
-from backend.scoring.jd_enrichment import enrich_job_description, is_richer_description
+from backend.scoring.fit_scorer import FitScorer, ScoringInputs
+from backend.scoring.jd_enrichment import (
+    DescriptionRescore,
+    is_richer_description,
+    rescore_description,
+)
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     import_warnings_to_json,
@@ -181,85 +181,83 @@ def _parse_collection_mode(value: object, *, default: str = "automatic") -> str:
     return mode
 
 
-def _re_evaluate_career_scan_results(
-    user_id: int,
-    repos: dict[str, object],
-) -> dict[str, int]:
-    jobs_repo: IJobRepository = repos["jobs"]  # type: ignore[assignment]
-    resume_repo: IResumeRepository = repos["resume"]  # type: ignore[assignment]
-    penalties_repo: IPenaltyRuleRepository = repos["penalties"]  # type: ignore[assignment]
-    results_repo: ICareerScanResultRepository = repos["career_scan_results"]  # type: ignore[assignment]
-    rejection_rules_repo: ICareerRejectionRuleRepository = repos["career_rejection_rules"]  # type: ignore[assignment]
-
-    known_jobs = jobs_repo.get_all_ordered(user_id)
-    rows = results_repo.get_all(user_id)
-    resume_row = resume_repo.get_latest(user_id)
-    resume_text: str = resume_row["content"] if resume_row else ""
-    penalty_rules: list[dict] = penalties_repo.get_enabled(user_id)
-    fit_feedback: list[dict] = jobs_repo.get_not_a_fit_with_feedback(user_id)
-    rejection_rules = rejection_rules_repo.get_enabled(user_id)
-    scorer = FitScorer(user_id)
-    dedup_checker = DuplicateChecker()
-
+# ai: claude-opus-5-5 | 2026-11-19 -- opens its own connections instead of
+# scoring every result row on its caller's: classify every row (DB lookups,
+# one connection) -> release -> AI scoring with no connection held -> reopen
+# once to write every row's updates.
+def _re_evaluate_career_scan_results(user_id: int) -> dict[str, int]:
     rescored = 0
     failed = 0
     db_matches = 0
     rejected_by_rule = 0
+    # (row, its updates so far, whether it was filtered before scoring)
+    classified: list[tuple[dict, dict[str, object], bool]] = []
 
-    for row in rows:
-        updates: dict[str, object] = {}
-        _MANUAL_SOURCES = {"manual_reject", "manual_applied", "employer_rejected"}
-        if row.get("tracking_source") in _MANUAL_SOURCES:
-            tracking_status = str(row.get("tracking_status") or "Rejected")
-            tracking_source = row["tracking_source"]
-            rejection_reason = row.get("rejection_reason")
-            rejection_source = row.get("rejection_source") or "manual"
-        else:
-            tracking_status, tracking_source = _tracking_status_for_career_job(
-                user_id=user_id,
-                job=row,
-                known_jobs=known_jobs,
-                jobs_repo=jobs_repo,
-                dedup_checker=dedup_checker,
+    with get_repos(user_id) as repos:
+        jobs_repo: IJobRepository = repos["jobs"]
+        known_jobs = jobs_repo.get_all_ordered(user_id)
+        rows = repos["career_scan_results"].get_all(user_id)
+        inputs = ScoringInputs.load(repos, user_id)
+        rejection_rules = repos["career_rejection_rules"].get_enabled(user_id)
+        dedup_checker = DuplicateChecker()
+
+        for row in rows:
+            updates: dict[str, object] = {}
+            _MANUAL_SOURCES = {"manual_reject", "manual_applied", "employer_rejected"}
+            if row.get("tracking_source") in _MANUAL_SOURCES:
+                tracking_status = str(row.get("tracking_status") or "Rejected")
+                tracking_source = row["tracking_source"]
+                rejection_reason = row.get("rejection_reason")
+                rejection_source = row.get("rejection_source") or "manual"
+            else:
+                tracking_status, tracking_source = _tracking_status_for_career_job(
+                    user_id=user_id,
+                    job=row,
+                    known_jobs=known_jobs,
+                    jobs_repo=jobs_repo,
+                    dedup_checker=dedup_checker,
+                )
+                rejection_reason = None
+                rejection_source = None
+                if tracking_source in {"db_url", "db_fuzzy"}:
+                    db_matches += 1
+
+                _haystack = " ".join(
+                    str(row.get(f) or "")
+                    for f in ("job_title", "job_text", "site_name", "job_url", "site_url")
+                )
+                matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
+                hybrid_note = mongodb_hybrid_rejection_note(
+                    str(row.get("site_name") or ""),
+                    str(row.get("job_text") or ""),
+                )  # ai: claude-fable-5 | 2026-07-16
+                if matched_rejection_rule is not None:
+                    tracking_status = "Filtered"
+                    tracking_source = "career_rule"
+                    rejection_reason = matched_rejection_rule["rule_text"]
+                    rejection_source = "career_rule"
+                    rejected_by_rule += 1
+                elif hybrid_note:  # ai: claude-fable-5 | 2026-07-16
+                    tracking_status = "Filtered"
+                    tracking_source = "career_rule"
+                    rejection_reason = hybrid_note
+                    rejection_source = "mongodb_hybrid"
+                    rejected_by_rule += 1
+
+            row_filtered = tracking_source == "career_rule"
+
+            updates.update(
+                {
+                    "tracking_status": tracking_status,
+                    "tracking_source": tracking_source,
+                    "rejection_reason": rejection_reason,
+                    "rejection_source": rejection_source,
+                }
             )
-            rejection_reason = None
-            rejection_source = None
-            if tracking_source in {"db_url", "db_fuzzy"}:
-                db_matches += 1
+            classified.append((row, updates, row_filtered))
 
-            _haystack = " ".join(
-                str(row.get(f) or "")
-                for f in ("job_title", "job_text", "site_name", "job_url", "site_url")
-            )
-            matched_rejection_rule = jd_blocklist_match(_haystack, rejection_rules)
-            hybrid_note = mongodb_hybrid_rejection_note(
-                str(row.get("site_name") or ""),
-                str(row.get("job_text") or ""),
-            )  # ai: claude-fable-5 | 2026-07-16
-            if matched_rejection_rule is not None:
-                tracking_status = "Filtered"
-                tracking_source = "career_rule"
-                rejection_reason = matched_rejection_rule["rule_text"]
-                rejection_source = "career_rule"
-                rejected_by_rule += 1
-            elif hybrid_note:  # ai: claude-fable-5 | 2026-07-16
-                tracking_status = "Filtered"
-                tracking_source = "career_rule"
-                rejection_reason = hybrid_note
-                rejection_source = "mongodb_hybrid"
-                rejected_by_rule += 1
-
-        row_filtered = tracking_source == "career_rule"
-
-        updates.update(
-            {
-                "tracking_status": tracking_status,
-                "tracking_source": tracking_source,
-                "rejection_reason": rejection_reason,
-                "rejection_source": rejection_source,
-            }
-        )
-
+    scorer = FitScorer(user_id)
+    for row, updates, row_filtered in classified:
         if row_filtered:
             updates["match_score"] = None
             updates["match_reasoning"] = "Filtered before scoring."
@@ -269,9 +267,9 @@ def _re_evaluate_career_scan_results(
                     job_title=str(row.get("job_title") or ""),
                     company=str(row.get("site_name") or ""),
                     email_body=str(row.get("job_text") or ""),
-                    resume_text=resume_text,
-                    penalty_rules=penalty_rules,
-                    fit_feedback=fit_feedback,
+                    resume_text=inputs.resume_text,
+                    penalty_rules=inputs.penalty_rules,
+                    fit_feedback=inputs.fit_feedback,
                 )
                 updates["match_score"] = result["score"]
                 updates["match_reasoning"] = result["reasoning"]
@@ -289,7 +287,10 @@ def _re_evaluate_career_scan_results(
                 )
                 failed += 1
 
-        results_repo.update(user_id, row["id"], updates)
+    with get_repos(user_id) as repos:
+        for row, updates, _row_filtered in classified:
+            repos["career_scan_results"].update(user_id, row["id"], updates)
+        repos["conn"].commit()
 
     return {
         "evaluated": len(rows),
@@ -389,8 +390,6 @@ def run_career_site_scan_task(
     try:
         with get_repos(user_id) as repos:
             source_repo = repos["career_sites"]
-            resume_repo = repos["resume"]
-            penalties_repo = repos["penalties"]
             rejection_rules_repo = repos["career_rejection_rules"]
             jobs_repo = repos["jobs"]
 
@@ -429,10 +428,7 @@ def run_career_site_scan_task(
                 _send_scheduled_digest()
                 return dict(state)
 
-            resume_row = resume_repo.get_latest(user_id)
-            resume_text = resume_row["content"] if resume_row else ""
-            penalty_rules = penalties_repo.get_enabled(user_id)
-            fit_feedback = jobs_repo.get_not_a_fit_with_feedback(user_id)
+            inputs = ScoringInputs.load(repos, user_id)  # ai: claude-opus-5-5 | 2026-11-19
             rejection_rules = rejection_rules_repo.get_enabled(user_id)
             known_jobs: list[dict] = jobs_repo.get_all_ordered(user_id)
 
@@ -897,9 +893,9 @@ def run_career_site_scan_task(
                             job_title=job["job_title"],
                             company=job["site_name"],
                             email_body=job["job_text"],
-                            resume_text=resume_text,
-                            penalty_rules=penalty_rules,
-                            fit_feedback=fit_feedback,
+                            resume_text=inputs.resume_text,
+                            penalty_rules=inputs.penalty_rules,
+                            fit_feedback=inputs.fit_feedback,
                         )
                         match_score = score_result["score"]
                         match_reasoning = score_result["reasoning"]
@@ -984,6 +980,16 @@ def run_career_site_scan_task(
                         promote_job_dict["status"] = "triage"
                     known_jobs.append(promote_job_dict)
 
+                # ai: claude-opus-5-5 | 2026-11-19 -- a richer description for a job
+                # already in the queue is re-scored here, in the no-DB phase; the
+                # write phase below only stores it (it used to score there, with
+                # the write connection open).
+                rescore: DescriptionRescore | None = None
+                if local_job is not None and not listing_filtered:
+                    incoming_text = str(job.get("job_text") or "").strip()
+                    if is_richer_description(incoming_text, local_job):
+                        rescore = rescore_description(user_id, local_job, incoming_text, inputs)
+
                 site_results.append(
                     {
                         "job": job,
@@ -991,6 +997,7 @@ def run_career_site_scan_task(
                         "local_job": local_job,
                         "listing_filtered": listing_filtered,
                         "promote_job_dict": promote_job_dict,
+                        "rescore": rescore,
                     }
                 )
 
@@ -1008,9 +1015,8 @@ def run_career_site_scan_task(
                 for item in site_results:
                     job = item["job"]
                     row_data = item["row_data"]
-                    local_job = item["local_job"]
-                    listing_filtered = item["listing_filtered"]
                     promote_job_dict = item["promote_job_dict"]
+                    rescore = item["rescore"]
 
                     existing_result = results_repo.get_by_job_url(user_id, job["job_url"])
                     try:
@@ -1026,39 +1032,22 @@ def run_career_site_scan_task(
                             "Career-scan insert skipped for %s: %s", job["job_url"], exc
                         )
 
-                    if local_job is not None and not listing_filtered:
-                        incoming_text = str(job.get("job_text") or "").strip()
-                        if is_richer_description(incoming_text, local_job):
-                            # ai: claude-sonnet-5 | 2026-08-19
-                            # enrich_job_description() makes its own AI scoring call
-                            # while this connection is open -- a smaller, separate
-                            # instance of the same connection-holding pattern, and
-                            # shared with backend/tasks.py. Not split out here: doing
-                            # so needs a signature change to a helper used by both
-                            # callers, which is out of scope for this fix.
-                            try:
-                                enrich_job_description(
-                                    user_id,
-                                    repos,
-                                    local_job,
-                                    incoming_text,
-                                    resume_text=resume_text,
-                                    penalty_rules=penalty_rules,
-                                    fit_feedback=fit_feedback,
-                                )
-                                conn.commit()
-                                logger.info(
-                                    "Enriched queue job %s with richer career-scan text (%d chars)",
-                                    job["job_url"],
-                                    len(incoming_text),
-                                )
-                            except Exception as exc:
-                                conn.rollback()
-                                logger.warning(
-                                    "Queue job enrichment failed for %s: %s",
-                                    job["job_url"],
-                                    exc,
-                                )
+                    if rescore is not None:
+                        # ai: claude-opus-5-5 | 2026-11-19 -- scored in the phase above
+                        try:
+                            rescore.apply(user_id, site_jobs_repo)
+                            conn.commit()
+                            logger.info(
+                                "Enriched queue job %s with richer career-scan text",
+                                job["job_url"],
+                            )
+                        except Exception as exc:
+                            conn.rollback()
+                            logger.warning(
+                                "Queue job enrichment failed for %s: %s",
+                                job["job_url"],
+                                exc,
+                            )
 
                     if promote_job_dict is not None:
                         try:
@@ -1534,9 +1523,7 @@ def clear_career_scan_results() -> ResponseReturnValue:
 @career_sites_bp.route("/career-scan/results/re-evaluate", methods=["POST"])
 def re_evaluate_career_scan_results() -> ResponseReturnValue:
     try:
-        with get_repos() as repos:
-            summary = _re_evaluate_career_scan_results(current_user_id(), repos)
-            repos["conn"].commit()
+        summary = _re_evaluate_career_scan_results(current_user_id())  # ai: claude-opus-5-5 | 2026-11-19
     except Exception as exc:
         logger.warning("Career-site re-evaluation failed: %s", exc)
         return (

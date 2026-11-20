@@ -35,7 +35,9 @@ from __future__ import annotations
 import json
 import logging
 import re
-from typing import TypedDict
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, TypedDict
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient
@@ -52,6 +54,30 @@ class ScoreResult(TypedDict):
     reasoning: str
     salary_min: int | None  # annual USD, extracted from job_description if stated
     salary_max: int | None
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+@dataclass(frozen=True)
+class ScoringInputs:
+    """The per-user data every FitScorer.score() call takes besides the job.
+
+    Loaded once, while a connection is open, so the slow score() calls that
+    follow can run with no connection held (PYTHON_STANDARDS.md, connection
+    lifetime) -- and so the three reads live in one place.
+    """
+
+    resume_text: str
+    penalty_rules: list[dict[str, Any]]
+    fit_feedback: list[dict[str, Any]]
+
+    @classmethod
+    def load(cls, repos: Mapping[str, Any], user_id: int) -> ScoringInputs:
+        resume_row = repos["resume"].get_latest(user_id)
+        return cls(
+            resume_text=str(resume_row.get("content") or "") if resume_row else "",
+            penalty_rules=repos["penalties"].get_enabled(user_id),
+            fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(user_id),
+        )
 
 
 class FitScorer:

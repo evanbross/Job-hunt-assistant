@@ -93,10 +93,12 @@ from backend.scoring.auto_reject_rules import (
 )
 from backend.scoring.certainty_rejudge import CertaintyRejudger, rejudge_job_certainty
 from backend.scoring.duplicate_checker import DuplicateChecker
+from backend.scoring.fit_scorer import ScoringInputs
 from backend.scoring.jd_enrichment import (
-    enrich_job_description,
+    DescriptionRescore,
     is_richer_description,
     job_description_text,
+    rescore_description,
     unenriched_skip_reason,
 )
 from backend.scoring.workplace_type import ensure_workplace_type_preserved
@@ -163,7 +165,7 @@ def _safe_scan_single_job_url(
     """Fetch url's JD for the concurrent prefetch pool; None on failure.
 
     Mirrors the (ValueError, OSError) handling both call sites in this file
-    and in ManualJobIngestService.ingest() already use around
+    and in ManualJobIngestService.prepare() already use around
     scan_single_job_url — kept here as the single place that decides "a
     failed prefetch fetch" means "treat it as if no fetch happened".
     """
@@ -299,35 +301,25 @@ def _llm_enrich_batch(user_id: int, url_rows: list[dict[str, Any]]) -> list[dict
     return enriched
 
 
-def _enrich_job_description(
-    user_id: int, repos: dict[str, Any], job: dict[str, Any], description: str
-) -> None:
-    # ai: claude-sonnet-4-6 | 2026-06-21
+# ai: claude-opus-5-5 | 2026-11-19 -- was _enrich_job_description(), which scored
+# and wrote on the caller's connection; this only scores (no DB access).
+def _rescore_description(
+    user_id: int, job: dict[str, Any], description: str, inputs: ScoringInputs
+) -> DescriptionRescore:
     job_id = job.get("id")
     t0 = time.monotonic()
     logger.info(
-        "_enrich_job_description: starting FitScorer for job=%s text_len=%d",
+        "_rescore_description: starting FitScorer for job=%s text_len=%d",
         job_id,
         len(description),
     )
-    resume_row = repos["resume"].get_latest(user_id)
-    resume_text = str(resume_row.get("content") or "") if resume_row else ""
-    # ai: claude-sonnet-5 | 2026-08-23 — missing user_id (same 2026-08-21
-    # multi-tenancy-migration gap as the career-site-source fix above).
-    enrich_job_description(
-        user_id,
-        repos,
-        job,
-        description,
-        resume_text=resume_text,
-        penalty_rules=repos["penalties"].get_enabled(user_id),
-        fit_feedback=repos["jobs"].get_not_a_fit_with_feedback(user_id),
-    )
+    rescore = rescore_description(user_id, job, description, inputs)
     logger.info(
-        "_enrich_job_description: FitScorer done in %.1fs for job=%s",
+        "_rescore_description: FitScorer done in %.1fs for job=%s",
         time.monotonic() - t0,
         job_id,
     )
+    return rescore
 
 
 def _find_duplicate_original(
@@ -446,6 +438,7 @@ def run_import_task(
     with get_repos(user_id) as repos:
         known_jobs: list[dict] = repos["jobs"].get_all_ordered(user_id)
         blocklist_rules: list[dict] = repos["career_rejection_rules"].get_enabled(user_id)
+        inputs = ScoringInputs.load(repos, user_id)  # ai: claude-opus-5-5 | 2026-11-19
 
         for url_row in extracted:
             url = str(url_row.get("url") or "")
@@ -508,49 +501,90 @@ def run_import_task(
             for future in as_completed(future_to_url):
                 prefetched_jd[future_to_url[future]] = future.result()
 
-    with get_repos(user_id) as repos:
-        service = ManualJobIngestService(
-            user_id, repos["jobs"], repos["resume"], repos["penalties"]
+    # ai: claude-opus-5-5 | 2026-11-19
+    # Every step below that does slow work -- the parser/scorer AI calls inside
+    # prepare() and _rescore_description() -- runs with no DB connection held;
+    # each job's reads/writes get their own short-lived connection around them
+    # (PYTHON_STANDARDS.md, connection lifetime). This loop used to hold one
+    # pooled connection for the whole batch, AI calls included.
+    service = ManualJobIngestService(user_id)
+    queued = 0
+    skipped = 0
+    repaired = 0
+    enriched = 0
+    filtered = 0
+    failed = 0
+    queued_details: list[dict] = []
+    skipped_details: list[dict] = []
+    repaired_details: list[dict] = []
+    enriched_details: list[dict] = []
+    filtered_details: list[dict] = []
+    failures: list[dict] = []
+
+    for i, url_row in enumerate(extracted):
+        url = str(url_row.get("url") or "")
+        platform = str(url_row.get("platform") or "")
+        incoming_text = str(url_row.get("listing_text") or "").strip()
+
+        _report_import_progress(
+            self,
+            user_id,
+            {
+                "phase": "filtering",
+                "progress": round((i / total) * 100) if total else 0,
+                "message": f"Filtering job {i + 1} of {total} — {platform}…",
+                "total": total,
+                "current_job_url": url,
+                "current_platform": platform,
+                "capture_source": capture_source,
+                "queued": queued,
+                "skipped": skipped,
+                "repaired": repaired,
+                "enriched": enriched,
+                "failed": failed,
+            },
         )
-        queued = 0
-        skipped = 0
-        repaired = 0
-        enriched = 0
-        filtered = 0
-        failed = 0
-        queued_details: list[dict] = []
-        skipped_details: list[dict] = []
-        repaired_details: list[dict] = []
-        enriched_details: list[dict] = []
-        filtered_details: list[dict] = []
-        failures: list[dict] = []
 
-        for i, url_row in enumerate(extracted):
-            url = str(url_row.get("url") or "")
-            platform = str(url_row.get("platform") or "")
-            incoming_text = str(url_row.get("listing_text") or "").strip()
-
-            _report_import_progress(
-                self,
-                user_id,
-                {
-                    "phase": "filtering",
-                    "progress": round((i / total) * 100) if total else 0,
-                    "message": f"Filtering job {i + 1} of {total} — {platform}…",
-                    "total": total,
-                    "current_job_url": url,
-                    "current_platform": platform,
-                    "capture_source": capture_source,
-                    "queued": queued,
-                    "skipped": skipped,
-                    "repaired": repaired,
-                    "enriched": enriched,
-                    "failed": failed,
-                },
+        existing_job = existing_job_by_url.get(url)
+        if existing_job is not None:
+            # ai: claude-sonnet-4-6 | 2026-06-22
+            incoming_len = len(incoming_text)
+            existing_desc_len = len(job_description_text(existing_job))
+            richer_text = (
+                incoming_text
+                if is_richer_description(incoming_text, existing_job)
+                else None
+            )
+            # ai: claude-sonnet-5 | 2026-08-11
+            # A search/listing-page capture (e.g. a Greenhouse board card) often
+            # yields only a short blurb even though the captured url points at the
+            # individual job page — fetch that page directly before giving up.
+            # Mirrors the re-fetch ManualJobIngestService already does for
+            # brand-new jobs (see manual_job_ingest_service.py).
+            # ai: claude-sonnet-5 | 2026-08-26 — now looked up from the concurrent
+            # prefetch pass above instead of fetched live here; see urls_needing_fetch.
+            if richer_text is None and url.startswith("https://"):
+                fetched_job = prefetched_jd.get(url)
+                if fetched_job is not None:
+                    fetched_text = fetched_job.get("job_text", "")
+                    if is_richer_description(fetched_text, existing_job):
+                        # ai: claude-sonnet-5 | 2026-08-21
+                        # LinkedIn's fetched JD (guest jobs API) never
+                        # carries the Hybrid/Remote/On-site top-card badge
+                        # — recover it from the existing stored text
+                        # before it's replaced.
+                        richer_text = ensure_workplace_type_preserved(
+                            fetched_text, job_description_text(existing_job)
+                        )
+                        incoming_len = len(richer_text)
+            # ai: claude-opus-5-5 | 2026-11-19 -- scored before the connection opens
+            rescore = (
+                _rescore_description(user_id, existing_job, richer_text, inputs)
+                if richer_text is not None
+                else None
             )
 
-            existing_job = existing_job_by_url.get(url)
-            if existing_job is not None:
+            with get_repos(user_id) as repos:
                 # ai: claude-sonnet-5 | 2026-10-12
                 # LinkedIn never goes through repair_existing_job_company: that
                 # function trusts url_row's freshly *captured* company as the
@@ -596,39 +630,9 @@ def run_import_task(
                     if updated:
                         post_repair_duplicate_check(user_id, repos["jobs"], updated)
                         repos["conn"].commit()
-                # ai: claude-sonnet-4-6 | 2026-06-22
-                incoming_len = len(incoming_text)
-                existing_desc_len = len(job_description_text(existing_job))
-                richer_text = (
-                    incoming_text
-                    if is_richer_description(incoming_text, existing_job)
-                    else None
-                )
-                # ai: claude-sonnet-5 | 2026-08-11
-                # A search/listing-page capture (e.g. a Greenhouse board card) often
-                # yields only a short blurb even though the captured url points at the
-                # individual job page — fetch that page directly before giving up.
-                # Mirrors the re-fetch ManualJobIngestService already does for
-                # brand-new jobs (see manual_job_ingest_service.py).
-                # ai: claude-sonnet-5 | 2026-08-26 — now looked up from the concurrent
-                # prefetch pass above instead of fetched live here; see urls_needing_fetch.
-                if richer_text is None and url.startswith("https://"):
-                    fetched_job = prefetched_jd.get(url)
-                    if fetched_job is not None:
-                        fetched_text = fetched_job.get("job_text", "")
-                        if is_richer_description(fetched_text, existing_job):
-                            # ai: claude-sonnet-5 | 2026-08-21
-                            # LinkedIn's fetched JD (guest jobs API) never
-                            # carries the Hybrid/Remote/On-site top-card badge
-                            # — recover it from the existing stored text
-                            # before it's replaced.
-                            richer_text = ensure_workplace_type_preserved(
-                                fetched_text, job_description_text(existing_job)
-                            )
-                            incoming_len = len(richer_text)
 
-                if richer_text is not None:
-                    _enrich_job_description(user_id, repos, existing_job, richer_text)
+                if rescore is not None:
+                    rescore.apply(user_id, repos["jobs"])
                     repos["conn"].commit()
                     enriched += 1
                     enriched_details.append(
@@ -667,96 +671,131 @@ def run_import_task(
                         SightingChannel.EXTENSION,
                     )
                     repos["conn"].commit()
-                skipped += 1
-                skipped_details.append(
-                    _import_outcome_detail(
-                        url_row,
-                        skip_reason,
-                        "skipped",
-                        existing_job,
-                    )
+            skipped += 1
+            skipped_details.append(
+                _import_outcome_detail(
+                    url_row,
+                    skip_reason,
+                    "skipped",
+                    existing_job,
                 )
-                continue
-
-            if blocklist_rules:
-                _haystack = " ".join(
-                    str(url_row.get(f) or "")
-                    for f in ("job_title", "company", "listing_text", "url", "platform")
-                )
-                matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
-                if matched_rule is not None:
-                    filtered += 1
-                    filtered_details.append(
-                        _import_outcome_detail(
-                            url_row,
-                            f"Blocked by global JD filter: \"{matched_rule.get('rule_text', '')}\"",
-                            "filtered",
-                        )
-                    )
-                    logger.debug(
-                        "JD blocklist filtered %s (rule: %s)",
-                        url,
-                        matched_rule.get("rule_text"),
-                    )
-                    continue
-
-            # ai: claude-fable-5 | 2026-07-16
-            hybrid_note = mongodb_hybrid_rejection_note(
-                str(url_row.get("company") or ""),
-                str(url_row.get("listing_text") or ""),
             )
-            if hybrid_note is not None:
+            continue
+
+        if blocklist_rules:
+            _haystack = " ".join(
+                str(url_row.get(f) or "")
+                for f in ("job_title", "company", "listing_text", "url", "platform")
+            )
+            matched_rule = jd_blocklist_match(_haystack, blocklist_rules)
+            if matched_rule is not None:
                 filtered += 1
                 filtered_details.append(
-                    _import_outcome_detail(url_row, hybrid_note, "filtered")
+                    _import_outcome_detail(
+                        url_row,
+                        f"Blocked by global JD filter: \"{matched_rule.get('rule_text', '')}\"",
+                        "filtered",
+                    )
                 )
-                logger.debug("MongoDB hybrid filter rejected %s", url)
+                logger.debug(
+                    "JD blocklist filtered %s (rule: %s)",
+                    url,
+                    matched_rule.get("rule_text"),
+                )
                 continue
 
-            try:
-                _report_import_progress(
-                    self,
-                    user_id,
-                    {
-                        "phase": "matching",
-                        "progress": round(((i + 0.5) / total) * 100) if total else 0,
-                        "message": f"Matching job {i + 1} of {total} against resume and duplicate history…",
-                        "total": total,
-                        "current_job_url": url,
-                        "current_platform": platform,
-                        "capture_source": capture_source,
-                        "queued": queued,
-                        "skipped": skipped,
-                        "repaired": repaired,
-                        "enriched": enriched,
-                        "failed": failed,
-                    },
-                )
-                # ai: claude-sonnet-4-6 | 2026-06-21
-                t_ingest = time.monotonic()
-                logger.info(
-                    "run_import_task [%d/%d]: ingest starting url=%s platform=%s text_len=%d",
-                    i + 1,
-                    total,
-                    url,
-                    platform,
-                    len(incoming_text),
-                )
-                ingest_result = service.ingest(
-                    incoming_text,
-                    source_url=url,
-                    source_name=platform,
-                    company_override=str(url_row.get("company") or ""),
-                    job_title_override=str(url_row.get("job_title") or ""),
-                    linkedin_ai_insight=str(url_row.get("ai_insight") or ""),
-                    sheet_jobs=known_jobs,
-                    trigger=body.get("import_trigger", "ui"),
-                    prefetched_jd=prefetched_jd,  # ai: claude-sonnet-5 | 2026-08-26
-                )
+        # ai: claude-fable-5 | 2026-07-16
+        hybrid_note = mongodb_hybrid_rejection_note(
+            str(url_row.get("company") or ""),
+            str(url_row.get("listing_text") or ""),
+        )
+        if hybrid_note is not None:
+            filtered += 1
+            filtered_details.append(
+                _import_outcome_detail(url_row, hybrid_note, "filtered")
+            )
+            logger.debug("MongoDB hybrid filter rejected %s", url)
+            continue
+
+        try:
+            _report_import_progress(
+                self,
+                user_id,
+                {
+                    "phase": "matching",
+                    "progress": round(((i + 0.5) / total) * 100) if total else 0,
+                    "message": f"Matching job {i + 1} of {total} against resume and duplicate history…",
+                    "total": total,
+                    "current_job_url": url,
+                    "current_platform": platform,
+                    "capture_source": capture_source,
+                    "queued": queued,
+                    "skipped": skipped,
+                    "repaired": repaired,
+                    "enriched": enriched,
+                    "failed": failed,
+                },
+            )
+            # ai: claude-sonnet-4-6 | 2026-06-21
+            t_ingest = time.monotonic()
+            logger.info(
+                "run_import_task [%d/%d]: ingest starting url=%s platform=%s text_len=%d",
+                i + 1,
+                total,
+                url,
+                platform,
+                len(incoming_text),
+            )
+            # ai: claude-opus-5-5 | 2026-11-19 -- no connection held during prepare()
+            prepared = service.prepare(
+                incoming_text,
+                inputs=inputs,
+                source_url=url,
+                source_name=platform,
+                company_override=str(url_row.get("company") or ""),
+                job_title_override=str(url_row.get("job_title") or ""),
+                linkedin_ai_insight=str(url_row.get("ai_insight") or ""),
+                trigger=body.get("import_trigger", "ui"),
+                prefetched_jd=prefetched_jd,  # ai: claude-sonnet-5 | 2026-08-26
+            )
+            richer_original: dict[str, Any] | None = None
+            with get_repos(user_id) as repos:
+                # ai: claude-sonnet-5 | 2026-08-12
+                # Imports run concurrently now (see routes/import_.py), so two
+                # batches can both check get_by_url(), both find nothing, and
+                # both try to insert the same URL. The DB's partial unique index
+                # lets exactly one writer win; the loser's DuplicateJobUrlError
+                # is recorded as a skip (the job exists -- just not because of
+                # this task), not a scary "unexpected error".
+                try:
+                    ingest_result = service.save(prepared, repos["jobs"], sheet_jobs=known_jobs)
+                except DuplicateJobUrlError as exc:
+                    repos["conn"].rollback()
+                    logger.info(
+                        "run_import_task [%d/%d]: %s was inserted by a concurrent "
+                        "import; skipping to avoid a duplicate",
+                        i + 1,
+                        total,
+                        url,
+                    )
+                    dup_existing = repos["jobs"].get_by_url(
+                        user_id, exc.url
+                    ) or repos["jobs"].get_by_url(user_id, url)
+                    skipped += 1
+                    skipped_details.append(
+                        _import_outcome_detail(
+                            url_row,
+                            "Another import running at the same time already inserted "
+                            "this job; skipped to avoid a duplicate.",
+                            "skipped",
+                            dup_existing,
+                        )
+                    )
+                    continue
                 new_job = ingest_result.job
                 # ai: claude-opus-5-5 | 2026-11-15 -- same posting as a tracked job
                 # under a different URL (e.g. another LinkedIn tracking link): a
-                # sighting of that job; ingest inserted nothing.
+                # sighting of that job; save inserted nothing.
                 if ingest_result.already_tracked and ingest_result.capture is not None:
                     if body_queue_url is None:
                         record_sighting_from_job_data(
@@ -789,118 +828,99 @@ def run_import_task(
                 if new_job.get("status") == "possible_duplicate":
                     original = _find_duplicate_original(new_job, known_jobs)
                     if original and is_richer_description(incoming_text, original):
-                        logger.info(
-                            "run_import_task [%d/%d]: enriching original job %s via possible_duplicate path",
-                            i + 1,
-                            total,
-                            original.get("id"),
-                        )
-                        _enrich_job_description(user_id, repos, original, incoming_text)
-                        repos["jobs"].delete(user_id, int(new_job["id"]))
-                        repos["conn"].commit()
-                        enriched += 1
-                        enriched_details.append(
-                            _import_outcome_detail(
-                                url_row,
-                                "Captured listing matched an existing job and had a richer description, so the existing job was updated instead of creating a duplicate.",
-                                "enriched",
-                                original,
-                            )
-                        )
-                        continue
-                # ai: claude-sonnet-4-6 | 2026-07-02
-                # known_jobs is a snapshot fetched once before this loop started, so
-                # a newly queued job must be appended here — otherwise a later job in
-                # the same batch that duplicates this one won't see it in the
-                # duplicate check and will queue as a second, unflagged copy.
-                known_jobs.append(new_job)
-                queued += 1
-                queued_details.append(
-                    _import_outcome_detail(
-                        url_row,
-                        "New job was parsed, scored, and added to the queue.",
-                        "queued",
-                        new_job,
-                    )
-                )
-                repos["conn"].commit()
-            # ai: claude-sonnet-5 | 2026-08-12
-            # Imports run concurrently now (see routes/import_.py), so two batches
-            # can both check get_by_url(), both find nothing, and both try to
-            # insert the same URL. The DB's partial unique index lets exactly one
-            # writer win; this catches the loser's DuplicateJobUrlError and
-            # records it as a skip (the job exists — just not because of this
-            # task) instead of letting it fall into the generic failure branch
-            # below as a scary "unexpected error".
-            except DuplicateJobUrlError as exc:
-                repos["conn"].rollback()
+                        richer_original = original
+                if richer_original is not None:
+                    # ai: claude-opus-5-5 | 2026-11-19 -- the original job takes the
+                    # richer text instead, so the duplicate row is never committed
+                    # (was: insert, enrich the original, delete the insert).
+                    repos["conn"].rollback()
+                else:
+                    repos["conn"].commit()
+
+            if richer_original is not None:
                 logger.info(
-                    "run_import_task [%d/%d]: %s was inserted by a concurrent "
-                    "import; skipping to avoid a duplicate",
+                    "run_import_task [%d/%d]: enriching original job %s via possible_duplicate path",
                     i + 1,
                     total,
-                    url,
+                    richer_original.get("id"),
                 )
-                dup_existing = repos["jobs"].get_by_url(
-                    user_id, exc.url
-                ) or repos["jobs"].get_by_url(user_id, url)
-                skipped += 1
-                skipped_details.append(
+                rescore = _rescore_description(user_id, richer_original, incoming_text, inputs)
+                with get_repos(user_id) as repos:
+                    rescore.apply(user_id, repos["jobs"])
+                    repos["conn"].commit()
+                enriched += 1
+                enriched_details.append(
                     _import_outcome_detail(
                         url_row,
-                        "Another import running at the same time already inserted "
-                        "this job; skipped to avoid a duplicate.",
-                        "skipped",
-                        dup_existing,
+                        "Captured listing matched an existing job and had a richer description, so the existing job was updated instead of creating a duplicate.",
+                        "enriched",
+                        richer_original,
                     )
                 )
-            except (
-                ValueError,
-                urllib.error.URLError,
-                TimeoutError,
-                socket.error,
-            ) as exc:
-                repos["conn"].rollback()
-                logger.warning("Bulk import skipped %s: %s", url, exc)
-                failed += 1
-                failures.append(_import_failure_detail(url_row, exc, "ingest"))
-            except Exception as exc:
-                repos["conn"].rollback()
-                logger.error("Bulk import error for %s: %s", url, exc)
-                failed += 1
-                failures.append(_import_failure_detail(url_row, exc, "unexpected"))
+                continue
+            # ai: claude-sonnet-4-6 | 2026-07-02
+            # known_jobs is a snapshot fetched once before this loop started, so
+            # a newly queued job must be appended here — otherwise a later job in
+            # the same batch that duplicates this one won't see it in the
+            # duplicate check and will queue as a second, unflagged copy.
+            known_jobs.append(new_job)
+            queued += 1
+            queued_details.append(
+                _import_outcome_detail(
+                    url_row,
+                    "New job was parsed, scored, and added to the queue.",
+                    "queued",
+                    new_job,
+                )
+            )
+        # A failed write is discarded when get_repos closes the uncommitted
+        # connection, so these need no explicit rollback.
+        except (
+            ValueError,
+            urllib.error.URLError,
+            TimeoutError,
+            socket.error,
+        ) as exc:
+            logger.warning("Bulk import skipped %s: %s", url, exc)
+            failed += 1
+            failures.append(_import_failure_detail(url_row, exc, "ingest"))
+        except Exception as exc:
+            logger.error("Bulk import error for %s: %s", url, exc)
+            failed += 1
+            failures.append(_import_failure_detail(url_row, exc, "unexpected"))
 
+    with get_repos(user_id) as repos:
         _record_capture_source(user_id, capture_source, repos, body)
 
-        # ai: claude-sonnet-4-6 | 2026-06-26
-        logger.info(
-            "IMPORT DONE    %.1fs  |  %d URL(s): new=%-3d  unchanged=%-3d  enriched=%-3d"
-            "  repaired=%-3d  filtered=%-3d  failed=%d",
-            time.monotonic() - t_task_start,
-            total,
-            queued,
-            skipped,
-            enriched,
-            repaired,
-            filtered,
-            failed,
-        )
-        return {
-            "total": total,  # ai: gpt-5 | 2026-10-04
-            "queued": queued,
-            "skipped": skipped,
-            "repaired": repaired,
-            "enriched": enriched,
-            "filtered": filtered,
-            "failed": failed,
-            "queued_details": queued_details,
-            "skipped_details": skipped_details,
-            "repaired_details": repaired_details,
-            "enriched_details": enriched_details,
-            "filtered_details": filtered_details,
-            "failures": failures,
-            "capture_source": capture_source,
-        }
+    # ai: claude-sonnet-4-6 | 2026-06-26
+    logger.info(
+        "IMPORT DONE    %.1fs  |  %d URL(s): new=%-3d  unchanged=%-3d  enriched=%-3d"
+        "  repaired=%-3d  filtered=%-3d  failed=%d",
+        time.monotonic() - t_task_start,
+        total,
+        queued,
+        skipped,
+        enriched,
+        repaired,
+        filtered,
+        failed,
+    )
+    return {
+        "total": total,  # ai: gpt-5 | 2026-10-04
+        "queued": queued,
+        "skipped": skipped,
+        "repaired": repaired,
+        "enriched": enriched,
+        "filtered": filtered,
+        "failed": failed,
+        "queued_details": queued_details,
+        "skipped_details": skipped_details,
+        "repaired_details": repaired_details,
+        "enriched_details": enriched_details,
+        "filtered_details": filtered_details,
+        "failures": failures,
+        "capture_source": capture_source,
+    }
 
 
 # ai: claude-opus-5-5 | 2026-10-24
