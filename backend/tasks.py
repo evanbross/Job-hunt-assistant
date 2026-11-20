@@ -56,6 +56,7 @@ from typing import Any
 
 from celery.signals import task_postrun
 from googleapiclient.errors import HttpError
+from kombu.exceptions import OperationalError as BrokerOperationalError
 
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.app_mode import is_hosted
@@ -90,6 +91,7 @@ from backend.scoring.auto_reject_rules import (
     jd_blocklist_match,
     mongodb_hybrid_rejection_note,  # ai: claude-fable-5 | 2026-07-16
 )
+from backend.scoring.certainty_rejudge import CertaintyRejudger, rejudge_job_certainty
 from backend.scoring.duplicate_checker import DuplicateChecker
 from backend.scoring.jd_enrichment import (
     enrich_job_description,
@@ -589,6 +591,7 @@ def run_import_task(
                         )
                     )
                     repos["conn"].commit()
+                    queue_certainty_rejudge(user_id, int(existing_job["id"]))  # ai: claude-opus-5-5 | 2026-11-19
                     updated = repos["jobs"].get_by_id(user_id, int(existing_job["id"]))
                     if updated:
                         post_repair_duplicate_check(user_id, repos["jobs"], updated)
@@ -1169,3 +1172,26 @@ def run_jd_health_check_task(
         _send_jd_health_check_failure_email(user_id, failure_details)
 
     return {"total": total, "passed": passed, "failed": failed}
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+@celery_app.task
+def rejudge_job_certainty_task(user_id: int, job_id: int) -> bool:
+    """Re-judge one job's certainty after a repair changed its company/title."""
+    return rejudge_job_certainty(user_id, job_id, CertaintyRejudger(user_id))
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def queue_certainty_rejudge(user_id: int, job_id: int) -> None:
+    """Queue a certainty re-judge for a job whose company/title a repair just
+    filled or corrected. Call after that repair commits, so the task reads it.
+
+    A broker outage is logged, not raised: the repair itself already
+    committed, and failing here would abort the rest of the caller's repair
+    loop over a stale explanation. scripts/rejudge_stale_certainty.py sweeps
+    up anything missed.
+    """
+    try:
+        rejudge_job_certainty_task.delay(user_id, job_id)
+    except BrokerOperationalError as exc:
+        logger.warning("Could not queue certainty re-judge for job %d: %s", job_id, exc)

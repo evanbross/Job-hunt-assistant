@@ -34,7 +34,12 @@ from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
 
 from backend.db.job_columns import JobColumns
-from backend.email.email_parser import EmailParser, ParsedJob
+from backend.email.email_parser import (
+    EmailParser,
+    KnownJobFields,
+    ParsedJob,
+    best_parsed_match,
+)
 from backend.scanning.career_site_scanner import (
     UNTITLED_JOB_TITLE,
     CareerSiteScanner,
@@ -179,9 +184,16 @@ class ManualJobIngestService:
                 email_subject,
                 f"{email_id_prefix}@local",
                 normalized_text,
+                # ai: claude-opus-5-5 | 2026-11-19 -- the overrides win below; the
+                # parser must see them too or its certainty_reason contradicts them.
+                known=KnownJobFields(
+                    company=normalized_company_override,
+                    job_title=normalized_job_title_override,
+                    url=normalized_source_url,
+                ),
             )
             if parsed_jobs:
-                parsed = self._select_best_match(parsed_jobs)
+                parsed = best_parsed_match(parsed_jobs)  # ai: claude-opus-5-5 | 2026-11-19
 
             # ai: claude-sonnet-4-6 | 2026-06-14
             # Browser-extension captures sometimes carry only a title + URL (e.g.
@@ -437,16 +449,6 @@ class ManualJobIngestService:
     def _resume_text(self) -> str:
         resume_row = self._resume_repo.get_latest(self._user_id)
         return str(resume_row.get("content") or "") if resume_row else ""
-
-    @staticmethod
-    def _select_best_match(parsed_jobs: list[ParsedJob]) -> ParsedJob:
-        def sort_key(row: ParsedJob) -> tuple[int, int, int]:
-            has_title = 1 if row.get("job_title", "").strip() else 0
-            has_company = 1 if row.get("company", "").strip() else 0
-            certainty_score = int(row.get("certainty_score", 0))
-            return (certainty_score, has_title, has_company)
-
-        return max(parsed_jobs, key=sort_key)
 
     # ai: claude-sonnet-4-6 | 2026-06-09
     def _duplicate_hint_for(

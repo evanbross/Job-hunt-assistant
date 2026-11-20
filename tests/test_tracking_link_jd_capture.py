@@ -270,7 +270,10 @@ def test_broken_import_rescan_saves_a_fetched_jd_as_the_description(
 
 
 def test_import_repair_commits_the_capture_when_the_jd_is_the_only_defect(
-    user_id: int, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+    user_id: int,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    queued_certainty_rejudges: list[tuple[int, int]],  # ai: claude-opus-5-5 | 2026-11-19
 ) -> None:
     """get_repos() rolls back on exit; the repair committed only when it had
     other fixes to write, so this job's queued capture silently vanished."""
@@ -288,6 +291,8 @@ def test_import_repair_commits_the_capture_when_the_jd_is_the_only_defect(
     assert [(q["url"], q["origin"], q["origin_detail"]) for q in queue] == [
         (_POSTING_URL, "import_repair", f"Job #{job_id}")
     ]
+    # ai: claude-opus-5-5 | 2026-11-19 -- company/title untouched, so certainty still holds
+    assert queued_certainty_rejudges == []
 
 
 def test_import_repair_reports_a_tracking_link_jd_with_no_url_as_unresolved(
@@ -321,3 +326,33 @@ def test_import_repair_does_not_queue_a_capture_for_a_skipped_job(
     assert state["unresolved"] == []
     _, queue = _jobs_and_queue(pg_dsn, user_id)
     assert queue == []
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_import_repair_queues_a_certainty_rejudge_when_it_fills_the_company(
+    user_id: int,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    queued_certainty_rejudges: list[tuple[int, int]],
+) -> None:
+    """The stored certainty_reason was written when the company was blank (job
+    8335's "company name is missing"); once the repair fills it, that is stale."""
+    job_id = _insert_job(
+        pg_dsn,
+        user_id,
+        dedup_key="msg-1",
+        url=_POSTING_URL,
+        company="",
+        job_title="Senior Platform Engineer",
+        capture_label="New match: Senior Platform Engineer at Acme Robotics",
+        raw_jd_snippet="Build platform things. " * 30,
+        import_warnings='["missing_company"]',
+    )
+    monkeypatch.setattr(jobs_route, "_write_repair_findings_doc", lambda *a, **k: None)
+
+    state = jobs_route.run_import_repair_task(user_id)
+
+    assert [(j["id"], j.get("company")) for j in state["title_or_company_fixed"]] == [
+        (job_id, "Acme Robotics")
+    ]
+    assert queued_certainty_rejudges == [(user_id, job_id)]

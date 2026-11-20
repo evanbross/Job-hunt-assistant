@@ -593,3 +593,44 @@ def test_parser_stores_canonical_wellfound_url_for_a_resolved_tracking_link(
     assert [job["url"] for job in jobs] == [
         "https://wellfound.com/jobs/5040873-software-engineer-5-tv-ads"
     ]
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_parser_sends_known_capture_fields_to_the_llm() -> None:
+    """Job 8335: Eightfold's listing text never names the employer, so without
+    the extension's own company the LLM wrote "company name is missing" next
+    to a stored company of "Lockheed Martin"."""
+    client = FakeParserClient()
+    job_url = "https://lockheedmartin.eightfold.ai/careers/job/996477730662"
+
+    EmailParser(1, client=client).parse(
+        "Browser Extension streamed job listing",
+        "browser_ext@local",
+        "Remote. Full Time. ## Basic Qualifications",
+        known=email_parser_module.KnownJobFields(
+            company="Lockheed Martin",
+            job_title="Full Stack Engineer Stf",
+            url=job_url,
+        ),
+    )
+
+    sent_content = client.messages[0].content
+    assert sent_content.endswith(
+        "\n\nCapture metadata:\nCompany: Lockheed Martin\n"
+        "Job title: Full Stack Engineer Stf\nURL: [URL_0]"
+    )
+    assert job_url not in sent_content
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+@pytest.mark.parametrize(
+    "known", [None, email_parser_module.KnownJobFields()], ids=["none", "all-blank"]
+)
+def test_parser_omits_capture_metadata_when_nothing_is_known(
+    known: email_parser_module.KnownJobFields | None,
+) -> None:
+    client = FakeParserClient()
+
+    EmailParser(1, client=client).parse("Subject", "jobs@example.com", "Body", known=known)
+
+    assert "Capture metadata" not in client.messages[0].content

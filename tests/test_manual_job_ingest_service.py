@@ -30,6 +30,7 @@ from __future__ import annotations
 import pytest
 
 from backend.db import DuplicateJobUrlError
+from backend.email.email_parser import KnownJobFields
 from backend.scanning.manual_job_ingest_service import ManualJobIngestService
 
 _TEST_USER_ID = 1
@@ -80,8 +81,17 @@ class StubPenaltyRepo:
 class StubParser:
     def __init__(self, parsed_jobs: list[dict]) -> None:
         self._parsed_jobs = parsed_jobs
+        self.known: KnownJobFields | None = None
 
-    def parse(self, subject: str, sender: str, body_snippet: str) -> list[dict]:
+    def parse(
+        self,
+        subject: str,
+        sender: str,
+        body_snippet: str,
+        *,
+        known: KnownJobFields | None = None,
+    ) -> list[dict]:
+        self.known = known
         return list(self._parsed_jobs)
 
 
@@ -238,6 +248,49 @@ def test_ingest_uses_manual_overrides_when_parser_is_incomplete() -> None:
     assert result.job["company"] == "Acme"
     assert result.job["job_title"] == "Senior Platform Engineer"
     assert result.job["status"] == "pending_review"
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+def test_ingest_shows_the_parser_the_fields_its_overrides_will_store() -> None:
+    """The overrides win over the parser's company/title, so the parser has to
+    judge certainty with them in view -- job 8335 stored "Lockheed Martin" with
+    a certainty_reason saying the company was missing."""
+    parser = StubParser(
+        [
+            {
+                "company": "",
+                "job_title": "Full Stack Engineer Stf",
+                "url": "",
+                "source": "",
+                "certainty_level": "high",
+                "certainty_score": 90,
+                "certainty_reason": "Title, company and URL are all present.",
+            }
+        ]
+    )
+    service = ManualJobIngestService(
+        _TEST_USER_ID,
+        StubJobRepo(),
+        StubResumeRepo(),
+        StubPenaltyRepo(),
+        parser=parser,
+        scorer=StubScorer(),
+        career_site_scanner=StubCareerSiteScanner(),
+    )
+    job_url = "https://lockheedmartin.eightfold.ai/careers/job/996477730662"
+
+    result = service.ingest(
+        "Remote. Full Time. " + "Basic qualifications. " * 30,
+        source_url=f"  {job_url} ",
+        company_override=" Lockheed Martin ",
+        job_title_override="Full Stack Engineer Stf",
+        trigger="listener",
+    )
+
+    assert parser.known == KnownJobFields(
+        company="Lockheed Martin", job_title="Full Stack Engineer Stf", url=job_url
+    )
+    assert result.job["certainty_reason"] == "Title, company and URL are all present."
 
 
 def test_ingest_stores_linkedin_ai_insight_when_given() -> None:

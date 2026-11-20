@@ -57,6 +57,7 @@ os.environ.setdefault("FLASK_SECRET_KEY", "unit-test-signing-secret-0123456789ab
 os.environ.setdefault("SETTINGS_ENCRYPTION_KEY", Fernet.generate_key().decode())
 os.environ.setdefault("BOOTSTRAP_ADMIN_PASSWORD", "test-bootstrap-password-2026")
 
+import backend.tasks as tasks_module  # noqa: E402
 import config  # noqa: E402
 from backend.active_tasks import (  # noqa: E402
     ActiveTasks,
@@ -221,6 +222,21 @@ def isolated_user_events() -> Iterator[RecordingUserEvents]:
     set_user_events(events)
     yield events
     set_user_events(None)
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+@pytest.fixture(autouse=True)
+def queued_certainty_rejudges(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, int]]:
+    """Every (user_id, job_id) a repair queued a certainty re-judge for, recorded
+    instead of sent: otherwise each repair a test runs would push a task through
+    the developer's real Redis broker to their running worker."""
+    queued: list[tuple[int, int]] = []
+    monkeypatch.setattr(
+        tasks_module.rejudge_job_certainty_task,
+        "delay",
+        lambda user_id, job_id: queued.append((user_id, job_id)),
+    )
+    return queued
 
 
 # ai: claude-opus-5-5 | 2026-11-06

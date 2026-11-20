@@ -64,6 +64,7 @@ from backend.scanning.import_repair import (  # noqa: E402
     jobgether_company_repair_updates,
     post_repair_duplicate_check,
 )
+from backend.tasks import queue_certainty_rejudge  # noqa: E402
 from backend.utils.url_safety import UnsafeUrlError  # noqa: E402
 from backend.utils.utils import get_repos  # noqa: E402
 
@@ -129,6 +130,7 @@ def main() -> None:
             if not args.dry_run:
                 repos["jobs"].update(_USER_ID, job_id, updates)
                 repos["conn"].commit()
+                queue_certainty_rejudge(_USER_ID, job_id)  # ai: claude-opus-5-5 | 2026-11-19
                 # ai: claude-sonnet-5 | 2026-10-08
                 # Re-evaluate this job's duplicate status now that its real
                 # company is on file -- a stale duplicate_of_id set while

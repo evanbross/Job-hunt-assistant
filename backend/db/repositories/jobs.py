@@ -898,6 +898,43 @@ class PostgresJobRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-opus-5-5 | 2026-11-19
+    def update_certainty_if_identity_unchanged(
+        self,
+        user_id: int,
+        job_id: int,
+        judged: dict[str, Any],
+        certainty: dict[str, Any],
+    ) -> bool:
+        """Store a re-judged certainty only if the job's company, title and URL
+        are still the *judged* values the LLM saw.
+
+        The re-judge reads the job, releases its connection for the slow LLM
+        call, then writes here. A repair or user edit landing in between would
+        make the judgment describe a job that no longer exists (that edit
+        queues its own re-judge), and two re-judges finishing out of order
+        must not leave the older one's verdict behind. Returns whether the
+        write applied.
+        """
+        cur = self._execute(
+            "UPDATE jobs SET certainty_level = %s, certainty_score = %s, certainty_reason = %s"
+            " WHERE id = %s AND user_id = %s"
+            " AND company IS NOT DISTINCT FROM %s"
+            " AND job_title IS NOT DISTINCT FROM %s"
+            " AND url IS NOT DISTINCT FROM %s",
+            [
+                certainty[JobColumns.CERTAINTY_LEVEL],
+                certainty[JobColumns.CERTAINTY_SCORE],
+                certainty[JobColumns.CERTAINTY_REASON],
+                job_id,
+                user_id,
+                judged.get(JobColumns.COMPANY),
+                judged.get(JobColumns.JOB_TITLE),
+                judged.get(JobColumns.URL),
+            ],
+        )
+        return cur.rowcount == 1
+
     # ai: claude-sonnet-5 | 2026-10-14
     def lock_for_duplicate_check(self, user_id: int) -> None:
         """Serialize duplicate-check-then-write sections for one user.

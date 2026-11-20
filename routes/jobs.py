@@ -135,6 +135,7 @@ from backend.scoring.skip_reasons import (
     VALID_SKIP_REASONS,  # ai: claude-fable-5 | 2026-07-16
 )
 from backend.task_progress import TaskProgress, run_status
+from backend.tasks import queue_certainty_rejudge  # ai: claude-opus-5-5 | 2026-11-19
 from backend.utils.stage_status_normalization import (
     effective_application_status,
     normalize_stage_status,
@@ -1792,6 +1793,7 @@ def _run_wttj_repair(user_id: int, progress: TaskProgress[WttjRepairState]) -> N
                     if updated_job:
                         post_repair_duplicate_check(user_id, repos["jobs"], updated_job)
                         repos["conn"].commit()
+            queue_certainty_rejudge(user_id, int(job["id"]))  # ai: claude-opus-5-5 | 2026-11-19
 
             title_fixed.append({**summary, **fix_updates, "url": url})
             with progress.update():
@@ -2578,6 +2580,7 @@ def _run_import_repair(user_id: int, progress: TaskProgress[ImportRepairState]) 
                 repos["conn"].commit()
 
             if "job_title" in updates or "company" in updates:
+                queue_certainty_rejudge(user_id, int(job["id"]))  # ai: claude-opus-5-5 | 2026-11-19
                 title_or_company_fixed.append(
                     {
                         **summary,

@@ -40,6 +40,7 @@ import re
 import socket
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Protocol, TypedDict
 from urllib.parse import unquote, urlparse
 
@@ -80,6 +81,35 @@ class ParsedJob(TypedDict):
     certainty_level: str  # "high" | "low"
     certainty_score: int  # 0–100 numeric certainty
     certainty_reason: str
+
+
+# ai: claude-opus-5-5 | 2026-11-19
+@dataclass(frozen=True)
+class KnownJobFields:
+    """Fields a capture already knows from the page's structured data.
+
+    The extension sends company/title/URL alongside the listing text, and that
+    text often omits them (Eightfold's never names the employer). Without these
+    the parser judged certainty on less than the stored job ends up with, and
+    job 8335 said "company name is missing" next to company "Lockheed Martin".
+    """
+
+    company: str = ""
+    job_title: str = ""
+    url: str = ""
+
+    def prompt_section(self) -> str:
+        """The "Capture metadata" block (prompt rule 14), or "" if nothing is known."""
+        lines = [
+            f"{label}: {value}"
+            for label, value in (
+                ("Company", self.company),
+                ("Job title", self.job_title),
+                ("URL", self.url),
+            )
+            if value
+        ]
+        return "\n\nCapture metadata:\n" + "\n".join(lines) if lines else ""
 
 
 class EmailParserClient(Protocol):
@@ -134,6 +164,15 @@ Rules:
    no job title or URL of its own — that is not a distinct job posting, just a \
    reference to one. Only emit an element for a company when the email gives it \
    its own title or URL.
+14. If a "Capture metadata" section is present after the body, its fields were \
+   read from the job page's structured data by the tool that captured it, and \
+   the body text may not repeat them (many career sites never name the employer \
+   in the description). Use them for the job's fields and count them as present \
+   for certainty_level — never call a field missing or ambiguous when the \
+   metadata supplies it. certainty_score still measures whether the body is a \
+   real, specific job posting, and certainty_reason describes the posting \
+   itself (e.g. "Full posting with requirements and salary for one role."); \
+   do not mention the metadata or this section in it.
 
 Each element schema:
 {
@@ -220,7 +259,13 @@ class EmailParser:
 
     # ai: claude-sonnet-4-6 | 2026-06-29
     def parse(
-        self, subject: str, sender: str, body_snippet: str, raw_html: str = ""
+        self,
+        subject: str,
+        sender: str,
+        body_snippet: str,
+        raw_html: str = "",
+        *,
+        known: KnownJobFields | None = None,  # ai: claude-opus-5-5 | 2026-11-19
     ) -> list[ParsedJob]:
         """
         Extract all job postings from an email. Returns a list of ParsedJob dicts
@@ -228,6 +273,8 @@ class EmailParser:
         Raises ValueError if the API returns malformed JSON.
         raw_html, when provided, enables HTML-based company extraction for sources
         like WTTJ that embed company names in image alt attributes.
+        known, when provided, is what the capture already knows about its one job;
+        the LLM sees it so certainty is judged on the job as it will be stored.
         """
         wttj_jobs = _parse_welcome_to_the_jungle_jobs(
             sender, body_snippet, raw_html=raw_html
@@ -249,6 +296,8 @@ class EmailParser:
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
             f"Body:\n{body_snippet[:MAX_EMAIL_BODY_CHARS]}"
+            # ai: claude-opus-5-5 | 2026-11-19 -- before tokenizing, so its URL is a token too
+            f"{known.prompt_section() if known else ''}"
         )
         user_content, url_token_map = _tokenize_urls(raw_content)
         logger.debug(
@@ -396,6 +445,21 @@ class EmailParser:
             jobs.append(item)  # type: ignore[arg-type]
 
         return jobs
+
+
+# ai: claude-opus-5-5 | 2026-11-19 -- moved from ManualJobIngestService so the
+# certainty re-judge (backend/scoring/certainty_rejudge.py) picks the same way.
+def best_parsed_match(parsed_jobs: list[ParsedJob]) -> ParsedJob:
+    """The parsed job a single-job capture most likely describes: highest
+    certainty, then having a title, then having a company."""
+
+    def sort_key(row: ParsedJob) -> tuple[int, int, int]:
+        has_title = 1 if row.get("job_title", "").strip() else 0
+        has_company = 1 if row.get("company", "").strip() else 0
+        certainty_score = int(row.get("certainty_score", 0))
+        return (certainty_score, has_title, has_company)
+
+    return max(parsed_jobs, key=sort_key)
 
 
 def normalize_title_company(item: dict, subject: str, body_snippet: str = "") -> None:
