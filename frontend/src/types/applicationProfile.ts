@@ -53,7 +53,14 @@ export interface ApplicationProfile {
   is_18_or_older: boolean | null;
   /** Decoded from the stored JSON array server-side; always a real array, never a raw string. */
   previous_employers: string[] | null;
+  // ai: claude-opus-5-5 | 2026-11-20
+  /** Read by fit scoring's citizenship-requirement bonus; null = not set (no bonus). */
+  us_citizenship_status: UsCitizenshipStatus | null;
 }
+
+// ai: claude-opus-5-5 | 2026-11-20
+/** The values of backend/scoring/us_citizenship.py's UsCitizenship enum, least to most restrictive. */
+export type UsCitizenshipStatus = "none" | "us_person" | "us_citizen" | "citizen_by_birth";
 
 /** One row of GET /api/application-answers (application_answers table). */
 // ai: claude-opus-5-5 | 2026-11-17

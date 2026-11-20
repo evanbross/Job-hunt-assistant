@@ -2546,6 +2546,7 @@ const MAX_PROFILE_IMPORT_BYTES = 200_000;
 
 function ProfileSettingsSection() {
   const [timezone, setTimezone] = useState<string | null>(null);
+  const [citizenshipBonus, setCitizenshipBonus] = useState(""); // ai: claude-opus-5-5 | 2026-11-20
   const [profile, setProfile] = useState<string | null>(null);
   const [savedProfile, setSavedProfile] = useState("");
   const [saved, setSaved] = useState(false);
@@ -2556,7 +2557,10 @@ function ProfileSettingsSection() {
   useEffect(() => {
     apiFetch("/api/config")
       .then((r) => r.json())
-      .then((d: AppConfigResponse) => setTimezone(d.candidate_timezone || ""));
+      .then((d: AppConfigResponse) => {
+        setTimezone(d.candidate_timezone || "");
+        setCitizenshipBonus(String(d.citizenship_requirement_bonus_points ?? "")); // ai: claude-opus-5-5 | 2026-11-20
+      });
     apiFetch("/api/candidate-profile")
       .then((r) => r.json())
       .then((d: CandidateProfileResponse) => {
@@ -2581,6 +2585,12 @@ function ProfileSettingsSection() {
       window.alert("The candidate profile can't be empty.");
       return;
     }
+    // ai: claude-opus-5-5 | 2026-11-20
+    const bonusPoints = parseInt(citizenshipBonus, 10);
+    if (!Number.isFinite(bonusPoints) || bonusPoints < 0 || bonusPoints > 100) {
+      window.alert("Enter a citizenship requirement bonus from 0 to 100 (0 turns it off).");
+      return;
+    }
     setSaving(true);
     try {
       if (profile.trim() !== savedProfile.trim()) {
@@ -2600,11 +2610,14 @@ function ProfileSettingsSection() {
       const cfgRes = await apiFetch("/api/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ candidate_timezone: timezone }),
+        body: JSON.stringify({
+          candidate_timezone: timezone,
+          citizenship_requirement_bonus_points: bonusPoints, // ai: claude-opus-5-5 | 2026-11-20
+        }),
       });
       if (!cfgRes.ok) {
         const cfgData: ApiErrorBody = await cfgRes.json().catch(() => ({}));
-        window.alert(cfgData.error || "Failed to save your timezone");
+        window.alert(cfgData.error || "Failed to save your timezone and bonus settings");
         return;
       }
       setSaved(true);
@@ -2658,6 +2671,24 @@ function ProfileSettingsSection() {
           <TimezoneSelect value={timezone} onChange={setTimezone} />
           <span style={helpTextStyle}>
             Used to flag remote jobs whose stated timezone window excludes your location.
+          </span>
+        </label>
+
+        {/* ai: claude-opus-5-5 | 2026-11-20 */}
+        <label style={{ ...labelStyle, marginTop: "16px" }}>
+          Citizenship Requirement Bonus (points)
+          <input
+            type="number"
+            min="0"
+            max="100"
+            value={citizenshipBonus}
+            onChange={(e) => setCitizenshipBonus(e.target.value)}
+            style={{ width: "100px" }}
+          />
+          <span style={helpTextStyle}>
+            Added to a job&apos;s fit score when it requires US-person status or US citizenship that you
+            meet. Set your status under Application Profile (no bonus while it&apos;s unset). 0 turns
+            the bonus off.
           </span>
         </label>
 

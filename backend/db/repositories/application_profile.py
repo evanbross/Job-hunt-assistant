@@ -65,6 +65,7 @@ class PostgresApplicationProfileRepository(_BaseRepo):
             "country",
             "is_18_or_older",
             "previous_employers",
+            "us_citizenship_status",  # ai: claude-opus-5-5 | 2026-11-20
         }
     )
 

@@ -110,6 +110,7 @@ _RUNTIME_CONFIG_USER_KEYS: frozenset[str] = frozenset(
         "scanned_email_label",
         "move_successfully_processed_emails",
         "candidate_timezone",
+        "citizenship_requirement_bonus_points",  # ai: claude-opus-5-5 | 2026-11-20
         "ai_provider",
         "anthropic_model",
         "openai_model",
@@ -160,6 +161,11 @@ def _read_runtime_config_user_settings(settings: SettingsSnapshot) -> dict[str, 
             config.DEFAULT_MOVE_SUCCESSFULLY_PROCESSED_EMAILS,
         ),
         "candidate_timezone": settings.get("candidate_timezone"),
+        # ai: claude-opus-5-5 | 2026-11-20
+        "citizenship_requirement_bonus_points": settings.get_int(
+            "citizenship_requirement_bonus_points",
+            config.DEFAULT_CITIZENSHIP_REQUIREMENT_BONUS,
+        ),
         "ai_provider": settings.get("ai_provider"),
         "anthropic_model": settings.get("anthropic_model"),
         "openai_model": settings.get("openai_model"),
@@ -224,6 +230,7 @@ class ConfigUpdate(BaseModel):
     openai_model: str | None = None
     ollama_model: str | None = None
     candidate_timezone: str | None = None
+    citizenship_requirement_bonus_points: int | None = None  # ai: claude-opus-5-5 | 2026-11-20
     jd_health_check_enabled: bool | None = None
     jd_health_check_time_utc: str | None = None
     jd_health_check_frequency_days: int | None = None
@@ -282,6 +289,19 @@ class ConfigUpdate(BaseModel):
     @classmethod
     def _strip_timezone(cls, value: object) -> str:
         return str(value or "").strip()
+
+    # ai: claude-opus-5-5 | 2026-11-20 -- runs only when the key is sent, so an
+    # explicit null is refused rather than stored as the text "None".
+    @field_validator("citizenship_requirement_bonus_points", mode="before")
+    @classmethod
+    def _validate_citizenship_bonus(cls, value: object) -> int:
+        try:
+            points = int(str(value).strip())
+        except ValueError:
+            raise ValueError("citizenship_requirement_bonus_points must be a number") from None
+        if not 0 <= points <= 100:
+            raise ValueError("citizenship_requirement_bonus_points must be 0-100 (0 turns it off)")
+        return points
 
     @field_validator("jd_health_check_time_utc", mode="before")
     @classmethod
@@ -350,6 +370,10 @@ def update_config() -> ResponseReturnValue:
             updates[key] = fields[key]
     if "candidate_timezone" in fields:
         updates["candidate_timezone"] = fields["candidate_timezone"]
+    if "citizenship_requirement_bonus_points" in fields:  # ai: claude-opus-5-5 | 2026-11-20
+        updates["citizenship_requirement_bonus_points"] = str(
+            fields["citizenship_requirement_bonus_points"]
+        )
     if "jd_health_check_enabled" in fields:
         updates["jd_health_check_enabled"] = str(fields["jd_health_check_enabled"]).lower()
     if "jd_health_check_time_utc" in fields:

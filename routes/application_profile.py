@@ -38,13 +38,14 @@ from typing import Any
 
 from flask import Blueprint, jsonify, request
 from flask.typing import ResponseReturnValue
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from backend.db.repositories.application_answers import (
     AnswerNotFoundError,
     QuestionTakenError,
 )
 from backend.resume_employer_scan_service import scan_resume_for_previous_employers
+from backend.scoring.us_citizenship import UsCitizenship
 from backend.utils.utils import current_user_id, get_repos
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,9 @@ def _with_decoded_previous_employers(profile: dict[str, Any] | None) -> dict[str
 
 
 class ApplicationProfileUpdate(BaseModel):
+    # ai: claude-opus-5-5 | 2026-11-20 -- store us_citizenship_status's plain value
+    model_config = ConfigDict(use_enum_values=True)
+
     legal_name: str | None = None
     email: str | None = None
     phone: str | None = None
@@ -96,6 +100,8 @@ class ApplicationProfileUpdate(BaseModel):
     country: str | None = None
     is_18_or_older: bool | None = None
     previous_employers: list[str] | None = None
+    # ai: claude-opus-5-5 | 2026-11-20 -- read by FitScorer's citizenship bonus
+    us_citizenship_status: UsCitizenship | None = None
 
     @field_validator("previous_employers")
     @classmethod

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import psycopg2.errors
 import pytest
 
 from backend.db import (
@@ -22,6 +23,7 @@ from backend.db.repositories.application_answers import (
     QuestionTakenError,
 )
 from backend.db.row_level_security import set_current_user
+from backend.scoring.us_citizenship import UsCitizenship
 from web.extension_listener import (
     learn_application_answers,
     record_application_answer_use,
@@ -509,4 +511,36 @@ def test_deleting_an_answer_deletes_its_aliases(pg_dsn: str) -> None:
         assert fresh["aliases"] == []
         assert len(repo.get_all(user_id)) == 1
     finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+@pytest.mark.parametrize("level", list(UsCitizenship))
+def test_profile_upsert_stores_each_us_citizenship_level(pg_dsn: str, level: UsCitizenship) -> None:
+    """The column's CHECK constraint is generated from UsCitizenship -- every
+    level the code knows must be one the real schema accepts."""
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationProfileRepository(conn)
+
+        repo.upsert(user_id, {"us_citizenship_status": level.value})
+        conn.commit()
+
+        assert repo.get(user_id)["us_citizenship_status"] == level.value
+    finally:
+        conn.close()
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def test_profile_upsert_rejects_an_unknown_us_citizenship_level(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _make_user_id(conn)
+        repo = PostgresApplicationProfileRepository(conn)
+
+        with pytest.raises(psycopg2.errors.CheckViolation):
+            repo.upsert(user_id, {"us_citizenship_status": "citizen"})
+    finally:
+        conn.rollback()
         conn.close()

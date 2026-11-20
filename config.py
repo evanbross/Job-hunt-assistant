@@ -359,6 +359,11 @@ DEFAULT_JOB_IMPORT_LISTENER_WS_PORT_OVERRIDE: int | None = (
     else None
 )
 DEFAULT_CANDIDATE_TIMEZONE: str = os.getenv("CANDIDATE_TIMEZONE", "")
+# ai: claude-opus-5-5 | 2026-11-20
+# Fit-score points for a posting whose US citizenship requirement the candidate
+# meets (backend/scoring/fit_scorer.py). Per-user setting; this is its default.
+# Not read from .env: new settings live in the DB only.
+DEFAULT_CITIZENSHIP_REQUIREMENT_BONUS: int = 15
 
 # ai: claude-sonnet-5 | 2026-08-03
 # JD parser health check: hits real job-board URLs on a schedule to catch

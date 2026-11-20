@@ -32,7 +32,7 @@ import type { CSSProperties } from "react";
 import ApplicationAnswerBank from "./ApplicationAnswerBank.tsx";
 import { fieldStyle, sectionHeaderStyle } from "./applicationProfileStyles.ts";
 import { describeFetchError } from "../utils/fetchErrorUtils.ts";
-import type { ApplicationProfile } from "../types/applicationProfile.ts";
+import type { ApplicationProfile, UsCitizenshipStatus } from "../types/applicationProfile.ts";
 import type { ApiErrorBody } from "../types/common.ts";
 
 const titleStyle: CSSProperties = { fontSize: "18px", fontWeight: 700, lineHeight: 1.2 };
@@ -64,6 +64,7 @@ type ProfileFormState = {
   country: string;
   is_18_or_older: boolean | null;
   previous_employers: string[];
+  us_citizenship_status: UsCitizenshipStatus | ""; // ai: claude-opus-5-5 | 2026-11-20 -- "" = not set
 };
 
 const emptyProfile: ProfileFormState = {
@@ -88,7 +89,18 @@ const emptyProfile: ProfileFormState = {
   country: "",
   is_18_or_older: null,
   previous_employers: [],
+  us_citizenship_status: "",
 };
+
+// ai: claude-opus-5-5 | 2026-11-20
+// Each level also meets every requirement listed above it, so fit scoring
+// rewards a posting whose requirement is at or below the selected one.
+const US_CITIZENSHIP_OPTIONS: { value: UsCitizenshipStatus; label: string }[] = [
+  { value: "none", label: "Not a US person" },
+  { value: "us_person", label: "US person, not a citizen (e.g. permanent resident)" },
+  { value: "us_citizen", label: "US citizen (naturalized)" },
+  { value: "citizen_by_birth", label: "US citizen by birth" },
+];
 
 // ai: claude-sonnet-5 | 2026-08-25
 // The standard OFCCP EEO-1 race/ethnicity categories, confirmed live against
@@ -210,6 +222,7 @@ export default function ApplicationProfilePanel() {
           country: profile.country.trim() || null,
           is_18_or_older: profile.is_18_or_older,
           previous_employers: profile.previous_employers,
+          us_citizenship_status: profile.us_citizenship_status || null, // ai: claude-opus-5-5 | 2026-11-20
         }),
       });
       if (!res.ok) {
@@ -384,6 +397,27 @@ export default function ApplicationProfilePanel() {
                 yesLabel="Yes"
                 noLabel="No"
               />
+            </div>
+            {/* ai: claude-opus-5-5 | 2026-11-20 */}
+            <div>
+              <label style={labelStyle} htmlFor="us-citizenship-status">US citizenship status</label>
+              <select
+                id="us-citizenship-status"
+                value={profile.us_citizenship_status}
+                onChange={(e) =>
+                  setProfile((p) => ({ ...p, us_citizenship_status: e.target.value as UsCitizenshipStatus | "" }))
+                }
+                style={fieldStyle}
+              >
+                <option value="">Not set</option>
+                {US_CITIZENSHIP_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                Fit scoring adds a bonus to jobs that require US-person status or citizenship you meet
+                (points set under Settings &gt; Career Profile). Left unset, no bonus is given.
+              </span>
             </div>
             <div>
               <label style={labelStyle}>Are you 18 years of age or older?</label>

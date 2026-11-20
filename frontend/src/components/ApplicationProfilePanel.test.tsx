@@ -79,3 +79,55 @@ describe("ApplicationProfilePanel AI suggestions switch", () => {
     expect(toggle).toBeChecked();
   });
 });
+
+// ai: claude-opus-5-5 | 2026-11-20
+// The US citizenship status select: fit scoring's citizenship-requirement
+// bonus reads it, so a saved value must reach PUT /api/application-profile as
+// the enum value, and "Not set" as null (never a guessed status).
+describe("ApplicationProfilePanel US citizenship status", () => {
+  let savedProfile: Record<string, unknown> | null;
+
+  beforeEach(() => {
+    savedProfile = null;
+    vi.stubGlobal("alert", vi.fn());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string, init?: RequestInit) => {
+        const method = init?.method ?? "GET";
+        if (url === "/api/application-profile" && method === "PUT") {
+          savedProfile = JSON.parse(String(init?.body));
+          return Promise.resolve(jsonResponse(savedProfile));
+        }
+        if (url === "/api/application-profile") return Promise.resolve(jsonResponse(savedProfile));
+        if (url === "/api/application-answers") return Promise.resolve(jsonResponse([]));
+        if (url === "/api/config") return Promise.resolve(jsonResponse({}));
+        return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("saves an unset status as null", async () => {
+    render(<ApplicationProfilePanel />);
+    expect(await screen.findByLabelText("US citizenship status")).toHaveValue("");
+
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(savedProfile).not.toBeNull());
+    expect(savedProfile?.us_citizenship_status).toBeNull();
+  });
+
+  it("saves the chosen status as its enum value", async () => {
+    render(<ApplicationProfilePanel />);
+    const select = await screen.findByLabelText("US citizenship status");
+
+    fireEvent.change(select, { target: { value: "citizen_by_birth" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save profile" }));
+
+    await waitFor(() => expect(savedProfile?.us_citizenship_status).toBe("citizen_by_birth"));
+    expect(await screen.findByLabelText("US citizenship status")).toHaveValue("citizen_by_birth");
+  });
+});

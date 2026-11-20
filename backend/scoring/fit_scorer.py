@@ -27,7 +27,8 @@
 
 """
 Fit scorer — uses the Anthropic API to score a job posting against the
-candidate's profile and resume. Penalty rules are applied after the AI score.
+candidate's profile and resume. Penalty rules and the citizenship-requirement
+bonus are applied after the AI score.
 """
 
 from __future__ import annotations
@@ -43,7 +44,12 @@ import config
 from backend.ai_provider import AIMessage, AIProviderClient
 from backend.resume.resume_prompt import resume_prompt_text
 from backend.scoring.jd_limits import MAX_JD_PROMPT_CHARS
-from backend.settings_service import get_setting
+from backend.scoring.us_citizenship import (
+    REQUIREMENT_LABELS,
+    UsCitizenship,
+    meets_requirement,
+)
+from backend.settings_service import get_setting, get_setting_int
 from backend.utils.utils import get_candidate_profile, get_repos
 
 logger = logging.getLogger(__name__)
@@ -80,6 +86,67 @@ class ScoringInputs:
         )
 
 
+# ai: claude-opus-5-5 | 2026-11-20
+CITIZENSHIP_BONUS_SETTING = "citizenship_requirement_bonus_points"
+
+# ai: claude-opus-5-5 | 2026-11-20
+# Appended in code rather than written into the prompt template: the template
+# is copied to a user-editable file on first run (config.py), so a field added
+# to the default template would never reach an existing install's prompt.
+_CITIZENSHIP_REQUIREMENT_SECTION = """
+
+CITIZENSHIP REQUIREMENT (one more response field; include it in the JSON):
+"citizenship_requirement": the strictest US citizenship/status requirement the
+posting explicitly states for the person hired. Exactly one of:
+  - "us_person": must be a "U.S. person" (export control, ITAR/EAR), which
+    permanent residents and asylees/refugees also meet.
+  - "us_citizen": must be a US/American citizen ("U.S. citizenship required",
+    "must be an American citizen"), naturalized citizens included.
+  - "citizen_by_birth": must be a citizen by birth / natural-born, or states
+    that naturalized citizens are not eligible.
+  - "none": nothing of the kind is stated.
+Work authorization alone ("authorized to work in the US", "no visa
+sponsorship") is "none". So is a security-clearance requirement that doesn't
+also state citizenship. Do not change "score" for this; the caller handles it.
+"""
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+@dataclass(frozen=True)
+class ScorerUserContext:
+    """Per-user settings and profile facts the scorer reads for itself on every
+    call (unlike ScoringInputs, which callers load once and pass in)."""
+
+    timezone: str
+    candidate_profile: str
+    us_citizenship: UsCitizenship | None
+    citizenship_bonus_points: int
+
+    @classmethod
+    def load(cls, user_id: int) -> ScorerUserContext:
+        with get_repos(user_id) as repos:
+            application_profile = repos["application_profile"].get(user_id) or {}
+            return cls(
+                timezone=get_setting("candidate_timezone", user_id, repos).strip(),
+                candidate_profile=get_candidate_profile(user_id, repos),  # ai: claude-sonnet-5 | 2026-09-01
+                us_citizenship=UsCitizenship.parse(
+                    application_profile.get("us_citizenship_status")
+                ),
+                citizenship_bonus_points=max(
+                    0,
+                    min(
+                        100,
+                        get_setting_int(
+                            CITIZENSHIP_BONUS_SETTING,
+                            user_id,
+                            repos,
+                            config.DEFAULT_CITIZENSHIP_REQUIREMENT_BONUS,
+                        ),
+                    ),
+                ),
+            )
+
+
 class FitScorer:
     """Scores job postings against the candidate profile using the Anthropic API."""
 
@@ -102,10 +169,12 @@ class FitScorer:
         penalty_rules: list of dicts with 'rule_text' and 'penalty_points' keys.
         fit_feedback: recent "not a fit" skips with user-supplied reasons; injected
                       into the prompt so the scorer learns from past rejections.
-        Penalties are applied to the raw AI score and the result is clamped 0-100.
+        Penalties and the citizenship bonus are applied to the raw AI score and
+        the result is clamped 0-100.
         """
+        context = ScorerUserContext.load(self._user_id)  # ai: claude-opus-5-5 | 2026-11-20
         system_prompt = self._build_system_prompt(
-            resume_text, penalty_rules, fit_feedback or []
+            context, resume_text, penalty_rules, fit_feedback or []
         )
 
         user_content = (
@@ -170,10 +239,16 @@ class FitScorer:
                 total_penalty += pts
                 penalties_applied.append(f"-{pts} for '{rule_text}'")
 
-        final_score = max(0, min(100, raw_score - total_penalty))
+        # ai: claude-opus-5-5 | 2026-11-20
+        bonus, bonus_note = self._citizenship_bonus(
+            context, result.get("citizenship_requirement")
+        )
+        final_score = max(0, min(100, raw_score - total_penalty + bonus))
 
         if penalties_applied:
             reasoning += " Penalties applied: " + ", ".join(penalties_applied) + "."
+        if bonus_note:
+            reasoning += f" Bonus applied: {bonus_note}."
 
         return ScoreResult(
             score=final_score,
@@ -192,12 +267,32 @@ class FitScorer:
         except (TypeError, ValueError):
             return None
 
+    # ai: claude-opus-5-5 | 2026-11-20
+    @staticmethod
+    def _citizenship_bonus(
+        context: ScorerUserContext, requirement_value: object
+    ) -> tuple[int, str]:
+        """(points, reasoning note) for the posting's citizenship requirement,
+        or (0, "") when there is none, the candidate doesn't meet it, their
+        status is unset, or the bonus is set to 0."""
+        required = UsCitizenship.parse(requirement_value)
+        points = context.citizenship_bonus_points
+        if (
+            required is None
+            or points <= 0
+            or not meets_requirement(context.us_citizenship, required)
+        ):
+            return 0, ""
+        return points, f"+{points} for {REQUIREMENT_LABELS[required]}"
+
     def _build_system_prompt(
-        self, resume_text: str, penalty_rules: list[dict], fit_feedback: list[dict]
+        self,
+        context: ScorerUserContext,
+        resume_text: str,
+        penalty_rules: list[dict],
+        fit_feedback: list[dict],
     ) -> str:
-        with get_repos(self._user_id) as repos:
-            tz = get_setting("candidate_timezone", self._user_id, repos).strip()
-            candidate_profile = get_candidate_profile(self._user_id, repos)  # ai: claude-sonnet-5 | 2026-09-01
+        tz = context.timezone  # ai: claude-opus-5-5 | 2026-11-20
         if tz:
             timezone_note = (
                 f"- TIMEZONE COMPATIBILITY: The candidate is in the {tz} timezone. "
@@ -246,11 +341,12 @@ class FitScorer:
         # Composition logic (which sections apply, in what order) stays here.
         return (
             config.load_fit_scorer_prompt_template()
-            .replace("{{CANDIDATE_PROFILE}}", candidate_profile)
+            .replace("{{CANDIDATE_PROFILE}}", context.candidate_profile)
             .replace("{{RESUME_SECTION}}", resume_section)
             .replace("{{TIMEZONE_NOTE}}", timezone_note)
             .replace("{{PENALTY_LIST}}", penalty_list)
             .replace("{{FEEDBACK_SECTION}}", feedback_section)
+            + _CITIZENSHIP_REQUIREMENT_SECTION  # ai: claude-opus-5-5 | 2026-11-20
         )
 
     @staticmethod

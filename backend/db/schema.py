@@ -63,6 +63,7 @@ from backend.db.repositories.user_accounts import (
 from backend.db.same_posting_merge import merge_same_posting_job_rows
 from backend.scanning.jd_health_check_targets import LIVE_CANARY_TARGETS
 from backend.scoring.company_matching import normalize_company_name
+from backend.scoring.us_citizenship import UsCitizenship
 from backend.settings_registry import SETTINGS
 from backend.utils.stage_status_normalization import normalize_stage_status
 
@@ -983,6 +984,20 @@ def migrate_schema(conn: Any) -> None:
     # user-maintained in the Application Profile tab, used to source the
     # Contacts tab's "former coworkers" company filter.
     cur.execute("ALTER TABLE application_profile ADD COLUMN IF NOT EXISTS previous_employers TEXT")
+
+    # ai: claude-opus-5-5 | 2026-11-20
+    # The candidate's US citizenship level (backend/scoring/us_citizenship.py);
+    # FitScorer adds a bonus when a posting requires a level this meets. NULL
+    # means unset, which never earns the bonus. The allowed values come from
+    # the enum, so the constraint can't drift from the code that reads them.
+    if not _has_column(cur, "application_profile", "us_citizenship_status"):
+        cur.execute(
+            sql.SQL(
+                "ALTER TABLE application_profile ADD COLUMN us_citizenship_status TEXT"
+                " CONSTRAINT application_profile_us_citizenship_status_check"
+                " CHECK (us_citizenship_status IN ({}))"
+            ).format(sql.SQL(", ").join(sql.Literal(level.value) for level in UsCitizenship))
+        )
 
     conn.commit()
 
