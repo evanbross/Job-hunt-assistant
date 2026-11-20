@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 
 from backend.scoring.company_matching import normalize_company_name
+from backend.user_events import announce_jobs_changed_after_commit
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
@@ -110,6 +111,7 @@ class PostgresCompanyAliasRepository(_BaseRepo):
             "UPDATE jobs SET company_normalized = %s WHERE user_id = %s AND company_normalized = %s",
             (canonical_normalized, user_id, alias_normalized),
         )
+        announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20
         return row
 
     def delete(self, user_id: int, alias_id: int) -> None:
@@ -140,3 +142,5 @@ class PostgresCompanyAliasRepository(_BaseRepo):
                 "UPDATE jobs SET company_normalized = %s WHERE id = %s",
                 (recomputed, job_row["id"]),
             )
+        if affected:
+            announce_jobs_changed_after_commit(self._conn, user_id)  # ai: claude-opus-5-5 | 2026-11-20

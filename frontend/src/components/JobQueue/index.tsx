@@ -277,6 +277,12 @@ interface JobQueueProps {
   onNavigateToJobCard?: ((id: number | null, status: string) => void) | null;
 }
 
+// ai: claude-opus-5-5 | 2026-11-20 -- see reloadListsForServerChange
+const JOB_CHANGE_RELOAD_GAP_MS = 2_000;
+// The safety net if a pushed signal is lost: a full list reload, so rarer
+// than useServerEvent's default minute.
+const JOB_CHANGE_FALLBACK_MS = 5 * 60_000;
+
 function JobQueueContent({
   isAuthenticated,
   onNavigateToEmails,
@@ -1285,6 +1291,19 @@ function JobQueueContent({
   // ai: claude-opus-5-5 | 2026-10-24
   useServerEvent("import", () => pollImportStatus(watchedImport?.importId), { enabled: watchedImport !== null });
   useServerEvent("import", pollBrowserCaptureStatus, { enabled: captureWatchActive });
+
+  // ai: claude-opus-5-5 | 2026-11-20
+  // A job that changes behind the page -- scored or repaired after its import,
+  // captured by the extension, re-scored by Re-evaluate -- signals "jobs" when it
+  // commits (backend/user_events.py's announce_jobs_changed_after_commit). Each
+  // list reloads, keeping how many jobs are loaded. The wait after each reload
+  // folds a burst of signals (one per job during a re-score) into one reload
+  // per JOB_CHANGE_RELOAD_GAP_MS, since useServerEvent never overlaps runs.
+  const reloadListsForServerChange = useCallback(async () => {
+    reloadLists();
+    await new Promise((resolve) => { window.setTimeout(resolve, JOB_CHANGE_RELOAD_GAP_MS); });
+  }, [reloadLists]);
+  useServerEvent("jobs", reloadListsForServerChange, { fallbackMs: JOB_CHANGE_FALLBACK_MS });
 
   const anyScanRunning = scanning || rescanAllRunning;
   const anyQueueActionRunning = anyScanRunning || boardSearching || reEvaluating || manualSubmitting || importSubmitting || fixingCompanies || deletingUnknownCompanies || reqClosedScanning || importRepairRunning || rescanImportRunning;

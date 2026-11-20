@@ -125,7 +125,8 @@ interface PagedListState<T> {
   loaded: boolean;
   loadingMore: boolean;
   loadMore: () => void;
-  /** Re-fetch from the top, keeping as many items as are loaded now. */
+  /** Re-fetch from the top, keeping as many items as are loaded now (and
+   * the items themselves if the fetch fails). */
   reload: () => void;
   setItems: (update: (items: T[]) => T[]) => void;
 }
@@ -193,7 +194,9 @@ function usePagedList<T>(
     return readPageRef.current(await res.json());
   }, [path, queryString]);
 
-  const loadFrom = useCallback(async (depth: number, extra: string) => {
+  // ai: claude-opus-5-5 | 2026-11-20 -- keepOnError: a failed reload (often a
+  // background one, on a server signal) leaves the list as it was, not empty
+  const loadFrom = useCallback(async (depth: number, extra: string, keepOnError = false) => {
     const generation = ++generationRef.current;
     loadingMoreRef.current = false;
     setLoadingMore(false);
@@ -223,7 +226,7 @@ function usePagedList<T>(
       applyItems(collected);
       setHasMore(more);
     } catch {
-      if (generation !== generationRef.current) return;
+      if (generation !== generationRef.current || keepOnError) return;
       nextCursorRef.current = null;
       applyItems([]);
       setHasMore(false);
@@ -269,7 +272,7 @@ function usePagedList<T>(
   }, [applyItems, fetchPage]);
 
   const reload = useCallback(() => {
-    loadFrom(Math.max(JOB_QUEUE_PAGE_SIZE, itemsRef.current.length), "");
+    loadFrom(Math.max(JOB_QUEUE_PAGE_SIZE, itemsRef.current.length), "", true);
   }, [loadFrom]);
 
   return { items, hasMore, loaded, loadingMore, loadMore, reload, setItems };

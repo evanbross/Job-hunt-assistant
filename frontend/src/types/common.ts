@@ -45,7 +45,8 @@ export interface SystemHealthResponse {
   detail?: string;
 }
 
-// ai: claude-opus-5-5 | 2026-10-28
+// ai: claude-opus-5-5 | 2026-11-20 -- one list; the type derives from it
 /** The named events GET /api/events pushes -- backend/user_events.py's
  * UserEventTopic values. Each means "re-read that topic's endpoint". */
-export type ServerEventTopic = "import" | "candidate-profile-file" | "lead-suggestions"; // ai: claude-opus-5-5 | 2026-11-11
+export const SERVER_EVENT_TOPICS = ["import", "candidate-profile-file", "lead-suggestions", "jobs"] as const;
+export type ServerEventTopic = (typeof SERVER_EVENT_TOPICS)[number];
