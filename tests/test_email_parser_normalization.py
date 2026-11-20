@@ -28,6 +28,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -634,3 +635,60 @@ def test_parser_omits_capture_metadata_when_nothing_is_known(
     EmailParser(1, client=client).parse("Subject", "jobs@example.com", "Body", known=known)
 
     assert "Capture metadata" not in client.messages[0].content
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def _jobgether_digest_card(index: int) -> str:
+    """One card of a Jobgether digest as Gmail's plain-text part renders it: a
+    ~300-char awstrack link per title and per Apply button, deep indentation."""
+    url = (
+        "https://9sh28qce.r.us-east-1.awstrack.me/L0/https:%2F%2Fjobgether.com"
+        f"%2Foffer%2F{index:024x}-software-engineer%3Futm_source=brevo"
+        + "%26utm_medium=email" * 12
+        + f"/1/0100{index:04d}/sig="
+    )
+    pad = "\n" + " " * 24 + "\n" + " " * 24 + "\xa0\n"
+    return (
+        f"{pad * 20}Software Engineer {index}\nSoftware Engineer {index}: {url}"
+        f"{pad}Posted 3 hours ago\nCompany{index} Inc\nRemote Full time"
+        f"{pad}Apply ↗: {url}{pad * 20}"
+    )
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def test_parser_cap_does_not_cut_a_digest_whose_raw_body_is_mostly_urls_and_spaces() -> None:
+    """Job 8409: a 10-job Jobgether digest was 26,612 raw chars but under 6,000
+    once its URLs were tokenized and whitespace collapsed. The 20,000-char cap
+    was applied to the raw body, cutting job 9's title link mid-URL: the job
+    was stored with that URL fragment and the subject's company, and job 10
+    never reached the LLM."""
+    client = FakeParserClient()
+    body = "".join(_jobgether_digest_card(i) for i in range(1, 11))
+    assert len(body) > email_parser_module.MAX_EMAIL_BODY_CHARS
+
+    EmailParser(1, client=client).parse(
+        "Java Software Engineer at Company1 Inc", "Jobgether <no-reply@match.jobgether.com>", body
+    )
+
+    sent_content = client.messages[0].content
+    assert "Company9 Inc" in sent_content
+    assert "Company10 Inc" in sent_content
+    assert "Software Engineer 10: [URL_18]" in sent_content
+    assert "awstrack.me" not in sent_content
+    assert "      " not in sent_content
+
+
+# ai: claude-opus-5-5 | 2026-11-20
+def test_parser_cap_cuts_an_oversized_body_at_a_line_boundary() -> None:
+    """A body still too long after tokenizing is cut before a whole line, so
+    no [URL_N] token reaches the LLM half-written."""
+    client = FakeParserClient()
+    line = "Job posting line https://example.com/jobs/123 more text"
+    body = "\n".join([line] * 1000)
+
+    EmailParser(1, client=client).parse("Digest", "jobs@example.com", body)
+
+    sent_body = client.messages[0].content.split("Body:\n", 1)[1]
+    assert len(sent_body) <= email_parser_module.MAX_EMAIL_BODY_CHARS
+    last_line = sent_body.rsplit("\n", 1)[1]
+    assert re.fullmatch(r"Job posting line \[URL_\d+\] more text", last_line)
