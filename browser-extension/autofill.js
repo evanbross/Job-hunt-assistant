@@ -94,8 +94,15 @@
     return (text || '').split('\n').map((s) => s.trim()).find(Boolean) || '';
   }
 
+  // ai: claude-opus-5-5 | 2026-11-19 -- also a dropdown's own prompt ("Select",
+  // "Select...", "Choose one", "-- Select --"). Every Eightfold dropdown's
+  // placeholder is "Select", so each one resolved to the question "Select"; a
+  // correction saved that as an answer ("Select" -> "No") which then filled
+  // every dropdown on the page.
   function isControlText(text) {
-    return /^(yes|no|upload file|submit|choose file|browse|remove)$/i.test(text.trim());
+    const trimmed = text.trim();
+    return /^(yes|no|upload file|submit|choose file|browse|remove)$/i.test(trimmed)
+      || /^[-–—\s]*(please\s+)?(select|choose|pick)(\s+(one|an?\s+option|an?\s+answer|from\s+the\s+list))?\s*(\.\.\.|…)?[-–—\s]*$/i.test(trimmed);
   }
 
   // ai: claude-opus-5-5 | 2026-11-18
@@ -121,6 +128,19 @@
     if (el.labels && el.labels.length > 0) {
       const text = linesBesides(el.labels[0].innerText, ownTexts).join(' '); // ai: claude-opus-5-5 | 2026-11-18
       if (text) return text;
+    }
+    // ai: claude-opus-5-5 | 2026-11-19
+    // Confirmed live on Eightfold (lockheedmartin.eightfold.ai): each question's
+    // combobox is tied to its question text only through aria-labelledby -- no
+    // <label for>, no aria-label, and an ancestor walk finds nothing above it.
+    const labelledBy = el.getAttribute && el.getAttribute('aria-labelledby');
+    if (labelledBy) {
+      const text = labelledBy.split(/\s+/)
+        .map((id) => document.getElementById(id)?.innerText || '')
+        .flatMap((t) => linesBesides(t, ownTexts))
+        .join(' ')
+        .trim();
+      if (text && !isControlText(text)) return text;
     }
     const ariaLabel = el.getAttribute && el.getAttribute('aria-label');
     if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
@@ -864,6 +884,7 @@
   // own widget only needs the value set once (per the comment above); only
   // react-select needs the per-character replay to fire its debounced fetch.
   async function fillCombobox(el, value, platform) {
+    const originalValue = el.value; // ai: claude-opus-5-5 | 2026-11-19 -- restored if nothing matches
     const rect0 = el.getBoundingClientRect();
     const openEventInit = { bubbles: true, cancelable: true, view: window, clientX: rect0.x + 5, clientY: rect0.y + 5 };
     el.dispatchEvent(new MouseEvent('mousedown', openEventInit));
@@ -909,11 +930,23 @@
     // only the specific, non-self-matching "select-shell" class is.
     const shell = el.closest('[class*="select-shell"]');
     const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
-    const option = listbox?.querySelector('[role="option"][aria-selected="true"]')
-      || listbox?.querySelector('[role="option"][class*="focused"]')
-      || listbox?.querySelector('[role="option"]')
-      || document.querySelector('[role="option"][aria-selected="true"]');
-    if (!option) return false;
+    // ai: claude-opus-5-5 | 2026-11-19
+    // Only ever commit an option that matches what was typed. This used to fall
+    // back to the list's first option, then to any highlighted option anywhere
+    // on the page. Eightfold's lists don't filter as you type, so every answer
+    // committed whatever came first, or (on Enter) the first option starting
+    // with the typed text: "No", "None of the Above". A widget's highlighted top
+    // match still wins when it does match (async location lists rank it first).
+    const options = listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
+    const highlighted = listbox?.querySelector('[role="option"][aria-selected="true"]')
+      || listbox?.querySelector('[role="option"][class*="focused"]');
+    const option = highlighted && bestMatchingOption([highlighted], [value])
+      ? highlighted
+      : bestMatchingOption(options, [value]);
+    if (!option) {
+      await abandonTypedValue(el, originalValue);
+      return false;
+    }
 
     // ai: claude-sonnet-5 | 2026-08-19
     // A synthesized Enter keypress — committing the already-highlighted top
@@ -926,15 +959,19 @@
     // the full value on the first attempt every time. Try Enter first; fall
     // back to the click sequence (with a retry, for the same race) for
     // widgets where Enter doesn't confirm a selection.
-    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
-    el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true, cancelable: true }));
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
+    // ai: claude-opus-5-5 | 2026-11-19 -- Enter commits the widget's own pick, so
+    // only when that pick is the matched option; otherwise click the match.
     const shellSingleValue = () => shell?.querySelector('[class*="single-value"]');
-    // react-select clears .value on selection and shows the choice in a
-    // separate element instead — confirmed via `.select__single-value`.
-    if (el.getAttribute('aria-expanded') === 'false' && (el.value || shellSingleValue()?.textContent.trim())) {
-      return true;
+    if (option === highlighted) {
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise((resolve) => setTimeout(resolve, 300));
+
+      // react-select clears .value on selection and shows the choice in a
+      // separate element instead — confirmed via `.select__single-value`.
+      if (el.getAttribute('aria-expanded') === 'false' && (el.value || shellSingleValue()?.textContent.trim())) {
+        return true;
+      }
     }
 
     const attemptSelect = async () => {
@@ -950,6 +987,20 @@
     if (!(await attemptSelect()) && !(await attemptSelect())) return false;
     if (el.value) return true;
     return Boolean(shellSingleValue()?.textContent.trim());
+  }
+
+  // ai: claude-opus-5-5 | 2026-11-19
+  // fillCombobox found no option matching what it typed: close the list and put
+  // the field back as it was, so the typed text is never left for the widget to
+  // commit on blur (or a later Enter) as some unrelated option.
+  async function abandonTypedValue(el, originalValue) {
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+    if (el.value !== originalValue) {
+      setNativeValue(el, originalValue);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true, cancelable: true }));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
 
   // ai: claude-sonnet-5 | 2026-08-17
@@ -1078,9 +1129,21 @@
     el.dispatchEvent(new MouseEvent('click', openEventInit));
     el.focus();
     await new Promise((resolve) => setTimeout(resolve, 200));
-    const listboxId = el.getAttribute('aria-controls');
-    const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
-    return listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
+    const readOptions = () => {
+      const listboxId = el.getAttribute('aria-controls');
+      const listbox = (listboxId && document.getElementById(listboxId)) || shell?.querySelector('[role="listbox"]');
+      return listbox ? [...listbox.querySelectorAll('[role="option"]')] : [];
+    };
+    const options = readOptions();
+    if (options.length > 0) return options;
+    // ai: claude-opus-5-5 | 2026-11-19
+    // Confirmed live on Eightfold (lockheedmartin.eightfold.ai apply form): a
+    // click never opens its comboboxes, only typing or ArrowDown does, so every
+    // option read came back empty and each dropdown fell through to typing
+    // into fillCombobox. ArrowDown opens the full list without changing the value.
+    el.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', code: 'ArrowDown', keyCode: 40, bubbles: true, cancelable: true }));
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return readOptions();
   }
 
   // ai: claude-sonnet-5 | 2026-10-08
