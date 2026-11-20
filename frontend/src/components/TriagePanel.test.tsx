@@ -103,6 +103,24 @@ describe("TriageCard lazy reasoning", () => {
   });
 });
 
+// ai: claude-opus-5-5 | 2026-11-19
+// Job 8348: list rows ship no JD text (it's lazy-loaded), and the pill read the
+// row's empty text, so every job with nothing else wrong showed "Missing Job Details".
+describe("TriageCard triage-reason pill", () => {
+  it("does not call a job's details missing just because the list row has no text", () => {
+    render(<TriageCard job={baseJob({ description_unavailable: false })} {...noop} />);
+
+    expect(screen.queryByText("Missing Job Details")).toBeNull();
+    expect(screen.getByText("Needs Review")).toBeInTheDocument();
+  });
+
+  it("calls them missing when the server says the description is unavailable", () => {
+    render(<TriageCard job={baseJob({ has_description: false, description_unavailable: true })} {...noop} />);
+
+    expect(screen.getByText("Missing Job Details")).toBeInTheDocument();
+  });
+});
+
 // ai: claude-opus-5-5 | 2026-11-17
 // Both Triage cards use JobCard's layout: the description, cover letter,
 // resume and pitch actions live in the right-click menu, not as a row of
