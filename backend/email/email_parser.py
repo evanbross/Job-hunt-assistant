@@ -50,7 +50,16 @@ from backend.utils.url_safety import UnsafeUrlError, safe_urlopen
 
 logger = logging.getLogger(__name__)
 
+# ai: claude-opus-5-5 | 2026-11-20
+# Measured on the body as the LLM sees it: URLs already replaced by [URL_N]
+# tokens and whitespace runs collapsed (see EmailParser._prepare_body). It used
+# to cut the raw body, where Jobgether's ~300-char tracking links and
+# indentation filled 70% of the budget: a 10-job digest (26,612 raw chars,
+# 5,986 prepared) was cut mid-URL in job 9, which was stored with that URL
+# fragment and the subject's company (job 8409), and job 10 was never seen.
 MAX_EMAIL_BODY_CHARS = 20000
+_WHITESPACE_RUN_RE = re.compile(r"[^\S\n]+")
+_BLANK_LINES_RE = re.compile(r"\s*\n\s*")
 
 # ai: claude-sonnet-5 | 2026-10-09
 # Jobs with an apply/detail URL get their full JD filled in later by
@@ -187,29 +196,33 @@ Each element schema:
 """
 
 
-def _tokenize_urls(text: str) -> tuple[str, dict[str, str]]:
-    """Replace every URL with a short [URL_N] token to reduce output token count.
+# ai: claude-opus-5-5 | 2026-11-20 -- a class so the body and the capture
+# metadata, tokenized separately, share one numbering and one token map.
+class _UrlTokenizer:
+    """Replaces every URL with a short [URL_N] token to reduce output token count.
 
     Digest emails contain many long tracking URLs that cost 100-150 tokens each
     to reproduce in the JSON output. Tokenizing them before the LLM call and
     restoring them afterward keeps output small without losing any information.
     """
-    token_map: dict[str, str] = {}
-    counter = 0
+
+    def __init__(self) -> None:
+        self.token_map: dict[str, str] = {}
+        self._counter = 0
+
+    def tokenize(self, text: str) -> str:
+        return _URL_TOKEN_RE.sub(self._replace, text)
 
     # ai: claude-sonnet-5 | 2026-07-10
-    def _replace(match: re.Match) -> str:  # type: ignore[type-arg]
-        nonlocal counter
+    def _replace(self, match: re.Match) -> str:  # type: ignore[type-arg]
         original = match.group(0).rstrip(".,;)")
         # Map both "[URL_N]" and the bracket-less "URL_N" to the same URL, since
         # the LLM sometimes returns the token without its brackets.
-        token_map[f"[URL_{counter}]"] = original
-        token_map[f"URL_{counter}"] = original
-        token = f"[URL_{counter}]"
-        counter += 1
+        self.token_map[f"[URL_{self._counter}]"] = original
+        self.token_map[f"URL_{self._counter}"] = original
+        token = f"[URL_{self._counter}]"
+        self._counter += 1
         return token
-
-    return _URL_TOKEN_RE.sub(_replace, text), token_map
 
 
 # ai: claude-sonnet-5 | 2026-07-10
@@ -257,6 +270,31 @@ class EmailParser:
     def __init__(self, user_id: int, client: EmailParserClient | None = None) -> None:
         self._client = client or AIProviderClient(user_id)
 
+    # ai: claude-opus-5-5 | 2026-11-20
+    @staticmethod
+    def _prepare_body(body_snippet: str, tokenizer: _UrlTokenizer) -> str:
+        """The body as the LLM sees it, capped at MAX_EMAIL_BODY_CHARS.
+
+        URLs are tokenized and whitespace collapsed *before* the cap, so the cap
+        spends its budget on job content and can never split a URL. If the body
+        is still too long, it is cut at a line or word boundary, never inside a
+        [URL_N] token, and logged, since every job past the cut is lost.
+        """
+        body = tokenizer.tokenize(body_snippet)
+        body = _BLANK_LINES_RE.sub("\n", _WHITESPACE_RUN_RE.sub(" ", body)).strip()
+        if len(body) <= MAX_EMAIL_BODY_CHARS:
+            return body
+        cut = body.rfind("\n", 0, MAX_EMAIL_BODY_CHARS + 1)
+        if cut <= 0:
+            cut = body.rfind(" ", 0, MAX_EMAIL_BODY_CHARS + 1)
+        logger.warning(
+            "Email parser: body is %d chars after URL tokenizing and whitespace "
+            "collapsing; sending only the first %d -- jobs past that are not parsed",
+            len(body),
+            MAX_EMAIL_BODY_CHARS,
+        )
+        return body[: cut if cut > 0 else MAX_EMAIL_BODY_CHARS]
+
     # ai: claude-sonnet-4-6 | 2026-06-29
     def parse(
         self,
@@ -292,14 +330,16 @@ class EmailParser:
             else {}
         )
 
-        raw_content = (
+        # ai: claude-opus-5-5 | 2026-11-20
+        tokenizer = _UrlTokenizer()
+        user_content = (
             f"From: {sender}\n"
             f"Subject: {subject}\n\n"
-            f"Body:\n{body_snippet[:MAX_EMAIL_BODY_CHARS]}"
-            # ai: claude-opus-5-5 | 2026-11-19 -- before tokenizing, so its URL is a token too
-            f"{known.prompt_section() if known else ''}"
+            f"Body:\n{self._prepare_body(body_snippet, tokenizer)}"
+            # ai: claude-opus-5-5 | 2026-11-19 -- tokenized too, so its URL is a token
+            f"{tokenizer.tokenize(known.prompt_section()) if known else ''}"
         )
-        user_content, url_token_map = _tokenize_urls(raw_content)
+        url_token_map = tokenizer.token_map
         logger.debug(
             "Email parser: tokenized %d URLs before LLM call", len(url_token_map)
         )
