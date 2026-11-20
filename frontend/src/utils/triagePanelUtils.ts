@@ -282,10 +282,6 @@ export function formatJobDescription(text?: string | null): string {
     .trim();
 }
 
-export function extractSender(_snippet: string, job: Pick<Job, "source">): string {
-  return job.source ? `unknown@${job.source.toLowerCase().replace(/\s+/g, "")}.com` : "";
-}
-
 export function extractSubjectWords(text: string): string {
   return text
     .toLowerCase()

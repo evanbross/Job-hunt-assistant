@@ -1452,7 +1452,10 @@ function TriageCardImpl({ job, onApprove, onSkip, onMarkApplied, onReEvaluate, o
             return <span className="badge badge-orange">Low Confidence</span>;
           if (String(job.certainty_level || "").toLowerCase() === "low")
             return <span className="badge badge-orange">Low Confidence</span>;
-          if (!jobDescriptionText(job))
+          // ai: claude-opus-5-5 | 2026-11-19 -- list rows no longer carry the JD text
+          // (it's lazy-loaded), so jobDescriptionText(job) read every job as empty;
+          // descriptionUnavailable uses loaded text, else the server's flag.
+          if (descriptionUnavailable)
             return <span className="badge badge-orange">Missing Job Details</span>;
           if (job.fit_score != null && job.fit_score < 50)
             return <span className={`badge ${fitScoreClass(job)}`}>Low Fit</span>;

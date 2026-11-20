@@ -43,15 +43,21 @@ function ok(body: unknown) {
 
 describe("JobQueue", () => {
   let skipped: string[];
+  let approveBodies: unknown[];
   let page: Job[];
 
   beforeEach(() => {
     skipped = [];
+    approveBodies = [];
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
       const path = url.split("?")[0];
       if (path === "/api/jobs/queue/options") return ok(OPTIONS);
       if (path === "/api/jobs/queue/counts") return ok(COUNTS);
       if (path === "/api/jobs/queue") return ok({ jobs: page, has_more: false });
+      if (init?.method === "POST" && /^\/api\/jobs\/\d+\/approve$/.test(path)) {
+        approveBodies.push(JSON.parse(String(init.body)));
+        return ok({ status: "ok" });
+      }
       if (init?.method === "POST" && /^\/api\/jobs\/\d+\/skip$/.test(path)) {
         skipped.push(path);
         return ok({ status: "ok" });
@@ -80,5 +86,20 @@ describe("JobQueue", () => {
 
     await waitFor(() => expect(screen.queryByText(TITLE)).toBeNull());
     expect(skipped).toEqual([`/api/jobs/${JOB.id}/skip`]);
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-19
+  // The approve route's schema forbids extra fields; this card used to send a
+  // fabricated sender_email too, so every Approve was rejected with a 400.
+  it("approves a triage job with only the subject pattern the route accepts", async () => {
+    window.localStorage.setItem("jha.jobQueue.viewMode", "both");
+    page = [{ ...JOB, status: "triage" }];
+    render(<JobQueue isAuthenticated onNavigateToHistory={() => {}} />);
+    await screen.findByText(TITLE);
+
+    fireEvent.click(screen.getByRole("button", { name: "It's a Job Posting" }));
+
+    await waitFor(() => expect(screen.queryByText(TITLE)).toBeNull());
+    expect(approveBodies).toEqual([{ subject_pattern: "senior director software engineering" }]);
   });
 });

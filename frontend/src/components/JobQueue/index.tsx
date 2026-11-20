@@ -32,7 +32,7 @@ import JobCard from "../JobCard.tsx";
 import { ReEvaluatePopup as TriageReEvaluatePopup, BatchRefreshPopup as TriageBatchRefreshPopup, DescriptionUpdatePopup } from "../TriagePanel.tsx";
 import ReqClosedDialog from "../common/ReqClosedDialog.tsx";
 import LoadingSpinner from "../common/LoadingSpinner.tsx";
-import { emailIdForRescan, extractSender, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
+import { emailIdForRescan, extractSubjectWords } from "../../utils/triagePanelUtils.ts";
 import { getReqClosedDialogVisible, setReqClosedDialogVisible } from "../../utils/reqClosedScanStorage.ts";
 import { readStoredPref, writeStoredPref } from "../../utils/storedPreference.ts";
 import { runBatchRefreshFromUrls } from "../../utils/batchRefreshFromUrls.ts";
@@ -726,12 +726,14 @@ function JobQueueContent({
   // ── Triage handlers ───────────────────────────────────────────────────────────
 
   const handleTriageApprove = async (job: Job) => {
-    const senderEmail = extractSender(job.raw_jd_snippet || "", job);
     const subjectPattern = extractSubjectWords(job.job_title || "");
+    // ai: claude-opus-5-5 | 2026-11-19 -- no sender_email: the route reads the job's
+    // stored one, and its schema forbids extra fields, so sending it made every
+    // Approve a 400 since 2026-09-29.
     const res = await fetch(`/api/jobs/${job.id}/approve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ sender_email: senderEmail, subject_pattern: subjectPattern }),
+      body: JSON.stringify({ subject_pattern: subjectPattern }),
     });
     if (res.ok) {
       removeJob(job.id);
