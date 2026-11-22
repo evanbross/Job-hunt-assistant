@@ -22,6 +22,13 @@ or reprioritized.
       hash the sender's URL; captured people are matched by conversation).
       Remaining, in order: (3) Gmail "Recruiter" label import; (4) optional live
       LinkedIn inbox sync. Plan and as-built notes: https://claude.ai/artifact/9nzqbq1K8oiRNx3sHgnoEa
+- [ ] **Typed contact emails (home / work / LinkedIn / other / custom)** — 2026-11-22
+      added `contacts.personal_email` next to `email_address` (the address LinkedIn's
+      Connections.csv carries, refreshed by every import). Next: let each email be
+      flagged with a type, including a custom label, so a contact can hold several.
+      This will probably replace the two fixed columns with a `contact_emails` table;
+      the import should keep writing only the LinkedIn-typed one and never touch
+      the others.
 - [x] **Generic-site pagination in the browser extension** — done 2026-09-29
       (extension v1.25.0). `buildSmartGenericPayload` now clicks through a
       detected "Next page" control (`rel="next"`, then an aria-label match,

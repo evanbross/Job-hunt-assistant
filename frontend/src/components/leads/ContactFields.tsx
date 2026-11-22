@@ -39,7 +39,9 @@ export function NewContactFields({ value, onChange }: NewContactFieldsProps) {
       {field("company", "Their company (agency)")}
       {field("position", "Title", "text", "Technical Recruiter")}
       {field("phone", "Phone", "tel")}
-      {field("email_address", "Email", "email")}
+      {/* ai: claude-opus-5-5 | 2026-11-22 -- email_address is the one a LinkedIn import fills in */}
+      {field("personal_email", "Personal email", "email")}
+      {field("email_address", "LinkedIn email", "email")}
       {field("profile_url", "LinkedIn profile", "url", "https://www.linkedin.com/in/…")}
     </div>
   );

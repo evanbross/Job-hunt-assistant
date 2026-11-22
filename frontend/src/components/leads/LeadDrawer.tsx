@@ -71,6 +71,8 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
   const [busy, setBusy] = useState(false);
   const [importingNotes, setImportingNotes] = useState(false); // ai: claude-opus-5-5 | 2026-11-11
   const [loadedContacts, setLoadedContacts] = useState<Contact[]>([]);
+  // ai: claude-opus-5-5 | 2026-11-22 -- the person whose personal email is being typed in
+  const [emailEdit, setEmailEdit] = useState<{ contactId: number; draft: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -260,6 +262,16 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
     if (!window.confirm(`Remove ${person.full_name} from this lead? Their logged calls and messages stay.`)) return;
     void write(() => sendJson(`/api/leads/${jobId}/contacts/${person.id}`, "DELETE"), "Could not remove them");
   };
+  // ai: claude-opus-5-5 | 2026-11-22
+  const savePersonalEmail = async () => {
+    if (!emailEdit) return;
+    const trimmed = emailEdit.draft.trim();
+    const saved = await write(
+      () => sendJson(`/api/contacts/${emailEdit.contactId}`, "PATCH", { personal_email: trimmed === "" ? null : trimmed }),
+      "Could not save the personal email",
+    );
+    if (saved) setEmailEdit(null);
+  };
   const deleteInteraction = (interaction: Interaction) => {
     if (!window.confirm("Delete this entry?")) return;
     void write(() => sendJson(`/api/interactions/${interaction.id}`, "DELETE"), "Could not delete it");
@@ -338,9 +350,44 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
                 {person.is_primary && <span className="badge badge-accent">Primary</span>}
                 {person.keep_informed && <span className="badge badge-yellow">Keep informed</span>}
                 <span className="lead-sub">
-                  {[person.position, person.company_raw, person.phone, person.email_address].filter(Boolean).join(" · ")}
+                  {[person.position, person.company_raw, person.phone].filter(Boolean).join(" · ")}
                 </span>
                 {profile && <a href={profile} target="_blank" rel="noopener noreferrer">LinkedIn</a>}
+                {/* ai: claude-opus-5-5 | 2026-11-22 -- personal email, added or changed in place */}
+                {emailEdit?.contactId === person.id ? (
+                  <>
+                    <input
+                      type="email"
+                      value={emailEdit.draft}
+                      placeholder="Personal email"
+                      aria-label={`Personal email for ${person.full_name}`}
+                      autoFocus
+                      onChange={(e) => setEmailEdit({ contactId: person.id, draft: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void savePersonalEmail();
+                        if (e.key === "Escape") setEmailEdit(null);
+                      }}
+                    />
+                    <button type="button" className="btn-primary" onClick={() => void savePersonalEmail()} disabled={busy}>
+                      Save
+                    </button>
+                    <button type="button" className="btn-secondary" onClick={() => setEmailEdit(null)}>
+                      Cancel
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {person.personal_email && <a href={`mailto:${person.personal_email}`}>{person.personal_email}</a>}
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => setEmailEdit({ contactId: person.id, draft: person.personal_email || "" })}
+                    >
+                      {person.personal_email ? "Edit" : "Add personal email"}
+                    </button>
+                  </>
+                )}
+                {person.email_address && <span className="lead-sub">LinkedIn email: {person.email_address}</span>}
                 {!person.is_primary && (
                   <button type="button" className="btn-secondary" onClick={() => makePrimary(person)} disabled={busy}>
                     Make primary

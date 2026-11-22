@@ -327,7 +327,10 @@ function matchesFilters(
 
 // ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added
 type ContactPatchFields = Partial<
-  Pick<Contact, "email_address" | "notes" | "interested" | "recruiter_type" | "phone" | "keep_informed">
+  Pick<
+    Contact,
+    "email_address" | "personal_email" | "notes" | "interested" | "recruiter_type" | "phone" | "keep_informed"
+  > // ai: claude-opus-5-5 | 2026-11-22 -- personal_email added
 >;
 
 // ai: claude-opus-5-5 | 2026-10-26
@@ -635,6 +638,10 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
     patchContact(contactId, { notes: value === "" ? null : value });
 
   // ai: claude-opus-5-5 | 2026-11-11
+  // ai: claude-opus-5-5 | 2026-11-22
+  const savePersonalEmail = (contactId: number, value: string) =>
+    patchContact(contactId, { personal_email: value === "" ? null : value });
+
   const savePhone = (contactId: number, value: string) =>
     patchContact(contactId, { phone: value === "" ? null : value });
 
@@ -1110,6 +1117,7 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
                             onSetResponse={setResponse}
                             onDeleteOutreach={deleteOutreach}
                             onSavePhone={savePhone}
+                            onSavePersonalEmail={savePersonalEmail}
                             onSetKeepInformed={setKeepInformed}
                             allContacts={contacts}
                           />

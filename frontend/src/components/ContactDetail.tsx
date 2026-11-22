@@ -29,6 +29,7 @@ interface ContactDetailProps {
   // ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking
   onSavePhone: (contactId: number, phone: string) => Promise<boolean>;
   onSetKeepInformed: (contactId: number, keepInformed: boolean) => Promise<boolean>;
+  onSavePersonalEmail: (contactId: number, address: string) => Promise<boolean>; // ai: claude-opus-5-5 | 2026-11-22
   /** Every contact, for the lead pickers in the leads section. */
   allContacts: Contact[];
 }
@@ -54,9 +55,11 @@ export default function ContactDetail({
   onDeleteOutreach,
   onSavePhone,
   onSetKeepInformed,
+  onSavePersonalEmail,
   allContacts,
 }: ContactDetailProps) {
   const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
+  const [personalDraft, setPersonalDraft] = useState(contact.personal_email || ""); // ai: claude-opus-5-5 | 2026-11-22
   const [phoneDraft, setPhoneDraft] = useState(contact.phone || ""); // ai: claude-opus-5-5 | 2026-11-11
   const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
@@ -78,6 +81,16 @@ export default function ContactDetail({
     run(async () => {
       const saved = await onSaveEmailAddress(contact.id, trimmed);
       if (!saved) setAddressDraft(contact.email_address || "");
+    });
+  };
+
+  // ai: claude-opus-5-5 | 2026-11-22
+  const commitPersonalEmail = () => {
+    const trimmed = personalDraft.trim();
+    if (trimmed === (contact.personal_email || "")) return;
+    run(async () => {
+      const saved = await onSavePersonalEmail(contact.id, trimmed);
+      if (!saved) setPersonalDraft(contact.personal_email || "");
     });
   };
 
@@ -116,9 +129,26 @@ export default function ContactDetail({
 
   return (
     <div style={detailBox}>
+      {/* ai: claude-opus-5-5 | 2026-11-22 -- personal email first; the LinkedIn one is
+          whatever LinkedIn's export carried (refreshed by every import). */}
       <div style={fieldRow}>
+        <label htmlFor={`contact-personal-email-${contact.id}`} style={fieldLabel}>
+          Personal email
+        </label>
+        <input
+          id={`contact-personal-email-${contact.id}`}
+          type="email"
+          value={personalDraft}
+          placeholder="An address you know for them"
+          onChange={(e) => setPersonalDraft(e.target.value)}
+          onBlur={commitPersonalEmail}
+          style={{ flex: 1, maxWidth: "320px" }}
+        />
+      </div>
+
+      <div style={{ ...fieldRow, marginTop: "12px" }}>
         <label htmlFor={`contact-email-${contact.id}`} style={fieldLabel}>
-          Email address
+          LinkedIn email
         </label>
         <input
           id={`contact-email-${contact.id}`}

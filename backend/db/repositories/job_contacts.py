@@ -72,6 +72,7 @@ class PostgresJobContactRepository(_BaseRepo):
         cur = self._execute(
             """
             SELECT c.id, c.full_name, c.company_raw, c.position, c.phone, c.email_address,
+                   c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
                    c.profile_url, c.recruiter_type, c.keep_informed,
                    jc.role, jc.is_primary
             FROM job_contacts jc

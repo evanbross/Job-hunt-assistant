@@ -463,6 +463,7 @@ def _contact_for(
             profile_url=suggestion.get("counterpart_profile_url"),
             phone=None,
             email_address=None,
+            personal_email=None,  # ai: claude-opus-5-5 | 2026-11-22
         ),
         now_iso,
     )

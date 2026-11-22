@@ -28,6 +28,7 @@ function lead(overrides: Partial<LeadSummary> & { id: number; company: string })
     primary_contact_id: 5,
     primary_contact_name: "Rita Recruiter",
     primary_contact_company: "Agency Co",
+    primary_contact_personal_email: null,
     last_interaction_at: null,
     contact_count: 1,
     stage: "recruiter_screen",
@@ -47,7 +48,7 @@ function stage(key: string, label: string, isTerminal = false): ApplicationStage
 
 const BOARD: LeadsBoard = {
   leads: [
-    lead({ id: 1, company: "Fresh Co" }),
+    lead({ id: 1, company: "Fresh Co", primary_contact_personal_email: "rita@home.example" }),
     lead({ id: 2, company: "Quiet Co", is_stale: true, needs_attention: true, idle_days: 14, last_activity_date: "2026-10-20" }),
     lead({ id: 3, company: "Due Co", next_follow_up: "2026-11-18", follow_up_due: true, needs_attention: true }),
     // ai: claude-opus-5-5 | 2026-11-18 -- a date the browser would call past, but the
@@ -63,6 +64,7 @@ const BOARD: LeadsBoard = {
       position: "Recruiter",
       recruiter_type: "unrated",
       keep_informed: false,
+      personal_email: "tina@home.example",
       last_interaction_at: "2026-11-05T10:00:00+00:00",
       last_channel: "phone",
       last_summary: "Has a few roles",
@@ -126,6 +128,19 @@ describe("LeadsPanel", () => {
     render(<LeadsPanel onAttentionCountChange={onAttentionCountChange} />);
     await screen.findByText("Fresh Co");
     expect(onAttentionCountChange).toHaveBeenLastCalledWith(2);
+  });
+
+  // ai: claude-opus-5-5 | 2026-11-22
+  it("shows the personal email as a mailto link that doesn't open the drawer", async () => {
+    render(<LeadsPanel />);
+    await screen.findByText("Fresh Co");
+    const link = screen.getByRole("link", { name: "rita@home.example" });
+    expect(link).toHaveAttribute("href", "mailto:rita@home.example");
+    fireEvent.click(link);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const quietCells = within(screen.getByText("Quiet Co").closest("tr")!).getAllByRole("cell");
+    expect(quietCells[2]).toHaveTextContent(/^—$/); // Company / role, Recruiter, Personal email
+    expect(screen.getByRole("link", { name: "tina@home.example" })).toHaveAttribute("href", "mailto:tina@home.example");
   });
 
   it("filters to leads needing attention and to closed leads", async () => {

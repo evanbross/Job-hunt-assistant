@@ -61,6 +61,7 @@ export interface LeadSummary {
   primary_contact_id: number | null;
   primary_contact_name: string | null;
   primary_contact_company: string | null;
+  primary_contact_personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
   last_interaction_at: string | null;
   contact_count: number;
   stage: string;
@@ -82,6 +83,7 @@ export interface OpenConversation {
   position: string;
   recruiter_type: string | null;
   keep_informed: boolean;
+  personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
   last_interaction_at: string;
   last_channel: InteractionChannel;
   last_summary: string | null;
@@ -102,6 +104,7 @@ export interface LeadPerson {
   position: string;
   phone: string | null;
   email_address: string | null;
+  personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
   profile_url: string | null;
   recruiter_type: string | null;
   keep_informed: boolean;

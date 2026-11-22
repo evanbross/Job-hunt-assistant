@@ -37,6 +37,7 @@ class PostgresLeadRepository(_BaseRepo):
                    pc.id AS primary_contact_id,
                    pc.full_name AS primary_contact_name,
                    pc.company_raw AS primary_contact_company,
+                   pc.personal_email AS primary_contact_personal_email, -- ai: claude-opus-5-5 | 2026-11-22
                    (SELECT MAX(i.occurred_at) FROM interactions i
                      WHERE i.user_id = j.user_id AND i.job_id = j.id) AS last_interaction_at,
                    (SELECT COUNT(*) FROM job_contacts jc
@@ -82,6 +83,7 @@ class PostgresLeadRepository(_BaseRepo):
             """
             SELECT latest.contact_id, c.full_name, c.company_raw, c.position,
                    c.recruiter_type, c.keep_informed,
+                   c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
                    latest.occurred_at AS last_interaction_at,
                    latest.channel AS last_channel, latest.summary AS last_summary
             FROM (

@@ -400,3 +400,37 @@ def test_call_notes_rejects_bad_input_without_saving(
     assert client.post(f"/api/leads/{job_id}/call-notes", **kwargs).status_code == status
     assert client.get(f"/api/leads/{job_id}").get_json()["interactions"] == []
     assert client.post("/api/leads/999999/call-notes", json={"text": "x"}).status_code == 404
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+def test_personal_email_flows_from_forms_to_board_drawer_and_contacts(client_and_user: tuple[Any, int]) -> None:
+    client, _ = client_and_user
+    job_id = _create_lead(client, new_contact={**_RECRUITER, "personal_email": "rita@home.example"})
+
+    [person] = client.get(f"/api/leads/{job_id}").get_json()["people"]
+    assert (person["personal_email"], person["email_address"]) == ("rita@home.example", None)
+    [row] = client.get("/api/leads").get_json()["leads"]
+    assert row["primary_contact_personal_email"] == "rita@home.example"
+
+    # Editable on its own, cleared by a blank, and validated like the other address.
+    contact_id = person["id"]
+    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": "  rita@new.example "}).status_code == 200
+    [contact] = client.get("/api/contacts").get_json()["contacts"]
+    assert (contact["personal_email"], contact["email_address"]) == ("rita@new.example", None)
+    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": "not-an-email"}).status_code == 400
+    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": ""}).status_code == 200
+    [contact] = client.get("/api/contacts").get_json()["contacts"]
+    assert contact["personal_email"] is None
+
+    # The Add Contact route and the "conversations without a role" list carry it too.
+    hank = client.post(
+        "/api/contacts", json={"full_name": "Hank Manager", "company": "Client Co", "personal_email": "hank@home.example"}
+    )
+    assert hank.status_code == 201
+    client.post(
+        "/api/interactions",
+        json={"contact_id": hank.get_json()["id"], "channel": "phone", "direction": "inbound", "kind": "call",
+              "occurred_at": "2099-01-01T12:00:00Z"},
+    )
+    [conversation] = client.get("/api/leads").get_json()["open_conversations"]
+    assert (conversation["full_name"], conversation["personal_email"]) == ("Hank Manager", "hank@home.example")

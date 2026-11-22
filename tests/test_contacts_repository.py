@@ -184,6 +184,25 @@ def test_sync_import_blank_email_does_not_erase_a_typed_email(pg_dsn: str) -> No
         conn.close()
 
 
+# ai: claude-opus-5-5 | 2026-11-22
+def test_sync_import_never_touches_personal_email(pg_dsn: str) -> None:
+    conn = get_connection(pg_dsn)
+    try:
+        user_id = _new_user(conn)
+        repo = PostgresContactRepository(conn)
+        repo.sync_import(user_id, [_import_row(email_address="jane@linkedin.example")])
+        contact_id = repo.get_all(user_id)[0]["id"]
+        assert repo.update(user_id, contact_id, {"personal_email": "jane@home.example"})
+
+        repo.sync_import(user_id, [_import_row(email_address="other@linkedin.example")])
+        [contact] = repo.list_with_outreach(user_id)
+        assert (contact["personal_email"], contact["email_address"]) == (
+            "jane@home.example", "other@linkedin.example",
+        )
+    finally:
+        conn.close()
+
+
 def test_sync_import_with_empty_list_clears_untouched_contacts(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:

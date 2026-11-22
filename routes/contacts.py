@@ -142,6 +142,7 @@ class ContactUpdate(BaseModel):
     interested: StrictBool | None = None
     recruiter_type: RecruiterType | None = None
     email_address: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-11 -- shared validator
+    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
     notes: str | None = None
     # ai: claude-opus-5-5 | 2026-11-11 -- lead tracking
     phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
@@ -175,6 +176,7 @@ class ContactCreate(BaseModel):
     profile_url: Annotated[str, Field(max_length=_MAX_PROFILE_URL_LENGTH)] | None = None
     phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
     email_address: OptionalEmailAddress = None
+    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
     keep_informed: StrictBool = False
 
     @field_validator("profile_url")
@@ -432,6 +434,7 @@ def create_contact() -> ResponseReturnValue:
         profile_url=body.profile_url,
         phone=body.phone or None,
         email_address=body.email_address,
+        personal_email=body.personal_email,  # ai: claude-opus-5-5 | 2026-11-22
     )
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     with get_repos() as repos:
