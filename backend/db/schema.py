@@ -1821,6 +1821,12 @@ def migrate_schema(conn: Any) -> None:
             "ALTER TABLE contacts ADD CONSTRAINT contacts_source_check"
             " CHECK (source IN ('linkedin_import', 'manual'))"
         )
+    # ai: claude-opus-5-5 | 2026-11-22
+    # personal_email is an address the user knows for the person themselves.
+    # email_address is LinkedIn's Connections.csv "Email Address" (whatever the
+    # person signed up to LinkedIn with, when they share it) and is refreshed by
+    # every import; personal_email is never in _IMPORT_COLUMNS, so no import touches it.
+    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS personal_email TEXT")
     # ai: claude-opus-5-5 | 2026-11-17
     # Answer-bank usage: how many applications the extension filled a saved answer
     # into, and when it last did. Kept apart from updated_at, which is the last edit.

@@ -64,6 +64,7 @@ class NewContact:
     profile_url: str | None
     phone: str | None
     email_address: str | None
+    personal_email: str | None  # ai: claude-opus-5-5 | 2026-11-22
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -237,6 +238,8 @@ class LeadService:
             details["phone"] = contact.phone
         if contact.email_address:
             details["email_address"] = contact.email_address
+        if contact.personal_email:  # ai: claude-opus-5-5 | 2026-11-22
+            details["personal_email"] = contact.personal_email
         return self._repos["contacts"].create_manual(user_id, identity, details, now_iso)
 
     def create_lead(self, user_id: int, new: NewLead, now_iso: str) -> int:

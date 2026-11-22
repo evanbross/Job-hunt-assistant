@@ -42,17 +42,19 @@ export interface NewContactDraft {
   position: string;
   phone: string;
   email_address: string;
+  personal_email: string; // ai: claude-opus-5-5 | 2026-11-22
   profile_url: string;
 }
 
 export function emptyNewContact(): NewContactDraft {
-  return { full_name: "", company: "", position: "", phone: "", email_address: "", profile_url: "" };
+  return { full_name: "", company: "", position: "", phone: "", email_address: "", personal_email: "", profile_url: "" };
 }
 
 /** The new-contact body routes/leads.py and routes/contacts.py accept: blanks dropped. */
 export function newContactBody(draft: NewContactDraft): Record<string, string> {
   const body: Record<string, string> = { full_name: draft.full_name.trim() };
-  for (const key of ["company", "position", "phone", "email_address", "profile_url"] as const) {
+  // ai: claude-opus-5-5 | 2026-11-22 -- personal_email added
+  for (const key of ["company", "position", "phone", "email_address", "personal_email", "profile_url"] as const) {
     const value = draft[key].trim();
     if (value) body[key] = value;
   }

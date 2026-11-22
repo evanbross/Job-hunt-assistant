@@ -52,6 +52,7 @@ export interface Contact {
   profile_url?: string | null;
   connected_on?: string | null;
   email_address?: string | null;
+  personal_email?: string | null; // ai: claude-opus-5-5 | 2026-11-22
   interested?: boolean | null;
   recruiter_type?: string | null;
   decided_by?: string | null;

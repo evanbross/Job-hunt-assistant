@@ -127,6 +127,7 @@ class NewContactBody(BaseModel):
     profile_url: HttpUrl = None
     phone: Phone = None
     email_address: OptionalEmailAddress = None
+    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
 
     def to_new_contact(self) -> NewContact:
         return NewContact(
@@ -136,6 +137,7 @@ class NewContactBody(BaseModel):
             profile_url=self.profile_url,
             phone=self.phone or None,
             email_address=self.email_address,
+            personal_email=self.personal_email,  # ai: claude-opus-5-5 | 2026-11-22
         )
 
 

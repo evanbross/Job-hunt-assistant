@@ -61,8 +61,12 @@ class PostgresContactRepository(_BaseRepo):
     # field) -- routes/contacts.py's update_contact() adds it itself
     # ("manual") whenever recruiter_type is part of the same request.
     # ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added (lead tracking).
+    # ai: claude-opus-5-5 | 2026-11-22 -- personal_email added.
     _EDITABLE_COLUMNS: frozenset[str] = frozenset(
-        {"interested", "recruiter_type", "email_address", "notes", "decided_by", "phone", "keep_informed"}
+        {
+            "interested", "recruiter_type", "email_address", "personal_email", "notes",
+            "decided_by", "phone", "keep_informed",
+        }
     )
     # ai: claude-opus-5-5 | 2026-11-11
     # Identity columns (backend/contacts/contact_identity.py) -- editable only on a
@@ -109,7 +113,8 @@ class PostgresContactRepository(_BaseRepo):
             -- means, which is what "keep informed" is judged against.
             SELECT c.id, c.full_name, c.company_raw, c.company_normalized,
                    c.position, c.normalized_title,
-                   c.profile_url, c.connected_on, c.email_address, c.interested,
+                   c.profile_url, c.connected_on, c.email_address, c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
+                   c.interested,
                    c.recruiter_type, c.decided_by, c.notes, c.outreach_draft,
                    c.phone, c.keep_informed, c.source,
                    COALESCE(
