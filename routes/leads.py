@@ -33,6 +33,7 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIProviderError
+from backend.contacts.contact_emails import ContactEmailList
 from backend.db import DuplicateJobUrlError
 from backend.leads.call_notes import (
     CallNotesFormatError,
@@ -49,7 +50,7 @@ from backend.leads.lead_service import (
     NewLead,
     attention_rules,
 )
-from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
+from backend.utils.request_fields import UtcTimestamp
 from backend.utils.rich_text import (
     MAX_RICH_TEXT_LENGTH,
     plain_text_to_html,
@@ -126,8 +127,7 @@ class NewContactBody(BaseModel):
     position: ShortText = ""
     profile_url: HttpUrl = None
     phone: Phone = None
-    email_address: OptionalEmailAddress = None
-    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
+    emails: ContactEmailList = []  # ai: claude-opus-5-5 | 2026-11-22
 
     def to_new_contact(self) -> NewContact:
         return NewContact(
@@ -136,8 +136,7 @@ class NewContactBody(BaseModel):
             position=self.position,
             profile_url=self.profile_url,
             phone=self.phone or None,
-            email_address=self.email_address,
-            personal_email=self.personal_email,  # ai: claude-opus-5-5 | 2026-11-22
+            emails=tuple(self.emails),  # ai: claude-opus-5-5 | 2026-11-22
         )
 
 

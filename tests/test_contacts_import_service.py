@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.contacts.contact_emails import IMPORT_LINKEDIN_EMAIL_KEY
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.db.interfaces import ContactSyncResult
 
@@ -153,20 +154,21 @@ def test_import_csv_builds_dedup_key_from_url_else_name_and_company() -> None:
     assert repo.synced_rows[1]["dedup_key"] == "john smith|acme"
 
 
-# ai: claude-sonnet-5 | 2026-09-25
-def test_import_csv_carries_email_address_and_blank_becomes_none() -> None:
+# ai: claude-opus-5-5 | 2026-11-22 -- carried as the LinkedIn-typed address; a
+# malformed value is dropped like a blank one.
+def test_import_csv_carries_linkedin_email_and_blank_or_malformed_becomes_none() -> None:
     csv_text = (
         _PREAMBLE
         + _HEADER
-        + "Jane,Doe,https://linkedin.com/in/janedoe,jane@example.com,Acme,Engineer,\n"
+        + "Jane,Doe,https://linkedin.com/in/janedoe, jane@example.com ,Acme,Engineer,\n"
         + "John,Smith,https://linkedin.com/in/johnsmith,,Acme,Manager,\n"
+        + "Ann,Lee,https://linkedin.com/in/annlee,not an email,Acme,Manager,\n"
     )
     repo = FakeContactsRepo()
     _import_service(repo).import_csv(_TEST_USER_ID, csv_text.encode("utf-8"))
 
     assert repo.synced_rows is not None
-    assert repo.synced_rows[0]["email_address"] == "jane@example.com"
-    assert repo.synced_rows[1]["email_address"] is None
+    assert [row[IMPORT_LINKEDIN_EMAIL_KEY] for row in repo.synced_rows] == ["jane@example.com", None, None]
 
 
 # ai: claude-sonnet-5 | 2026-09-25

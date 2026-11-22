@@ -402,30 +402,73 @@ def test_call_notes_rejects_bad_input_without_saving(
     assert client.post("/api/leads/999999/call-notes", json={"text": "x"}).status_code == 404
 
 
-# ai: claude-opus-5-5 | 2026-11-22
-def test_personal_email_flows_from_forms_to_board_drawer_and_contacts(client_and_user: tuple[Any, int]) -> None:
+# ai: claude-opus-5-5 | 2026-11-22 -- typed addresses replaced the personal_email column
+def test_typed_emails_flow_from_forms_to_board_drawer_and_contacts(client_and_user: tuple[Any, int]) -> None:
     client, _ = client_and_user
-    job_id = _create_lead(client, new_contact={**_RECRUITER, "personal_email": "rita@home.example"})
+    job_id = _create_lead(client, new_contact={**_RECRUITER, "emails": [
+        {"address": "rita@agency.example", "email_type": "work"},
+        {"address": " rita@home.example ", "email_type": "home", "custom_label": "ignored for home"},
+    ]})
 
+    # Listed in preference order (home first), labels only on custom addresses.
     [person] = client.get(f"/api/leads/{job_id}").get_json()["people"]
-    assert (person["personal_email"], person["email_address"]) == ("rita@home.example", None)
+    assert [(e["email_type"], e["address"], e["custom_label"]) for e in person["emails"]] == [
+        ("home", "rita@home.example", None), ("work", "rita@agency.example", None),
+    ]
     [row] = client.get("/api/leads").get_json()["leads"]
-    assert row["primary_contact_personal_email"] == "rita@home.example"
-
-    # Editable on its own, cleared by a blank, and validated like the other address.
-    contact_id = person["id"]
-    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": "  rita@new.example "}).status_code == 200
-    [contact] = client.get("/api/contacts").get_json()["contacts"]
-    assert (contact["personal_email"], contact["email_address"]) == ("rita@new.example", None)
-    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": "not-an-email"}).status_code == 400
-    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": ""}).status_code == 200
-    [contact] = client.get("/api/contacts").get_json()["contacts"]
-    assert contact["personal_email"] is None
-
-    # The Add Contact route and the "conversations without a role" list carry it too.
-    hank = client.post(
-        "/api/contacts", json={"full_name": "Hank Manager", "company": "Client Co", "personal_email": "hank@home.example"}
+    assert (row["primary_contact_email"], row["primary_contact_email_type"], row["primary_contact_email_label"]) == (
+        "rita@home.example", "home", None,
     )
+
+    contact_id = person["id"]
+    added = client.post(f"/api/contacts/{contact_id}/emails",
+                        json={"address": "rita@side.example", "email_type": "custom", "custom_label": " Side gig "})
+    assert added.status_code == 201
+    assert (added.get_json()["email_type"], added.get_json()["custom_label"]) == ("custom", "Side gig")
+    assert client.post(f"/api/contacts/{contact_id}/emails",
+                       json={"address": "RITA@home.example", "email_type": "other"}).status_code == 409
+    assert client.post(f"/api/contacts/{contact_id}/emails",
+                       json={"address": "x@example.com", "email_type": "custom"}).status_code == 400
+    assert client.post(f"/api/contacts/{contact_id}/emails",
+                       json={"address": "not-an-email", "email_type": "home"}).status_code == 400
+    assert client.post("/api/contacts/999999/emails",
+                       json={"address": "x@example.com", "email_type": "home"}).status_code == 404
+    assert client.post(f"/api/contacts/{contact_id}/emails",
+                       json={"address": "rita@li.example", "email_type": "linkedin"}).status_code == 201
+    second_linkedin = client.post(f"/api/contacts/{contact_id}/emails",
+                                  json={"address": "rita@li2.example", "email_type": "linkedin"})
+    assert second_linkedin.status_code == 409
+    assert "LinkedIn" in second_linkedin.get_json()["error"]
+
+    # Re-flagged from home to other, the work address becomes the one shown.
+    home_id = person["emails"][0]["id"]
+    replaced = client.put(f"/api/contact-emails/{home_id}", json={"address": "rita@home.example", "email_type": "other"})
+    assert replaced.status_code == 200
+    [row] = client.get("/api/leads").get_json()["leads"]
+    assert (row["primary_contact_email"], row["primary_contact_email_type"]) == ("rita@agency.example", "work")
+    assert client.put(f"/api/contact-emails/{home_id}",
+                      json={"address": "rita@agency.example", "email_type": "other"}).status_code == 409
+    assert client.put("/api/contact-emails/999999", json={"address": "a@b.example", "email_type": "home"}).status_code == 404
+
+    [contact] = client.get("/api/contacts").get_json()["contacts"]
+    assert [(e["email_type"], e["address"]) for e in contact["emails"]] == [
+        ("work", "rita@agency.example"), ("custom", "rita@side.example"),
+        ("other", "rita@home.example"), ("linkedin", "rita@li.example"),
+    ]
+    assert client.delete(f"/api/contact-emails/{home_id}").status_code == 200
+    assert client.delete(f"/api/contact-emails/{home_id}").status_code == 404
+    # The old single-address fields are gone from the contact update.
+    assert client.patch(f"/api/contacts/{contact_id}", json={"personal_email": "a@b.example"}).status_code == 400
+
+    # A new contact's list is checked up front: no repeats, at most one LinkedIn address.
+    assert client.post("/api/contacts", json={"full_name": "Dee Dupe", "emails": [
+        {"address": "d@x.example", "email_type": "home"}, {"address": "D@X.example", "email_type": "work"},
+    ]}).status_code == 400
+
+    # The "conversations without a role" list shows the best address too.
+    hank = client.post("/api/contacts", json={"full_name": "Hank Manager", "company": "Client Co", "emails": [
+        {"address": "hank@li.example", "email_type": "linkedin"},
+    ]})
     assert hank.status_code == 201
     client.post(
         "/api/interactions",
@@ -433,4 +476,6 @@ def test_personal_email_flows_from_forms_to_board_drawer_and_contacts(client_and
               "occurred_at": "2099-01-01T12:00:00Z"},
     )
     [conversation] = client.get("/api/leads").get_json()["open_conversations"]
-    assert (conversation["full_name"], conversation["personal_email"]) == ("Hank Manager", "hank@home.example")
+    assert (conversation["full_name"], conversation["email"], conversation["email_type"]) == (
+        "Hank Manager", "hank@li.example", "linkedin",
+    )

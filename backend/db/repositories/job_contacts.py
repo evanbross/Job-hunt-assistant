@@ -18,6 +18,7 @@ from typing import Any
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
+from .contact_emails import emails_json_sql
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -70,9 +71,9 @@ class PostgresJobContactRepository(_BaseRepo):
     def list_for_job(self, user_id: int, job_id: int) -> list[dict[str, Any]]:
         """The people on a job, primary first, with what the lead drawer shows."""
         cur = self._execute(
-            """
-            SELECT c.id, c.full_name, c.company_raw, c.position, c.phone, c.email_address,
-                   c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
+            f"""
+            SELECT c.id, c.full_name, c.company_raw, c.position, c.phone,
+                   {emails_json_sql("c.id")} AS emails, -- ai: claude-opus-5-5 | 2026-11-22
                    c.profile_url, c.recruiter_type, c.keep_informed,
                    jc.role, jc.is_primary
             FROM job_contacts jc

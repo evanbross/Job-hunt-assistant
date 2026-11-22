@@ -261,7 +261,7 @@ def filter_scenario(db) -> dict[str, Any]:
     PostgresContactRepository(conn).sync_import(user_id, [{
         "dedup_key": "contact-acme", "full_name": "Ada Lovelace", "company_raw": "Acme Inc",
         "company_normalized": "acme", "position": "Engineer", "normalized_title": "engineer",
-        "profile_url": None, "email_address": None, "connected_on": None,
+        "profile_url": None, "connected_on": None,
         "imported_at": "2026-10-01T00:00:00+00:00",
     }])
     conn.commit()
@@ -572,7 +572,7 @@ def test_page_route_attaches_each_jobs_company_summary(client, db) -> None:
     PostgresContactRepository(conn).sync_import(user_id, [{
         "dedup_key": "contact-block", "full_name": "Grace Hopper", "company_raw": "Block, Inc.",
         "company_normalized": "block", "position": "Recruiter", "normalized_title": "recruiter",
-        "profile_url": "https://www.linkedin.com/in/grace", "email_address": None, "connected_on": None,
+        "profile_url": "https://www.linkedin.com/in/grace", "connected_on": None,
         "imported_at": "2026-10-01T00:00:00+00:00",
     }])
     conn.commit()

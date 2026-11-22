@@ -18,6 +18,7 @@ from typing import Any
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
+from .contact_emails import best_email_join_sql
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -29,7 +30,7 @@ class PostgresLeadRepository(_BaseRepo):
         its primary contact, when anything was last logged, and how many people are
         attached. Sorted by next follow-up (soonest first, none last), then newest."""
         cur = self._execute(
-            """
+            f"""
             SELECT j.id, j.company, j.job_title, j.url, j.origin, j.next_follow_up,
                    j.date_found, j.status AS job_status,
                    l.latest_status AS latest_stage_status,
@@ -37,7 +38,10 @@ class PostgresLeadRepository(_BaseRepo):
                    pc.id AS primary_contact_id,
                    pc.full_name AS primary_contact_name,
                    pc.company_raw AS primary_contact_company,
-                   pc.personal_email AS primary_contact_personal_email, -- ai: claude-opus-5-5 | 2026-11-22
+                   -- ai: claude-opus-5-5 | 2026-11-22 -- the address shown for them
+                   pe.address AS primary_contact_email,
+                   pe.email_type AS primary_contact_email_type,
+                   pe.custom_label AS primary_contact_email_label,
                    (SELECT MAX(i.occurred_at) FROM interactions i
                      WHERE i.user_id = j.user_id AND i.job_id = j.id) AS last_interaction_at,
                    (SELECT COUNT(*) FROM job_contacts jc
@@ -47,6 +51,7 @@ class PostgresLeadRepository(_BaseRepo):
             LEFT JOIN job_contacts pjc
                    ON pjc.job_id = j.id AND pjc.user_id = j.user_id AND pjc.is_primary
             LEFT JOIN contacts pc ON pc.id = pjc.contact_id AND pc.user_id = j.user_id
+            {best_email_join_sql("pc.id", "pe")}
             WHERE j.user_id = %s AND j.on_sheet = 1
               AND (j.origin = 'recruiter_contact'
                    OR EXISTS (SELECT 1 FROM job_contacts jc
@@ -80,10 +85,11 @@ class PostgresLeadRepository(_BaseRepo):
         outbound messages are left out -- that is the Contacts tab's networking
         outreach, not a conversation; it takes a reply, a call or a note to count."""
         cur = self._execute(
-            """
+            f"""
             SELECT latest.contact_id, c.full_name, c.company_raw, c.position,
                    c.recruiter_type, c.keep_informed,
-                   c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
+                   -- ai: claude-opus-5-5 | 2026-11-22 -- the address shown for them
+                   ce.address AS email, ce.email_type, ce.custom_label AS email_label,
                    latest.occurred_at AS last_interaction_at,
                    latest.channel AS last_channel, latest.summary AS last_summary
             FROM (
@@ -94,6 +100,7 @@ class PostgresLeadRepository(_BaseRepo):
                 ORDER BY i.contact_id, i.occurred_at DESC, i.id DESC
             ) latest
             JOIN contacts c ON c.id = latest.contact_id AND c.user_id = %s
+            {best_email_join_sql("c.id", "ce")}
             WHERE latest.job_id IS NULL
               AND latest.occurred_at >= %s
               AND EXISTS (SELECT 1 FROM interactions x

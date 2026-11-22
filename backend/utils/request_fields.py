@@ -39,7 +39,9 @@ UtcTimestamp = Annotated[str, AfterValidator(normalize_utc_timestamp)]
 
 
 # ai: claude-opus-5-5 | 2026-11-11 -- was ContactUpdate._normalize_email_address
-# in routes/contacts.py; shared with routes/leads.py's hand-added contacts.
+# in routes/contacts.py.
+# ai: claude-opus-5-5 | 2026-11-22 -- now used by backend/contacts/contact_emails.py
+# (every typed address) and the LinkedIn import.
 def normalize_email_address(value: str | None) -> str | None:
     """Blank becomes None; anything else must look like one address."""
     if value is None:
@@ -51,5 +53,3 @@ def normalize_email_address(value: str | None) -> str | None:
         raise ValueError("not a valid email address")
     return value
 
-
-OptionalEmailAddress = Annotated[str | None, AfterValidator(normalize_email_address)]

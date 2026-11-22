@@ -577,6 +577,26 @@ class ILeadRepository(Protocol):
     def list_open_conversations(self, user_id: int, since: str) -> list[dict[str, Any]]: ...
 
 
+# ai: claude-opus-5-5 | 2026-11-22
+@runtime_checkable
+class IContactEmailRepository(Protocol):
+    def add(
+        self,
+        user_id: int,
+        contact_id: int,
+        *,
+        address: str,
+        email_type: str,
+        custom_label: str | None,
+        created_at: str,
+    ) -> dict[str, Any] | None: ...
+    def replace(
+        self, user_id: int, email_id: int, *, address: str, email_type: str, custom_label: str | None
+    ) -> dict[str, Any] | None: ...
+    def delete(self, user_id: int, email_id: int) -> bool: ...
+    def upsert_linkedin(self, user_id: int, by_dedup_key: list[tuple[str, str]], created_at: str) -> None: ...
+
+
 # ai: claude-sonnet-5 | 2026-10-15
 @runtime_checkable
 class IContactEmploymentHistoryRepository(Protocol):

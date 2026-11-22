@@ -26,10 +26,12 @@ from typing import Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ValidationError, model_validator
 
+from backend.contacts.contact_emails import IMPORT_LINKEDIN_EMAIL_KEY
 from backend.contacts.contact_identity import contact_dedup_key
 from backend.contacts.title_normalization import normalize_title
 from backend.db.interfaces import ContactSyncResult
 from backend.scoring.company_matching import normalize_company_name
+from backend.utils.request_fields import normalize_email_address
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +126,8 @@ class ContactImportService:
                     "position": position,
                     "normalized_title": normalize_title(position),
                     "profile_url": profile_url or None,
-                    "email_address": parsed.email_address.strip() or None,
+                    # ai: claude-opus-5-5 | 2026-11-22 -- the contact's LinkedIn-typed address
+                    IMPORT_LINKEDIN_EMAIL_KEY: self._linkedin_email(parsed.email_address),
                     "connected_on": self._parse_connected_on(parsed.connected_on_raw),
                     "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),
                 }
@@ -169,6 +172,16 @@ class ContactImportService:
 
         reader = csv.DictReader(lines[header_index:])
         return list(reader)
+
+    # ai: claude-opus-5-5 | 2026-11-22
+    @staticmethod
+    def _linkedin_email(raw: str) -> str | None:
+        """The file's Email Address, or None when blank or not one address (a
+        malformed value would only become a broken mailto link)."""
+        try:
+            return normalize_email_address(raw)
+        except ValueError:
+            return None
 
     @staticmethod
     def _parse_connected_on(value: str) -> str | None:

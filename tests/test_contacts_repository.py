@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 import psycopg2
 import pytest
 
+from backend.contacts.contact_emails import IMPORT_LINKEDIN_EMAIL_KEY
 from backend.db import (
+    PostgresContactEmailRepository,
     PostgresContactEmploymentHistoryRepository,
     PostgresContactRepository,
     PostgresInteractionRepository,
@@ -43,9 +45,10 @@ def _contact_row(**overrides: object) -> dict[str, object]:
     return row
 
 
-def _import_row(**overrides: object) -> dict[str, object]:
+# ai: claude-opus-5-5 | 2026-11-22 -- the file's address rides under IMPORT_LINKEDIN_EMAIL_KEY
+def _import_row(linkedin_email: str | None = None, **overrides: object) -> dict[str, object]:
     row = _contact_row(**overrides)
-    row["email_address"] = row.get("email_address")
+    row[IMPORT_LINKEDIN_EMAIL_KEY] = linkedin_email
     row["dedup_key"] = row["profile_url"] or f"{str(row['full_name']).lower()}|{row['company_normalized']}"
     return row
 
@@ -166,39 +169,62 @@ def test_sync_import_keeps_a_manual_not_a_recruiter_decision(pg_dsn: str) -> Non
         conn.close()
 
 
-def test_sync_import_blank_email_does_not_erase_a_typed_email(pg_dsn: str) -> None:
+# ai: claude-opus-5-5 | 2026-11-22
+def _emails(repo: PostgresContactRepository, user_id: int) -> list[tuple[str, str]]:
+    [contact] = repo.list_with_outreach(user_id)
+    return [(email["email_type"], email["address"]) for email in contact["emails"]]
+
+
+# ai: claude-opus-5-5 | 2026-11-22 -- replaces the email_address-column version
+def test_sync_import_keeps_only_the_linkedin_email_current(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        repo.sync_import(user_id, [_import_row()])
+        emails = PostgresContactEmailRepository(conn)
+        repo.sync_import(user_id, [_import_row("jane@linkedin.example")])
         contact_id = repo.get_all(user_id)[0]["id"]
-        assert repo.update(user_id, contact_id, {"email_address": "jane@example.com"})
+        emails.add(user_id, contact_id, address="jane@home.example", email_type="home",
+                   custom_label=None, created_at="2026-11-22T00:00:00+00:00")
+        assert _emails(repo, user_id) == [("home", "jane@home.example"), ("linkedin", "jane@linkedin.example")]
 
-        repo.sync_import(user_id, [_import_row(email_address=None)])
-        assert repo.get_all(user_id)[0]["email_address"] == "jane@example.com"
+        # A blank Email Address in the file leaves every address alone.
+        repo.sync_import(user_id, [_import_row(None)])
+        assert _emails(repo, user_id) == [("home", "jane@home.example"), ("linkedin", "jane@linkedin.example")]
 
-        repo.sync_import(user_id, [_import_row(email_address="new@example.com")])
-        assert repo.get_all(user_id)[0]["email_address"] == "new@example.com"
+        # A changed one replaces only the LinkedIn address.
+        repo.sync_import(user_id, [_import_row("Jane@New-LinkedIn.example")])
+        assert _emails(repo, user_id) == [("home", "jane@home.example"), ("linkedin", "Jane@New-LinkedIn.example")]
+
+        # An address the user re-flagged isn't added back as LinkedIn (case ignored).
+        [linkedin_id] = [e["id"] for e in repo.list_with_outreach(user_id)[0]["emails"] if e["email_type"] == "linkedin"]
+        emails.replace(user_id, linkedin_id, address="jane@new-linkedin.example", email_type="work", custom_label=None)
+        repo.sync_import(user_id, [_import_row("JANE@new-linkedin.example")])
+        assert _emails(repo, user_id) == [("home", "jane@home.example"), ("work", "jane@new-linkedin.example")]
     finally:
         conn.close()
 
 
 # ai: claude-opus-5-5 | 2026-11-22
-def test_sync_import_never_touches_personal_email(pg_dsn: str) -> None:
+def test_sync_import_keeps_a_contact_the_user_added_an_address_to(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)
     try:
         user_id = _new_user(conn)
         repo = PostgresContactRepository(conn)
-        repo.sync_import(user_id, [_import_row(email_address="jane@linkedin.example")])
-        contact_id = repo.get_all(user_id)[0]["id"]
-        assert repo.update(user_id, contact_id, {"personal_email": "jane@home.example"})
-
-        repo.sync_import(user_id, [_import_row(email_address="other@linkedin.example")])
-        [contact] = repo.list_with_outreach(user_id)
-        assert (contact["personal_email"], contact["email_address"]) == (
-            "jane@home.example", "other@linkedin.example",
+        repo.sync_import(user_id, [
+            _import_row("kept@linkedin.example"),
+            _import_row("gone@linkedin.example", full_name="Bob Roe", profile_url="https://linkedin.com/in/bobroe"),
+        ])
+        kept_id = next(c["id"] for c in repo.get_all(user_id) if c["full_name"] == "Jane Doe")
+        PostgresContactEmailRepository(conn).add(
+            user_id, kept_id, address="jane@home.example", email_type="home",
+            custom_label=None, created_at="2026-11-22T00:00:00+00:00",
         )
+
+        result = repo.sync_import(user_id, [])
+        # Only a LinkedIn address (which the import itself wrote) doesn't count as acting on a contact.
+        assert result.removed == 1
+        assert [c["full_name"] for c in repo.get_all(user_id)] == ["Jane Doe"]
     finally:
         conn.close()
 

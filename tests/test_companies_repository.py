@@ -34,7 +34,6 @@ def _import_row(**overrides: object) -> dict[str, object]:
         "profile_url": None,
         "connected_on": "2024-01-15",
         "imported_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "email_address": None,
     }
     row.update(overrides)
     row["dedup_key"] = row["profile_url"] or f"{row['full_name'].lower()}|{row['company_normalized']}"

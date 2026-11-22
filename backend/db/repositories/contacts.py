@@ -27,11 +27,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+
+from backend.contacts.contact_emails import IMPORT_LINKEDIN_EMAIL_KEY
 
 from ..base import _BaseRepo
 from ..connection import _row_to_dict
 from ..interfaces import ContactSyncResult
+from .contact_emails import PostgresContactEmailRepository, emails_json_sql
 
 
 # ai: claude-sonnet-5 | 2026-07-25
@@ -51,7 +55,6 @@ class PostgresContactRepository(_BaseRepo):
             "position",
             "normalized_title",
             "profile_url",
-            "email_address",
             "connected_on",
             "imported_at",
         }
@@ -61,12 +64,9 @@ class PostgresContactRepository(_BaseRepo):
     # field) -- routes/contacts.py's update_contact() adds it itself
     # ("manual") whenever recruiter_type is part of the same request.
     # ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added (lead tracking).
-    # ai: claude-opus-5-5 | 2026-11-22 -- personal_email added.
+    # ai: claude-opus-5-5 | 2026-11-22 -- email addresses moved to contact_email_addresses.
     _EDITABLE_COLUMNS: frozenset[str] = frozenset(
-        {
-            "interested", "recruiter_type", "email_address", "personal_email", "notes",
-            "decided_by", "phone", "keep_informed",
-        }
+        {"interested", "recruiter_type", "notes", "decided_by", "phone", "keep_informed"}
     )
     # ai: claude-opus-5-5 | 2026-11-11
     # Identity columns (backend/contacts/contact_identity.py) -- editable only on a
@@ -104,17 +104,19 @@ class PostgresContactRepository(_BaseRepo):
     # ai: claude-opus-5-5 | 2026-10-14 -- was list_with_emails; the aggregated
     # log is now "outreach" (contact_outreach) and carries each entry's channel.
     def list_with_outreach(self, user_id: int) -> list[dict[str, Any]]:
+        # ai: claude-opus-5-5 | 2026-11-22 -- emails is a correlated subquery, not a
+        # join, so it can't multiply the outreach rows aggregated below.
         cur = self._execute(
             # ai: gpt-5 | 2026-10-03
-            """
+            f"""
             -- ai: claude-opus-5-5 | 2026-11-11 -- outreach now reads the outbound
             -- messages in interactions (contact_outreach was folded into it);
             -- last_outbound_at is the last time the user reached out by any
             -- means, which is what "keep informed" is judged against.
             SELECT c.id, c.full_name, c.company_raw, c.company_normalized,
                    c.position, c.normalized_title,
-                   c.profile_url, c.connected_on, c.email_address, c.personal_email, -- ai: claude-opus-5-5 | 2026-11-22
-                   c.interested,
+                   c.profile_url, c.connected_on, c.interested,
+                   {emails_json_sql("c.id")} AS emails,
                    c.recruiter_type, c.decided_by, c.notes, c.outreach_draft,
                    c.phone, c.keep_informed, c.source,
                    COALESCE(
@@ -149,8 +151,11 @@ class PostgresContactRepository(_BaseRepo):
         never acted on them -- anyone flagged, marked recruiter, manually
         decided "not a recruiter" (decided_by='manual'), noted, or contacted is
         kept."""
+        # ai: claude-opus-5-5 | 2026-11-22 -- an import row's LinkedIn email isn't a
+        # contacts column: it goes to contact_email_addresses below.
+        allowed = self._IMPORT_COLUMNS | {IMPORT_LINKEDIN_EMAIL_KEY}
         for row in rows:
-            unknown = set(row.keys()) - self._IMPORT_COLUMNS
+            unknown = set(row.keys()) - allowed
             if unknown:
                 raise ValueError(f"Attempt to insert unknown columns: {unknown}")
 
@@ -164,10 +169,8 @@ class PostgresContactRepository(_BaseRepo):
         added = sum(1 for key in file_keys if key not in existing_keys)
 
         columns = sorted(self._IMPORT_COLUMNS)
-        refreshed = [col for col in columns if col not in ("dedup_key", "email_address")]
+        refreshed = [col for col in columns if col != "dedup_key"]
         assignments = ", ".join(f"{col} = EXCLUDED.{col}" for col in refreshed)
-        # A blank Email Address in the file must not erase one the user typed in.
-        assignments += ", email_address = COALESCE(EXCLUDED.email_address, contacts.email_address)"
         if rows:
             cur = self._conn.cursor()
             cur.executemany(
@@ -175,6 +178,18 @@ class PostgresContactRepository(_BaseRepo):
                 f" VALUES (%s, {', '.join(['%s'] * len(columns))})"
                 f" ON CONFLICT (user_id, dedup_key) DO UPDATE SET {assignments}",
                 [(user_id, *(row.get(col) for col in columns)) for row in rows],
+            )
+            # ai: claude-opus-5-5 | 2026-11-22 -- a blank Email Address in the file
+            # leaves the contact's addresses alone (upsert_linkedin only sees rows
+            # that have one).
+            PostgresContactEmailRepository(self._conn).upsert_linkedin(
+                user_id,
+                [
+                    (row["dedup_key"], row[IMPORT_LINKEDIN_EMAIL_KEY])
+                    for row in rows
+                    if row.get(IMPORT_LINKEDIN_EMAIL_KEY)
+                ],
+                datetime.now(UTC).isoformat(timespec="seconds"),
             )
 
         # ai: claude-sonnet-5 | 2026-09-29
@@ -198,6 +213,9 @@ class PostgresContactRepository(_BaseRepo):
               AND NOT c.keep_informed
               AND NOT EXISTS (SELECT 1 FROM interactions i WHERE i.contact_id = c.id)
               AND NOT EXISTS (SELECT 1 FROM job_contacts jc WHERE jc.contact_id = c.id)
+              -- ai: claude-opus-5-5 | 2026-11-22 -- an address the user added is acting on it
+              AND NOT EXISTS (SELECT 1 FROM contact_email_addresses ce
+                              WHERE ce.contact_id = c.id AND ce.email_type <> 'linkedin')
             """,
             (user_id, file_keys),
         )

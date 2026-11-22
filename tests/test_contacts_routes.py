@@ -428,7 +428,7 @@ def test_update_contact_can_set_and_unset_recruiter_type(monkeypatch: pytest.Mon
         {"recruiter_type": "recruiter"},
         {"contact_type": "recruiter"},
         {"interested": "yes"},
-        {"email_address": "not-an-email"},
+        {"email_address": "jane@example.com"},  # ai: claude-opus-5-5 | 2026-11-22 -- now /contacts/<id>/emails
         {"notes": "x" * 5001},
         {"notes": 42},
         {"full_name": "Injected"},
@@ -445,15 +445,6 @@ def test_update_contact_rejects_invalid_body(
     response = client.patch("/api/contacts/1", json=body)
     assert response.status_code == 400
     assert contacts.updates == []
-
-
-def test_update_contact_normalizes_blank_email_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    contacts = FakeContactsRepo([{"id": 1}])
-    client = _contacts_client(monkeypatch, contacts)
-
-    response = client.patch("/api/contacts/1", json={"email_address": "  "})
-    assert response.status_code == 200
-    assert contacts.updates == [(1, {"email_address": None})]
 
 
 def test_update_contact_trims_notes_and_blank_becomes_none(

@@ -91,7 +91,6 @@ def _setup_contacts(pg_dsn: str) -> tuple[object, int, dict[str, int]]:
             "position": "Engineer",
             "normalized_title": "engineer",
             "profile_url": url,
-            "email_address": None,
             "connected_on": None,
             "imported_at": imported_at,
         }
