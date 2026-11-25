@@ -63,7 +63,11 @@ describe("Getro-style board that switches from a Load-more click to scroll-trigg
       // Further calls add nothing, like the real board once it truly runs out.
     };
 
-    expect(await page.detectPage()).toMatchObject({ type: "smartGeneric", jobCount: 2 });
+    // ai: claude-sonnet-5 | 2026-11-26
+    // detectPage() walks the same click+scroll pagination as build() now (see
+    // paginateSmartGeneric), so the popup's preview count matches what a send
+    // will actually capture instead of only ever reporting the first page.
+    expect(await page.detectPage()).toMatchObject({ type: "smartGeneric", jobCount: 5 });
     const { payload } = await page.build();
 
     expect(payload.jobs.map((job) => job.url.split("/").pop())).toEqual([
