@@ -67,7 +67,13 @@ from backend.scoring.duplicate_matching import (
     is_near_certain_duplicate,
 )
 from backend.scoring.fit_scorer import FitScorer
-from backend.scoring.jd_enrichment import queue_tracking_link_jd_capture
+from backend.scoring.jd_enrichment import (
+    MIN_REFRESHED_TEXT_CHARS,
+    fetch_jd_from_url,
+    job_description_text,
+    queue_tracking_link_jd_capture,
+)
+from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
     import_warnings_to_json,
@@ -583,12 +589,38 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
         snippet_chars = (
             URL_JOB_SNIPPET_CHARS if job_url else NO_URL_JOB_SNIPPET_CHARS
         )
+
+        # ai: claude-sonnet-5 | 2026-11-25 -- as routes/scan.py does: try the
+        # real posting before falling back to the email digest body, which for
+        # a job-alert digest (LinkedIn, etc.) is often too thin to score well.
+        # Skipped when the existing job already has a real JD, so a rescan
+        # doesn't re-fetch forever once a job has been properly enriched.
+        existing_description = matched_existing.get(JobColumns.JOB_DESCRIPTION) if matched_existing else None
+        existing_jd_text = job_description_text(matched_existing) if matched_existing else ""
+        jd_text = ""
+        if job_url.startswith("https://") and len(existing_jd_text) < MIN_REFRESHED_TEXT_CHARS:
+            jd_text = fetch_jd_from_url(
+                str(parsed.get("source") or ""), job_url, existing_jd_text or email_body
+            )
+
         job_data: dict = {
             "company": parsed.get("company", ""),
             "job_title": parsed.get("job_title", ""),
             "url": job_url,
             "source": parsed.get("source", ""),
-            "raw_jd_snippet": email_body[:snippet_chars],
+            "raw_jd_snippet": (
+                jd_text[:RAW_JD_SNIPPET_MAX_CHARS]
+                if jd_text
+                else (
+                    existing_description[:RAW_JD_SNIPPET_MAX_CHARS]
+                    if existing_description
+                    else email_body[:snippet_chars]
+                )
+            ),
+            # ai: claude-sonnet-5 | 2026-11-25 -- preserve a previously-fetched
+            # description when this rescan didn't re-fetch (already good enough,
+            # or the fetch failed) -- update() would otherwise null it out.
+            "job_description": jd_text or existing_description,
             "fit_score": None,
             "fit_reasoning": "",
             "status": status,
@@ -615,7 +647,7 @@ def rescan_email(email_id: str) -> ResponseReturnValue:
                 result = scorer.score(
                     job_title=parsed.get("job_title", ""),
                     company=parsed.get("company", ""),
-                    email_body=email_body,
+                    email_body=jd_text or existing_description or email_body,
                     resume_text=resume_text,
                     penalty_rules=penalty_rules,
                     fit_feedback=fit_feedback,

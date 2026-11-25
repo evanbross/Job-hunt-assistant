@@ -258,7 +258,9 @@ def queue_tracking_link_jd_capture(
 # ai: claude-opus-5-5 | 2026-11-13
 # Below this the fetch hit a login wall, an error page, or a client-rendered
 # shell; the caller decides the fallback (the route queues a browser capture).
-_MIN_REFRESHED_TEXT_CHARS = 150
+# ai: claude-sonnet-5 | 2026-11-25 -- made public: the email scan/rescan routes
+# use it too now, to decide whether an existing job's JD is worth re-fetching.
+MIN_REFRESHED_TEXT_CHARS = 150
 
 
 class JobNotFoundError(LookupError):
@@ -267,6 +269,31 @@ class JobNotFoundError(LookupError):
 
 class JobHasNoUrlError(ValueError):
     """The job has no stored URL to re-fetch from."""
+
+
+# ai: claude-sonnet-5 | 2026-11-25 -- extracted from refresh_job_description_from_url
+# so the email scan/rescan routes (which only had the email digest body to score
+# against) can get the same real-JD fetch this button already does, instead of
+# a second copy of the fetch-and-threshold logic.
+def fetch_jd_from_url(source: str, url: str, existing_text: str = "") -> str:
+    """Fetch *url*'s JD via CareerSiteScanner. Returns "" on fetch failure, or
+    when the fetched text is too short to use (MIN_REFRESHED_TEXT_CHARS) --
+    a login wall, an error page, or a client-rendered shell the caller should
+    fall back from rather than trust.
+
+    *existing_text* is whatever JD text is already stored for this job (email
+    digest snippet, a prior capture); passing it preserves a workplace-type
+    badge (Hybrid/Remote/On-site) that LinkedIn's fetched JD never carries.
+    """
+    try:
+        fetched = CareerSiteScanner().scan_single_job_url(source, url)
+    # URLError, timeouts and SSL errors are OSErrors; UnsafeUrlError is a ValueError.
+    except (ValueError, OSError, HTTPException) as exc:
+        logger.debug("fetch_jd_from_url: fetch failed for %s: %s", url, exc)
+        return ""
+    # ai: claude-sonnet-5 | 2026-08-21 (moved from routes/jobs.py)
+    new_text = ensure_workplace_type_preserved(fetched["job_text"], existing_text)
+    return new_text if len(new_text) >= MIN_REFRESHED_TEXT_CHARS else ""
 
 
 # ai: claude-opus-5-5 | 2026-11-13 -- extracted from routes/jobs.py's
@@ -292,24 +319,14 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
         inputs = ScoringInputs.load(repos, user_id)  # ai: claude-opus-5-5 | 2026-11-19
 
     t0 = time.monotonic()
-    try:
-        fetched = CareerSiteScanner().scan_single_job_url(str(job.get("source") or ""), url)
-    # URLError, timeouts and SSL errors are OSErrors; UnsafeUrlError is a ValueError.
-    except (ValueError, OSError, HTTPException) as exc:
-        logger.warning("refresh_job_description_from_url: fetch failed for job %d (%s): %s", job_id, url, exc)
-        return None
-    # ai: claude-sonnet-5 | 2026-08-21 (moved from routes/jobs.py)
-    # LinkedIn's fetched JD (guest jobs API) never carries the Hybrid/Remote/
-    # On-site top-card badge -- recover it from whatever text was already
-    # stored (email digest snippet, prior DOM capture) before it's replaced.
-    new_text = ensure_workplace_type_preserved(fetched["job_text"], job_description_text(job))
+    new_text = fetch_jd_from_url(str(job.get("source") or ""), url, job_description_text(job))
     logger.info(
         "refresh_job_description_from_url: job %d fetched %d chars in %.1fs",
         job_id,
         len(new_text),
         time.monotonic() - t0,
     )
-    if len(new_text) < _MIN_REFRESHED_TEXT_CHARS:
+    if not new_text:
         return None
 
     score_result = FitScorer(user_id).score(

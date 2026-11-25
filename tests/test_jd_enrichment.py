@@ -18,7 +18,17 @@ is not a problem worth a warning.
 
 from __future__ import annotations
 
-from backend.scoring.jd_enrichment import is_richer_description, unenriched_skip_reason
+from typing import Any
+
+import pytest
+
+import backend.scoring.jd_enrichment as jd_enrichment
+from backend.scoring.jd_enrichment import (
+    MIN_REFRESHED_TEXT_CHARS,
+    fetch_jd_from_url,
+    is_richer_description,
+    unenriched_skip_reason,
+)
 
 
 def test_short_capture_of_fully_described_job_is_not_a_gap() -> None:
@@ -50,3 +60,41 @@ def test_reported_threshold_actually_triggers_enrichment() -> None:
     assert gap is True
     assert is_richer_description("z" * needed, existing_job)
     assert not is_richer_description("z" * (needed - 1), existing_job)
+
+
+# ai: claude-sonnet-5 | 2026-11-25
+# fetch_jd_from_url: shared by refresh_job_description_from_url (the "Reload
+# from URL" button) and the email scan/rescan routes.
+
+
+class _FakeScanner:
+    def __init__(self, text: str = "", error: Exception | None = None) -> None:
+        self._text = text
+        self._error = error
+
+    def scan_single_job_url(self, source: str, url: str) -> dict[str, Any]:
+        if self._error is not None:
+            raise self._error
+        return {"job_text": self._text}
+
+
+def test_fetch_jd_from_url_returns_text_when_long_enough(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "A real job description. " * 10
+    assert len(text) >= MIN_REFRESHED_TEXT_CHARS
+    monkeypatch.setattr(jd_enrichment, "CareerSiteScanner", lambda: _FakeScanner(text=text))
+
+    assert fetch_jd_from_url("Greenhouse", "https://example.test/jobs/1") == text
+
+
+def test_fetch_jd_from_url_returns_empty_when_too_short(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(jd_enrichment, "CareerSiteScanner", lambda: _FakeScanner(text="too short"))
+
+    assert fetch_jd_from_url("Greenhouse", "https://example.test/jobs/1") == ""
+
+
+def test_fetch_jd_from_url_returns_empty_on_fetch_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        jd_enrichment, "CareerSiteScanner", lambda: _FakeScanner(error=OSError("blocked"))
+    )
+
+    assert fetch_jd_from_url("Greenhouse", "https://example.test/jobs/1") == ""
