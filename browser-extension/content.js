@@ -3540,17 +3540,38 @@
     // Click through additional pages until a click produces no new jobs
     // (mirrors buildGreenhouseSearchPayload's scroll-stall pattern), no
     // Next control is found, or the page cap is hit.
+    //
+    // ai: claude-sonnet-5 | 2026-11-25
+    // Getro-powered boards (e.g. jobs.insightpartners.com) serve one explicit
+    // "Load more" click, then switch to scroll-triggered loading with the
+    // button gone for good -- confirmed live: 20 -> 39 jobs on the click, then
+    // 39 -> 88 of a reported 89 across repeated scrolls with no button ever
+    // reappearing. The click-only loop stopped at 39 and silently looked
+    // complete. Fall back to a Greenhouse-style scroll-stall (3 consecutive
+    // no-growth scrolls) whenever no clickable control is found, instead of
+    // treating "no control" as "no more pages".
+    let scrollStallCount = 0;
     for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
       const nextControl = findNextPageControl();
-      if (!nextControl) break;
-
       const prevCount = jobs.length;
-      const prevLinks = linkSignature(getLinkRoot());
+
+      if (nextControl) {
+        scrollStallCount = 0;
+        const prevLinks = linkSignature(getLinkRoot());
+        sendProgress(`Loading more jobs... (${jobs.length} found)`, undefined);
+        nextControl.click();
+        await waitForLinksToChange(getLinkRoot, prevLinks); // ai: claude-opus-5-5 | 2026-10-29 -- was a fixed sleep(1200)
+        collectJobLinks();
+        if (jobs.length === prevCount) break;
+        continue;
+      }
+
       sendProgress(`Loading more jobs... (${jobs.length} found)`, undefined);
-      nextControl.click();
-      await waitForLinksToChange(getLinkRoot, prevLinks); // ai: claude-opus-5-5 | 2026-10-29 -- was a fixed sleep(1200)
+      window.scrollTo(0, document.body.scrollHeight);
+      await sleep(900);
       collectJobLinks();
-      if (jobs.length === prevCount) break;
+      scrollStallCount = jobs.length === prevCount ? scrollStallCount + 1 : 0;
+      if (scrollStallCount >= 3) break;
     }
 
     // ai: claude-sonnet-4-6 | 2026-07-09
