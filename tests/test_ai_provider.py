@@ -24,7 +24,11 @@ against a real database."""
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
+import httpx
 import pytest
+from anthropic import APIStatusError
 
 import config
 from backend.ai_provider import AIMessage, AIProviderClient, AIProviderError
@@ -107,3 +111,77 @@ def test_a_hosted_server_refuses_a_stored_loopback_ollama_url(monkeypatch: pytes
         AIProviderClient(user_id).complete(messages=[AIMessage(role="user", content="hi")])
 
     assert connected == []
+
+
+def _anthropic_status_error(status_code: int) -> APIStatusError:
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    response = httpx.Response(status_code, request=request)
+    return APIStatusError(f"status {status_code}", response=response, body=None)
+
+
+def _anthropic_client(user_id: int) -> AIProviderClient:
+    with get_repos(user_id) as repos:
+        set_setting("ai_provider", "anthropic", user_id, repos)
+        set_setting("anthropic_api_key", "sk-ant-test-key", user_id, repos)
+        repos["conn"].commit()
+    return AIProviderClient(user_id)
+
+
+def _success_response() -> MagicMock:
+    text_block = MagicMock(type="text", text="ok")
+    return MagicMock(content=[text_block])
+
+
+# ai: claude-sonnet-5 | 2026-11-24 -- regression for the 2026-11-24 scoring_failed
+# incident: a burst of Anthropic 429/529 responses during one email-scan run was
+# raised immediately with no retry, permanently flagging otherwise-good jobs.
+def test_retries_a_transient_anthropic_status_error_and_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("backend.ai_provider.time.sleep", lambda _delay: None)
+    client = _anthropic_client(_new_user("retry-success@example.com"))
+    create = MagicMock(
+        side_effect=[
+            _anthropic_status_error(429),
+            _anthropic_status_error(529),
+            _success_response(),
+        ]
+    )
+    client._anthropic_client.messages.create = create
+
+    result = client.complete(messages=[AIMessage(role="user", content="hi")])
+
+    assert result == "ok"
+    assert create.call_count == 3
+
+
+def test_exhausts_retries_on_a_persistent_rate_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("backend.ai_provider.time.sleep", lambda _delay: None)
+    client = _anthropic_client(_new_user("retry-exhausted@example.com"))
+    create = MagicMock(side_effect=lambda **_k: (_ for _ in ()).throw(_anthropic_status_error(429)))
+    client._anthropic_client.messages.create = create
+
+    with pytest.raises(AIProviderError) as excinfo:
+        client.complete(messages=[AIMessage(role="user", content="hi")])
+
+    assert excinfo.value.status_code == 429
+    assert create.call_count == 3  # the initial attempt plus both retries
+
+
+def test_does_not_retry_a_non_transient_anthropic_status_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleep = MagicMock()
+    monkeypatch.setattr("backend.ai_provider.time.sleep", sleep)
+    client = _anthropic_client(_new_user("retry-no-retry@example.com"))
+    create = MagicMock(side_effect=_anthropic_status_error(400))
+    client._anthropic_client.messages.create = create
+
+    with pytest.raises(AIProviderError) as excinfo:
+        client.complete(messages=[AIMessage(role="user", content="hi")])
+
+    assert excinfo.value.status_code == 400
+    assert create.call_count == 1, "a request problem must fail immediately, not retry"
+    sleep.assert_not_called()
