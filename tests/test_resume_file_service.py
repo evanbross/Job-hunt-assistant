@@ -9,9 +9,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from io import BytesIO
-from pathlib import Path
 from typing import Any
 
 import fitz
@@ -27,7 +26,6 @@ from backend.db import (
     get_connection,
 )
 from backend.db.row_level_security import set_current_user
-from backend.db.schema import _migrate_legacy_resume_file
 from backend.resume.resume_file_service import (
     MAX_RESUME_BYTES,
     InvalidResumeFileError,
@@ -237,103 +235,6 @@ def test_a_file_encrypted_under_another_key_fails_loudly(
         monkeypatch.setattr(crypto, "_fernet", None)
         with pytest.raises(ValueError, match="Could not decrypt"):
             service.load_file(user_id)
-    finally:
-        conn.close()
-
-
-# ─── one-time migration of the legacy shared file ───────────────────────────────
-
-
-def _seed_two_resumes(conn: Any) -> tuple[int, int]:
-    older_user, newer_user = _new_user(conn), _new_user(conn, "newer@example.com")
-    repo = PostgresResumeRepository(conn)
-    now = datetime.now(UTC)
-    set_current_user(conn.cursor(), older_user)
-    repo.insert(older_user, {"filename": "older.pdf", "content": "o", "uploaded_at": (now - timedelta(days=5)).isoformat()})
-    set_current_user(conn.cursor(), newer_user)
-    repo.insert(newer_user, {"filename": "newer.pdf", "content": "n", "uploaded_at": now.isoformat()})
-    conn.commit()
-    return older_user, newer_user
-
-
-def test_legacy_file_is_attached_to_the_newest_resume_and_renamed(
-    pg_dsn: str, tmp_path: Path
-) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        older_user, newer_user = _seed_two_resumes(conn)
-        legacy_pdf = make_pdf("the shared file")
-        (tmp_path / "resume.pdf").write_bytes(legacy_pdf)
-
-        _migrate_legacy_resume_file(conn)
-
-        service = ResumeFileService(PostgresResumeRepository(conn))
-        assert service.load_file(newer_user) == (legacy_pdf, "newer.pdf")
-        assert service.load_file(older_user) is None
-        assert not (tmp_path / "resume.pdf").exists()
-        assert (tmp_path / "resume.pdf.migrated").read_bytes() == legacy_pdf
-
-        _migrate_legacy_resume_file(conn)  # nothing left to do; must not fail
-    finally:
-        conn.close()
-
-
-def test_legacy_migration_does_not_overwrite_an_existing_stored_file(
-    pg_dsn: str, tmp_path: Path
-) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        user_id = _new_user(conn)
-        service = ResumeFileService(PostgresResumeRepository(conn))
-        current = make_pdf("current")
-        service.replace(user_id, "current.pdf", current, "c")
-        conn.commit()
-        (tmp_path / "resume.pdf").write_bytes(make_pdf("stale legacy"))
-
-        _migrate_legacy_resume_file(conn)
-
-        assert service.load_file(user_id) == (current, "current.pdf")
-    finally:
-        conn.close()
-
-
-def test_legacy_file_that_is_not_a_pdf_is_left_alone(pg_dsn: str, tmp_path: Path) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        _seed_two_resumes(conn)
-        (tmp_path / "resume.pdf").write_bytes(b"definitely not a pdf")
-
-        _migrate_legacy_resume_file(conn)
-
-        assert (tmp_path / "resume.pdf").exists()
-        assert not (tmp_path / "resume.pdf.migrated").exists()
-    finally:
-        conn.close()
-
-
-def test_legacy_migration_is_deferred_when_no_encryption_key_is_configured(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        _seed_two_resumes(conn)
-        (tmp_path / "resume.pdf").write_bytes(make_pdf())
-        monkeypatch.delenv("SETTINGS_ENCRYPTION_KEY")
-        monkeypatch.setattr(crypto, "_fernet", None)
-
-        _migrate_legacy_resume_file(conn)
-
-        assert (tmp_path / "resume.pdf").exists()
-    finally:
-        conn.close()
-
-
-def test_legacy_file_with_no_resume_rows_is_left_for_later(pg_dsn: str, tmp_path: Path) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        (tmp_path / "resume.pdf").write_bytes(make_pdf())
-        _migrate_legacy_resume_file(conn)
-        assert (tmp_path / "resume.pdf").exists()
     finally:
         conn.close()
 

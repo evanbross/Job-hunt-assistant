@@ -9,7 +9,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -26,9 +25,7 @@ from backend.db import (
     PostgresUserAccountRepository,
     get_connection,
 )
-from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
-from backend.db.schema import _migrate_legacy_candidate_profiles
 from backend.scoring.fit_scorer import FitScorer, ScorerUserContext
 from backend.utils.utils import (
     CandidateProfileMissingError,
@@ -309,86 +306,3 @@ def test_the_config_route_leaves_out_notify_addresses_when_hosted(
 
     assert not notify_keys & body.keys()
     assert client.put("/api/config", json=body).status_code == 200
-
-
-# ─── one-time migration of the legacy shared file ───────────────────────────────
-
-
-def _admin_and_member(conn: Any) -> tuple[int, int]:
-    admin = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
-    return admin, _new_user(conn, "member@example.com")
-
-
-def _set_path_setting(conn: Any, user_id: int, path: Path) -> None:
-    conn.cursor().execute(
-        "INSERT INTO user_settings (user_id, key, value) VALUES (%s, 'candidate_profile_path', %s)",
-        (user_id, str(path)),
-    )
-
-
-def _profile_of(conn: Any, user_id: int) -> str | None:
-    row = PostgresCandidateProfileRepository(conn).get(user_id)
-    return row["content"] if row else None
-
-
-def test_the_shared_default_file_goes_to_the_first_account_only(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shared = tmp_path / "candidate_profile.md"
-    shared.write_text("  the owner's profile  ", encoding="utf-8")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", shared)
-    conn = get_connection(pg_dsn)
-    try:
-        admin, member = _admin_and_member(conn)
-
-        _migrate_legacy_candidate_profiles(conn)
-
-        assert _profile_of(conn, admin) == "the owner's profile"
-        assert _profile_of(conn, member) is None
-        assert shared.exists()
-    finally:
-        conn.close()
-
-
-def test_an_account_with_its_own_configured_path_gets_that_file(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shared, mine = tmp_path / "candidate_profile.md", tmp_path / "mine.md"
-    shared.write_text("owner profile", encoding="utf-8")
-    mine.write_text("member profile", encoding="utf-8")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", shared)
-    conn = get_connection(pg_dsn)
-    try:
-        admin, member = _admin_and_member(conn)
-        _set_path_setting(conn, member, mine)
-
-        _migrate_legacy_candidate_profiles(conn)
-
-        assert _profile_of(conn, admin) == "owner profile"
-        assert _profile_of(conn, member) == "member profile"
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS n FROM user_settings WHERE key = 'candidate_profile_path'")
-        assert cur.fetchone()["n"] == 0
-    finally:
-        conn.close()
-
-
-def test_migration_never_overwrites_a_saved_profile_and_skips_unreadable_paths(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    shared = tmp_path / "candidate_profile.md"
-    shared.write_text("stale file", encoding="utf-8")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", shared)
-    conn = get_connection(pg_dsn)
-    try:
-        admin, member = _admin_and_member(conn)
-        PostgresCandidateProfileRepository(conn).upsert(admin, "already saved", "2026-01-01")
-        _set_path_setting(conn, member, tmp_path / "does-not-exist.md")
-
-        _migrate_legacy_candidate_profiles(conn)
-        _migrate_legacy_candidate_profiles(conn)
-
-        assert _profile_of(conn, admin) == "already saved"
-        assert _profile_of(conn, member) is None
-    finally:
-        conn.close()

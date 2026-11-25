@@ -132,7 +132,6 @@ QUEUE_DEPTH_ALERT_THRESHOLD: int = int(os.getenv("QUEUE_DEPTH_ALERT_THRESHOLD", 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR: Path = Path(__file__).parent
 CREDENTIALS_DIR: Path = BASE_DIR / "credentials"
-UPLOADS_DIR: Path = BASE_DIR / "uploads"
 FRONTEND_DIST: Path = BASE_DIR / "frontend" / "dist"
 DATA_DIR: Path = BASE_DIR / "data"
 
@@ -193,23 +192,6 @@ READONLY_DB_PASSWORD: str = os.getenv("READONLY_DB_PASSWORD", "")
 DB_POOL_MIN_CONN: int = int(os.getenv("DB_POOL_MIN_CONN", "1"))
 DB_POOL_MAX_CONN: int = int(os.getenv("DB_POOL_MAX_CONN", "20"))
 DB_POOL_ACQUIRE_TIMEOUT_SECONDS: float = float(os.getenv("DB_POOL_ACQUIRE_TIMEOUT_SECONDS", "10"))
-# ai: claude-sonnet-5 | 2026-08-30 — retired as the storage for mutable
-# runtime settings (see load_runtime_config's old docstring in git history);
-# every value that used to live here now lives in system_settings/
-# user_settings via backend/settings_registry.py. This path constant
-# survives only so backend/db/schema.py's one-time
-# _migrate_runtime_config_json can find and read the file left behind by an
-# existing install, to carry its already-configured values into the DB
-# instead of silently resetting them to bootstrap defaults.
-RUNTIME_CONFIG_PATH: Path = DATA_DIR / "runtime_config.json"
-# The candidate profile used to be a file on the server's disk (shared by every
-# account that hadn't pointed at its own). It now lives in the candidate_profiles
-# table, one row per user. These names survive only so backend/db/schema.py can
-# copy an existing install's file into the owning account once.
-LEGACY_CANDIDATE_PROFILE_PATH: Path = Path(
-    os.getenv("CANDIDATE_PROFILE_PATH", str(BASE_DIR / "candidate_profile.md"))
-)
-LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES: tuple[str, ...] = ("client_profile.md",)
 DEFAULT_COVER_LETTER_PROMPT_PATH: Path = Path(
     os.getenv("COVER_LETTER_PROMPT_PATH", str(BASE_DIR / "cover_letter_prompt.md"))
 )
@@ -241,13 +223,6 @@ TRUSTED_PROXIES: str = os.getenv("TRUSTED_PROXIES", "")
 WELLFOUND_SESSION_FILE: Path = CREDENTIALS_DIR / "wellfound_session.json"
 
 # ─── Google OAuth ─────────────────────────────────────────────────────────────
-# Google credentials used to live in these shared files. They are now in the
-# database (the OAuth client config as an admin-managed system setting, each
-# user's token in their own encrypted row); these paths remain only so
-# backend/db/schema.py can move an existing install's files across once.
-LEGACY_GOOGLE_CREDENTIALS_FILE: Path = CREDENTIALS_DIR / "google_credentials.json"
-LEGACY_GOOGLE_TOKEN_FILE: Path = CREDENTIALS_DIR / "token.json"
-
 # Set to False when ready to enable Gmail mark-as-read.
 # While True, OAuth scopes are read-only and all write methods are no-ops.
 READ_ONLY_MODE: bool = False
@@ -533,20 +508,6 @@ Response schema (JSON only):
 # backend.settings_service.get_setting[_bool/_int]. What remains here are
 # pure helpers with no DB awareness, so config.py doesn't need to import
 # backend.settings_service (which itself imports config -- a cycle).
-
-
-# ai: claude-sonnet-5 | 2026-09-01
-def find_legacy_candidate_profile_file() -> Path | None:
-    """The first existing legacy candidate profile file in BASE_DIR (the
-    default name, then the alternates), or None. Used only by the one-time
-    database migration."""
-    for candidate in (
-        LEGACY_CANDIDATE_PROFILE_PATH,
-        *(BASE_DIR / name for name in LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES),
-    ):
-        if candidate.exists() and candidate.is_file():
-            return candidate
-    return None
 
 
 # ai: claude-sonnet-4-6 | 2026-06-10
