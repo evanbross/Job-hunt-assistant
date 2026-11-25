@@ -624,69 +624,6 @@ def test_migration_backfills_legacy_interested_false_to_undecided(pg_dsn: str) -
         conn.close()
 
 
-# ai: claude-opus-5-5 | 2026-11-11 -- was a contact_emails -> contact_outreach
-# rename test. Both legacy outreach tables (contact_emails from before 2026-10-14,
-# with no channel column, and contact_outreach after it) are now moved into
-# interactions as outbound messages and dropped -- keeping every logged row,
-# including replies, rather than leaving a second log beside the new one.
-def test_migration_moves_legacy_outreach_tables_into_interactions(pg_dsn: str) -> None:
-    conn = get_connection(pg_dsn)
-    try:
-        user_id = _new_user(conn)
-        repo = PostgresContactRepository(conn)
-        repo.sync_import(
-            user_id, [_import_row(), _import_row(full_name="Old Olga", profile_url="https://linkedin.com/in/olga")]
-        )
-        ids = {c["full_name"]: c["id"] for c in repo.get_all(user_id)}
-        cur = conn.cursor()
-        cur.execute(
-            "CREATE TABLE contact_outreach (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL,"
-            " contact_id INTEGER NOT NULL, sent_at TEXT NOT NULL, response_received_at TEXT,"
-            " channel TEXT NOT NULL DEFAULT 'email')"
-        )
-        cur.execute(
-            "CREATE TABLE contact_emails (id SERIAL PRIMARY KEY, user_id INTEGER NOT NULL,"
-            " contact_id INTEGER NOT NULL, sent_at TEXT NOT NULL, response_received_at TEXT)"
-        )
-        cur.execute(
-            "INSERT INTO contact_outreach (user_id, contact_id, sent_at, response_received_at, channel)"
-            " VALUES (%s, %s, '2026-10-20T12:00:00+00:00', '2026-10-21T09:00:00+00:00', 'linkedin')",
-            (user_id, ids["Jane Doe"]),
-        )
-        cur.execute(
-            "INSERT INTO contact_emails (user_id, contact_id, sent_at)"
-            " VALUES (%s, %s, '2026-09-01T12:00:00+00:00')",
-            (user_id, ids["Old Olga"]),
-        )
-        conn.commit()
-
-        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
-
-        cur.execute(
-            "SELECT table_name FROM information_schema.tables"
-            " WHERE table_schema = 'public' AND table_name IN ('contact_emails', 'contact_outreach')"
-        )
-        assert cur.fetchall() == []
-        listed = {c["full_name"]: c for c in repo.list_with_outreach(user_id)}
-        assert listed["Jane Doe"]["outreach"] == [
-            {
-                "id": listed["Jane Doe"]["outreach"][0]["id"],
-                "sent_at": "2026-10-20T12:00:00+00:00",
-                "response_received_at": "2026-10-21T09:00:00+00:00",
-                "channel": "linkedin",
-            }
-        ]
-        assert [e["channel"] for e in listed["Old Olga"]["outreach"]] == ["email"]
-        # A second migrate finds nothing left to move. End this connection's read
-        # transaction first: migrate ALTERs every tenant table and would wait on it.
-        conn.commit()
-        migrate_database(pg_dsn, runtime_database_url(pg_dsn))
-        cur.execute("SELECT COUNT(*) AS n FROM interactions WHERE user_id = %s", (user_id,))
-        assert cur.fetchone()["n"] == 2
-    finally:
-        conn.close()
-
-
 # ai: claude-opus-5-5 | 2026-11-11 -- was the contact_outreach channel check
 def test_interaction_channel_rejects_unknown_values(pg_dsn: str) -> None:
     conn = get_connection(pg_dsn)

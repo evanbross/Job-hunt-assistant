@@ -293,211 +293,6 @@ RETIRED_USER_SETTING_KEYS: tuple[str, ...] = (
 )
 
 
-# ai: claude-sonnet-5 | 2026-09-26
-def _migrate_legacy_candidate_profiles(conn: Any) -> None:
-    """Copy each account's candidate profile file into its own database row.
-
-    An account that had pointed candidate_profile_path at a file gets that
-    file. The implicit shared default (candidate_profile.md, or the alternate
-    names, in the project folder) went to whoever had not configured a path,
-    which for a real install is the owner, so it is copied to the first
-    account only -- other accounts start empty rather than inheriting
-    someone else's personal profile. Files are only read, never moved, and the
-    obsolete setting rows are then removed. Safe to re-run: accounts that
-    already have a row are skipped."""
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM user_accounts ORDER BY id")
-    account_ids = [row["id"] for row in cur.fetchall()]
-    shared_default = config.find_legacy_candidate_profile_file()
-
-    for position, user_id in enumerate(account_ids):
-        cur.execute("SELECT 1 FROM candidate_profiles WHERE user_id = %s", (user_id,))
-        if cur.fetchone() is not None:
-            continue
-        candidates: list[Path] = []
-        cur.execute(
-            "SELECT value FROM user_settings WHERE user_id = %s AND key = 'candidate_profile_path'",
-            (user_id,),
-        )
-        configured = cur.fetchone()
-        if configured and configured["value"]:
-            candidates.append(Path(configured["value"]))
-        if position == 0 and shared_default is not None:
-            candidates.append(shared_default)
-        for path in candidates:
-            try:
-                text = path.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if text:
-                cur.execute(
-                    "INSERT INTO candidate_profiles (user_id, content, updated_at)"
-                    " VALUES (%s, %s, %s)",
-                    (user_id, text, datetime.now(UTC).isoformat(timespec="seconds")),
-                )
-                logger.info("Migrated the candidate profile file into account %s.", user_id)
-                break
-
-    cur.execute("DELETE FROM user_settings WHERE key = 'candidate_profile_path'")
-    conn.commit()
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _migrate_legacy_google_files(conn: Any) -> None:
-    """One-time bridge from the old shared credentials/ files into the database.
-
-    google_credentials.json (the OAuth *client* config) becomes the
-    admin-managed system setting. token.json (an authorized user's token)
-    goes to the first account, matching how every other pre-multi-tenant row
-    was backfilled. Each file is renamed, not deleted, once moved, and left
-    in place (with a warning) if the encryption key is missing or the content
-    is unusable, so nothing is lost and startup never fails over it."""
-    cur = conn.cursor()
-
-    creds_file = config.LEGACY_GOOGLE_CREDENTIALS_FILE
-    if creds_file.is_file():
-        text = creds_file.read_text(encoding="utf-8")
-        try:
-            json.loads(text)
-        except ValueError:
-            logger.warning("%s is not valid JSON; leaving it unmigrated.", creds_file.name)
-        else:
-            try:
-                cur.execute(
-                    "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
-                    " ON CONFLICT (key) DO NOTHING",
-                    ("google_oauth_client_config", encrypt_secret(text)),
-                )
-            except SettingsEncryptionKeyMissingError:
-                logger.warning(
-                    "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
-                    "It will be retried at next startup.",
-                    creds_file.name,
-                )
-            else:
-                creds_file.rename(creds_file.with_name(creds_file.name + ".migrated"))
-                conn.commit()
-                logger.info("Migrated Google OAuth client config into system settings.")
-
-    token_file = config.LEGACY_GOOGLE_TOKEN_FILE
-    if token_file.is_file():
-        cur.execute("SELECT id FROM user_accounts ORDER BY id LIMIT 1")
-        owner = cur.fetchone()
-        text = token_file.read_text(encoding="utf-8")
-        try:
-            json.loads(text)
-        except ValueError:
-            logger.warning("%s is not valid JSON; leaving it unmigrated.", token_file.name)
-            return
-        if owner is None:
-            return
-        try:
-            cur.execute(
-                "INSERT INTO google_oauth_tokens (user_id, token_encrypted, updated_at)"
-                " VALUES (%s, %s, %s) ON CONFLICT (user_id) DO NOTHING",
-                (owner["id"], encrypt_secret(text), datetime.now(UTC).isoformat(timespec="seconds")),
-            )
-        except SettingsEncryptionKeyMissingError:
-            logger.warning(
-                "Cannot migrate %s: SETTINGS_ENCRYPTION_KEY is not set. "
-                "It will be retried at next startup.",
-                token_file.name,
-            )
-            return
-        token_file.rename(token_file.with_name(token_file.name + ".migrated"))
-        conn.commit()
-        logger.info("Migrated the Google token into the first account's row.")
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-def _migrate_legacy_resume_file(conn: Any) -> None:
-    """One-time bridge from the old shared uploads/resume.pdf into the database.
-
-    Every upload used to overwrite that one file, so it always belongs to the
-    account whose resume row is newest -- the only account it can safely be
-    attached to. Other accounts' rows stay without a stored file (they simply
-    re-upload). The file is renamed, not deleted, so nothing is lost if this
-    misjudges; it never re-runs once renamed."""
-    legacy = config.UPLOADS_DIR / "resume.pdf"
-    if not legacy.is_file():
-        return
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT id, user_id, file_encrypted FROM resume ORDER BY uploaded_at DESC LIMIT 1"
-    )
-    newest = cur.fetchone()
-    if newest is None:
-        return  # no resume row to attach it to yet; leave the file for a later run
-    data = legacy.read_bytes()
-    looks_like_pdf = data.startswith(b"%PDF-") and len(data) <= 5 * 1024 * 1024
-    if newest["file_encrypted"] is None and looks_like_pdf:
-        try:
-            cur.execute(
-                "UPDATE resume SET file_encrypted = %s, file_size = %s, file_sha256 = %s"
-                " WHERE id = %s",
-                (encrypt_bytes(data), len(data), hashlib.sha256(data).hexdigest(), newest["id"]),
-            )
-        except SettingsEncryptionKeyMissingError:
-            logger.warning(
-                "Cannot migrate uploads/resume.pdf into the database: "
-                "SETTINGS_ENCRYPTION_KEY is not set. It will be retried at next startup."
-            )
-            return
-        logger.info(
-            "Migrated legacy uploads/resume.pdf into the resume row of user %s.",
-            newest["user_id"],
-        )
-    elif newest["file_encrypted"] is None:
-        logger.warning("uploads/resume.pdf is not a usable PDF; leaving it unmigrated.")
-        return
-    legacy.rename(legacy.with_name("resume.pdf.migrated"))
-    conn.commit()
-
-
-# ai: claude-sonnet-5 | 2026-08-30
-def _migrate_runtime_config_json(cur: Any, backfill_user_id: int) -> None:
-    """One-time bridge from the old data/runtime_config.json (a single file
-    shared by every account -- the multi-tenancy gap this migration closes)
-    into system_settings/user_settings, so retiring that file doesn't
-    silently reset an existing install's AI provider, candidate profile
-    path, import listener, etc. back to bootstrap defaults.
-
-    Must run before _seed_settings_from_env below: both use
-    ON CONFLICT DO NOTHING, so whichever inserts a key's row first wins --
-    running first here means a real configured value beats that function's
-    bootstrap default. Safe to call on every startup, including once the
-    JSON file is gone (it's simply skipped).
-    """
-    if not config.RUNTIME_CONFIG_PATH.exists():
-        return
-    try:
-        with open(config.RUNTIME_CONFIG_PATH) as fh:
-            raw_cfg: dict[str, Any] = json.load(fh)
-    except (json.JSONDecodeError, OSError):
-        return
-
-    for key, raw_value in raw_cfg.items():
-        spec = SETTINGS.get(key)
-        if spec is None:
-            continue  # field retired since this file was last written
-        value = (
-            str(raw_value).lower() if isinstance(raw_value, bool) else str(raw_value)
-        )
-        stored = encrypt_secret(value) if spec.is_secret else value
-        if spec.scope == "system":
-            cur.execute(
-                "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
-                " ON CONFLICT (key) DO NOTHING",
-                (key, stored),
-            )
-        else:
-            cur.execute(
-                "INSERT INTO user_settings (user_id, key, value) VALUES (%s, %s, %s)"
-                " ON CONFLICT (user_id, key) DO NOTHING",
-                (backfill_user_id, key, stored),
-            )
-
-
 # ai: claude-sonnet-5 | 2026-08-21
 def _seed_settings_from_env(cur: Any, admin_user_id: int) -> None:
     """One-time bridge from .env-sourced config defaults into the new
@@ -1332,11 +1127,6 @@ def migrate_schema(conn: Any) -> None:
 
     # ai: claude-sonnet-5 | 2026-08-21 — must run after user_settings has its
     # (user_id, key) primary key (just above), since this seeds rows into it.
-    # ai: claude-sonnet-5 | 2026-08-30 — _migrate_runtime_config_json first,
-    # so a real value from the old shared JSON file wins over
-    # _seed_settings_from_env's bootstrap-default fallback (see its own
-    # docstring for why insert order matters here).
-    _migrate_runtime_config_json(cur, backfill_user_id)
     _seed_settings_from_env(cur, backfill_user_id)
     conn.commit()
 
@@ -1443,7 +1233,6 @@ def migrate_schema(conn: Any) -> None:
     cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_size INTEGER")
     cur.execute("ALTER TABLE resume ADD COLUMN IF NOT EXISTS file_sha256 TEXT")
     conn.commit()
-    _migrate_legacy_resume_file(conn)
     # ai: claude-sonnet-5 | 2026-09-26 -- per-user Google OAuth token, encrypted.
     # user_id is the primary key: one connected Google account per user.
     cur.execute(
@@ -1456,7 +1245,6 @@ def migrate_schema(conn: Any) -> None:
         """
     )
     conn.commit()
-    _migrate_legacy_google_files(conn)
     # ai: claude-sonnet-5 | 2026-09-26 -- the candidate profile is per-user data in
     # the database, not a file on the server's disk.
     cur.execute(
@@ -1469,7 +1257,6 @@ def migrate_schema(conn: Any) -> None:
         """
     )
     conn.commit()
-    _migrate_legacy_candidate_profiles(conn)
     # ai: claude-opus-5-5 | 2026-11-07 -- the server-side Greenhouse scrape (with its
     # visible-browser login) and the server-side Jobanni scan are retired: neither had
     # a UI since July, and the browser extension captures both sites from the user's
@@ -1844,7 +1631,6 @@ def migrate_schema(conn: Any) -> None:
     cur.execute("ALTER TABLE application_answers ADD COLUMN IF NOT EXISTS last_used_at TIMESTAMPTZ")
     conn.commit()
     _install_jobs_detail_revision_trigger(conn)  # ai: claude-opus-5-5 | 2026-11-19
-    _migrate_legacy_outreach_to_interactions(conn)
     # ai: claude-opus-5-5 | 2026-11-16 -- one suggested lead per person, not per conversation
     merge_lead_suggestions_by_person(conn)
     # ai: claude-opus-5-5 | 2026-11-18 -- message refs no longer hash the sender's profile slug
@@ -1882,43 +1668,6 @@ def _install_jobs_detail_revision_trigger(conn: Any) -> None:
         " FOR EACH ROW EXECUTE FUNCTION jobs_bump_detail_revision()"
     )
     conn.commit()
-
-
-# ai: claude-opus-5-5 | 2026-11-11
-# Newest name first: an install migrated after 2026-10-14 has contact_outreach,
-# an older one may still have contact_emails (which never had a channel column).
-_LEGACY_OUTREACH_TABLES: tuple[str, ...] = ("contact_outreach", "contact_emails")
-
-
-# ai: claude-opus-5-5 | 2026-11-11
-def _migrate_legacy_outreach_to_interactions(conn: Any) -> None:
-    """Move every logged outreach message into `interactions` (outbound messages,
-    keeping each row's id-independent fields) and drop the old table, so outreach
-    and the new call/message log are one table rather than two logs of the same
-    thing. Runs once per legacy table; a no-op once none remain. Every legacy row
-    already carries user_id: both tables were created after the multi-tenancy
-    retrofit, which adds it in the same migrate pass that creates the table."""
-    cur = conn.cursor()
-    for table in _LEGACY_OUTREACH_TABLES:
-        if not _has_table(cur, table):
-            continue
-        channel = (
-            sql.SQL("channel") if _has_column(cur, table, "channel") else sql.Literal("email")
-        )
-        cur.execute(
-            sql.SQL(
-                "INSERT INTO interactions"
-                " (user_id, contact_id, occurred_at, channel, direction, kind,"
-                "  response_received_at, source, created_at)"
-                " SELECT user_id, contact_id, sent_at, {channel}, 'outbound', 'message',"
-                "  response_received_at, 'manual', sent_at"
-                " FROM {table} ORDER BY id"
-            ).format(channel=channel, table=sql.Identifier(table))
-        )
-        moved = cur.rowcount
-        cur.execute(sql.SQL("DROP TABLE {}").format(sql.Identifier(table)))
-        conn.commit()
-        logger.info("Moved %d outreach rows from %s into interactions.", moved, table)
 
 
 # ai: claude-sonnet-4-6 | 2026-06-09

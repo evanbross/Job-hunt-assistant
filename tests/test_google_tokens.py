@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
@@ -34,7 +33,6 @@ from backend.db import (
 )
 from backend.db.repositories.user_accounts import DEFAULT_ADMIN_EMAIL
 from backend.db.row_level_security import set_current_user
-from backend.db.schema import _migrate_legacy_google_files
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
 from backend.email.gmail_scopes import (
     GMAIL_MODIFY_SCOPE,
@@ -624,87 +622,6 @@ def test_admin_upload_rejects_malformed_client_config(setup_client: Any, body: d
 def test_the_client_config_setting_is_hidden_from_the_generic_settings_api() -> None:
     assert "google_oauth_client_config" not in SYSTEM_SETTING_KEYS
     assert "google_oauth_client_config" not in {f["key"] for f in schema_for_scope("system")}
-
-
-# ─── one-time migration of the legacy shared files ──────────────────────────────
-
-
-def _legacy_files(tmp_path: Path) -> tuple[Path, Path]:
-    creds_file, token_file = tmp_path / "google_credentials.json", tmp_path / "token.json"
-    creds_file.write_text(json.dumps(CLIENT_CONFIG), encoding="utf-8")
-    token_file.write_text(make_credentials("legacy-refresh").to_json(), encoding="utf-8")
-    return creds_file, token_file
-
-
-def test_legacy_files_move_into_the_database_and_are_renamed(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
-    creds_file, token_file = _legacy_files(tmp_path)
-    conn = get_connection(pg_dsn)
-    try:
-        first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
-        _new_user(conn, "later@example.com")
-
-        _migrate_legacy_google_files(conn)
-
-        assert not creds_file.exists() and not token_file.exists()
-        assert (tmp_path / "google_credentials.json.migrated").exists()
-        assert (tmp_path / "token.json.migrated").exists()
-        assert GoogleTokenStore(PostgresGoogleTokenRepository(conn)).load(first_id).refresh_token == "legacy-refresh"
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) AS n FROM google_oauth_tokens")
-        assert cur.fetchone()["n"] == 1
-        cur.execute("SELECT value FROM system_settings WHERE key = 'google_oauth_client_config'")
-        assert json.loads(crypto.decrypt_secret(cur.fetchone()["value"])) == CLIENT_CONFIG
-    finally:
-        conn.close()
-
-
-def test_legacy_migration_never_overwrites_an_existing_token_or_config(
-    pg_dsn: str, tmp_path: Path
-) -> None:
-    creds_file, token_file = _legacy_files(tmp_path)
-    conn = get_connection(pg_dsn)
-    try:
-        first_id = PostgresUserAccountRepository(conn).get_by_email(DEFAULT_ADMIN_EMAIL)["id"]
-        store = GoogleTokenStore(PostgresGoogleTokenRepository(conn))
-        set_current_user(conn.cursor(), first_id)
-        store.save(first_id, make_credentials("already-here"))
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO system_settings (key, value) VALUES (%s, %s)"
-            " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-            ("google_oauth_client_config", crypto.encrypt_secret('{"kept": true}')),
-        )
-
-        _migrate_legacy_google_files(conn)
-
-        assert store.load(first_id).refresh_token == "already-here"
-        cur.execute("SELECT value FROM system_settings WHERE key = 'google_oauth_client_config'")
-        assert json.loads(crypto.decrypt_secret(cur.fetchone()["value"])) == {"kept": True}
-        assert not creds_file.exists() and not token_file.exists()
-    finally:
-        conn.close()
-
-
-def test_legacy_migration_leaves_unusable_or_undecryptable_files_in_place(
-    pg_dsn: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    creds_file, token_file = _legacy_files(tmp_path)
-    creds_file.write_text("{not json", encoding="utf-8")
-    conn = get_connection(pg_dsn)
-    try:
-        _migrate_legacy_google_files(conn)
-        assert creds_file.exists() and not token_file.exists()
-
-        (tmp_path / "token.json.migrated").rename(token_file)
-        monkeypatch.delenv("SETTINGS_ENCRYPTION_KEY")
-        monkeypatch.setattr(crypto, "_fernet", None)
-        _migrate_legacy_google_files(conn)
-        assert token_file.exists()
-    finally:
-        conn.close()
 
 
 # ai: claude-opus-5-5 | 2026-10-24

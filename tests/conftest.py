@@ -307,27 +307,6 @@ def flask_app() -> Flask:
     return app
 
 
-# ai: claude-sonnet-5 | 2026-09-26
-# ai: claude-opus-5-5 | 2026-11-03 — body extracted so the session-scoped migrate_database() below gets the same isolation
-def _point_legacy_files_at(directory: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """migrate_database() runs one-time migrations that move the old shared files
-    (uploads/resume.pdf, the Google credentials and token files, the
-    candidate profile) into the database, renaming or reading them; without this, running the suite against a
-    developer checkout would consume their real files."""
-    monkeypatch.setattr(config, "UPLOADS_DIR", directory)
-    monkeypatch.setattr(config, "LEGACY_GOOGLE_CREDENTIALS_FILE", directory / "google_credentials.json")
-    monkeypatch.setattr(config, "LEGACY_GOOGLE_TOKEN_FILE", directory / "token.json")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_PATH", directory / "candidate_profile.md")
-    monkeypatch.setattr(config, "LEGACY_CANDIDATE_PROFILE_ALT_FILENAMES", ())
-
-
-# ai: claude-sonnet-5 | 2026-09-26
-@pytest.fixture(autouse=True)
-def isolated_legacy_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Point every legacy shared-file location at a throwaway directory."""
-    _point_legacy_files_at(tmp_path, monkeypatch)
-
-
 # ai: claude-sonnet-5 | 2026-09-27
 # ai: claude-opus-5-5 | 2026-11-03 — extracted from pg_dsn; the session fixture needs it too
 def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -347,12 +326,11 @@ def _point_postgres_settings_at_test_db(monkeypatch: pytest.MonkeyPatch) -> None
 
 # ai: claude-opus-5-5 | 2026-11-03
 @pytest.fixture(scope="session")
-def seeded_database_snapshot(tmp_path_factory: pytest.TempPathFactory) -> SeededDatabaseSnapshot:
+def seeded_database_snapshot() -> SeededDatabaseSnapshot:
     """migrate_database() once for the whole run, then the snapshot every pg_dsn reset
     restores (see tests/db_snapshot.py for why this replaced a per-test migrate_database())."""
     _assert_safe_test_database()
     with pytest.MonkeyPatch.context() as session_patch:
-        _point_legacy_files_at(tmp_path_factory.mktemp("session-legacy-files"), session_patch)
         _point_postgres_settings_at_test_db(session_patch)
         # Schema first (the database may predate this run's migrations), then empty
         # it -- it still holds whatever the previous run's last test left -- and seed
