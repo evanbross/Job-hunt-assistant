@@ -27,6 +27,7 @@ import pytest
 from flask import Flask
 
 import config
+import backend.scoring.jd_enrichment as jd_enrichment
 from backend.db import open_repositories
 from backend.db.row_level_security import set_current_user
 from routes import emails
@@ -91,6 +92,19 @@ class _FetchesJd:
         return {"job_text": self.text}
 
 
+# ai: claude-sonnet-5 | 2026-11-25 -- the per-email rescan now tries a direct
+# fetch before falling back to the tracking link (routes/emails.py). Wellfound
+# genuinely can't be fetched this way in production either (Cloudflare-
+# protected, see backend/scanning/sources/wellfound_scraper.py) -- this fake
+# reproduces that real failure rather than hitting the network in a test.
+class _FailsToFetch:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        pass
+
+    def scan_single_job_url(self, company: str, url: str) -> dict[str, str]:
+        raise OSError("blocked")
+
+
 def _parsed(company: str = "Netflix", title: str = "Software Engineer 5 - TV (Ads)") -> dict[str, object]:
     return {
         "company": company,
@@ -118,6 +132,7 @@ def user_id(pg_dsn: str, monkeypatch: pytest.MonkeyPatch) -> int:
         monkeypatch.setattr(module, "GmailClient", _Gmail)
         monkeypatch.setattr(module, "EmailParser", _Parser)
         monkeypatch.setattr(module, "FitScorer", _NoScore)
+    monkeypatch.setattr(jd_enrichment, "CareerSiteScanner", _FailsToFetch)
     return account_id
 
 
@@ -216,6 +231,54 @@ def test_email_rescan_leaves_the_emails_own_skipped_row_alone_instead_of_re_addi
     jobs, queue = _jobs_and_queue(pg_dsn, user_id)
     assert [(job["id"], job["status"], job["url"]) for job in jobs] == [(skipped_id, "skipped", "")]
     assert queue == []
+
+
+# ai: claude-sonnet-5 | 2026-11-25
+# Regression for job 8542 (2026-11-24): a LinkedIn job-alert digest's own body
+# is real prose, not a bare tracking link, so job_validator never flagged it
+# for browser capture -- the rescan scored whatever thin blurb was in the
+# email instead of the real posting. Confirmed live: fit_score moved from
+# unscored to 20% off a thin email snippet; the real JD (6391 chars) was only
+# fetched once the user manually clicked "Reload from URL". Unlike the tests
+# above, this job's JD is real-looking prose (not a tracking link), so no
+# capture should be queued -- the direct fetch should get it instead.
+_DIGEST_POSTING_URL = "https://www.linkedin.com/comm/jobs/view/4487152893/?trackingId=zzz"
+
+
+def test_email_rescan_fetches_the_real_jd_instead_of_scoring_the_thin_email_snippet(
+    user_id: int, pg_dsn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _insert_job(
+        pg_dsn, user_id, dedup_key="msg-2", url=_DIGEST_POSTING_URL, company="SamCart",
+        job_title="Senior Software Engineer", raw_jd_snippet="Thin email blurb about the role.",
+        import_warnings=None,
+    )
+    monkeypatch.setattr(
+        _Parser,
+        "jobs",
+        [
+            {
+                "company": "SamCart",
+                "job_title": "Senior Software Engineer",
+                "url": _DIGEST_POSTING_URL,
+                "source": "LinkedIn",
+                "certainty_level": "high",
+                "certainty_reason": "clear sender",
+                "certainty_score": 90,
+            }
+        ],
+    )
+    monkeypatch.setattr(jd_enrichment, "CareerSiteScanner", _FetchesJd)
+    monkeypatch.setattr(emails, "FitScorer", _Score)
+
+    result = _rescan_email(user_id, "msg-2")
+
+    jobs, queue = _jobs_and_queue(pg_dsn, user_id)
+    [job] = jobs
+    assert job["job_description"] == _FetchesJd.text
+    assert job["fit_score"] == 80
+    assert queue == []
+    assert "1 updated" in result["message"]
 
 
 # ─── broken-import rescan (routes/jobs.py) ───────────────────────────────────
