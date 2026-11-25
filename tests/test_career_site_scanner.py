@@ -686,6 +686,43 @@ def test_scan_generic_wraps_offset_past_end_of_shrunk_candidate_list() -> None:
     assert next_offset == _MAX_JOBS_PER_SITE
 
 
+# ai: claude-sonnet-5 | 2026-11-25
+def test_scan_generic_uses_job_posting_json_ld_company_on_vc_portfolio_board() -> None:
+    """2026-11-25 bug (job 8547): jobs.scalevp.com and jobs.insightpartners.com
+    are VC-portfolio boards -- every link found on the one listing page
+    (site_name "Scale Venture Partners") actually belongs to a different
+    portfolio company. _scan_generic's per-link loop used to have no company
+    extraction at all, so every job silently inherited the VC firm's own name
+    instead of the real employer. scan_single_job_url already prefers a
+    JobPosting JSON-LD's hiringOrganization.name for exactly this reason (see
+    test_scan_single_job_url_prefers_job_posting_json_ld_over_page_chrome);
+    _scan_generic must do the same."""
+    posting = {
+        "@context": "https://schema.org",
+        "@type": "JobPosting",
+        "title": "Lead Software Engineer, Backend",
+        "description": "<p>" + "Build the engineering operations platform. " * 20 + "</p>",
+        "hiringOrganization": {"@type": "Organization", "name": "Cortex"},
+        "datePosted": "2026-02-25T12:59:53.392Z",
+    }
+    listing_html = '<a href="/companies/cortex-2/jobs/68624276-lead-engineer">Lead Engineer</a>'
+    detail_html = _job_posting_page(posting, "<p>chrome</p>")
+
+    def fetch_html(url: str) -> str:
+        return listing_html if url.endswith("/jobs") else detail_html
+
+    scanner = CareerSiteScanner()
+    with patch("backend.scanning.career_site_scanner._fetch_html", side_effect=fetch_html):
+        jobs, platform, _next_offset = scanner._scan_generic(
+            "Scale Venture Partners", "https://jobs.scalevp.com/jobs"
+        )
+
+    assert platform == "generic"
+    assert len(jobs) == 1
+    assert jobs[0]["company"] == "Cortex"
+    assert jobs[0]["job_title"] == "Lead Software Engineer, Backend"
+
+
 # ai: claude-sonnet-4-6 | 2026-06-14
 def test_scan_single_job_url_uses_workday_api_for_single_job_url() -> None:
     scanner = CareerSiteScanner()
