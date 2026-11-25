@@ -54,6 +54,17 @@ logger = logging.getLogger(__name__)
 
 _TRANSIENT_RETRY_DELAYS: tuple[float, ...] = (2.0, 5.0)
 
+# ai: claude-sonnet-5 | 2026-11-24
+# HTTP statuses worth retrying with the same backoff as a connection error: 429
+# (rate_limit_error) and the 5xx range (api_error/overloaded_error/internal
+# server errors), all of which are transient by nature. Everything else (400
+# invalid_request_error, 401/403 auth/permission, 404, 413/422) is a request
+# problem that retrying can't fix. Confirmed live 2026-11-24: during an email
+# scan scoring many jobs back-to-back, several Anthropic calls returned 429/529
+# and were previously raised immediately with zero retry, landing those jobs in
+# Triage with a permanent scoring_failed warning instead of a transient hiccup.
+_RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 529})
+
 
 @dataclass(frozen=True)
 class AIMessage:
@@ -219,7 +230,7 @@ class AIProviderClient:
                 delay = _TRANSIENT_RETRY_DELAYS[attempt - 1]
                 msg = f"Connection trouble — retrying in {delay:.0f}s…"
                 logger.warning(
-                    "Transient Anthropic connection error (retry in %.0fs): %s",
+                    "Transient Anthropic error (retry in %.0fs): %s",
                     delay,
                     last_exc,
                 )
@@ -241,11 +252,17 @@ class AIProviderClient:
                     )
                 return "".join(text_blocks).strip()
             except APIStatusError as exc:
-                raise AIProviderError(
-                    _anthropic_error_message(exc), status_code=exc.status_code
-                ) from exc
+                if exc.status_code not in _RETRYABLE_STATUS_CODES:
+                    raise AIProviderError(
+                        _anthropic_error_message(exc), status_code=exc.status_code
+                    ) from exc
+                last_exc = exc
             except (APIConnectionError, ssl.SSLError, OSError) as exc:
                 last_exc = exc
+        if isinstance(last_exc, APIStatusError):
+            raise AIProviderError(
+                _anthropic_error_message(last_exc), status_code=last_exc.status_code
+            ) from last_exc
         raise AIProviderError(
             f"SSL/network error contacting Anthropic: {last_exc}"
         ) from last_exc
@@ -357,11 +374,17 @@ class AIProviderClient:
                 raise AIProviderError(f"AI provider URL rejected: {exc}") from exc
             except urllib.error.HTTPError as exc:
                 body = exc.read().decode("utf-8", errors="replace")
-                raise AIProviderError(
+                if exc.code not in _RETRYABLE_STATUS_CODES:
+                    raise AIProviderError(
+                        _http_error_message(body, exc.reason), status_code=exc.code
+                    ) from exc
+                last_exc = AIProviderError(
                     _http_error_message(body, exc.reason), status_code=exc.code
-                ) from exc
+                )
             except (urllib.error.URLError, TimeoutError) as exc:
                 last_exc = exc
+        if isinstance(last_exc, AIProviderError):
+            raise last_exc
         raise AIProviderError(
             f"AI provider connection failed: {last_exc}"
         ) from last_exc

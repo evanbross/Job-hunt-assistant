@@ -1554,6 +1554,45 @@ def migrate_schema(conn: Any) -> None:
         )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-11-24 -- moved ahead of the jobs.url unique-index
+    # block below (was ~190 lines later in this function, right before the "origin"
+    # column): that block's merge_same_posting_job_rows() reads jobs.company_normalized
+    # via _repair_stale_company_normalized(), so on a database that has never run this
+    # migration before, the column must already exist by then. Every already-migrated
+    # database (this ADD COLUMN IF NOT EXISTS already ran) is unaffected either way --
+    # confirmed live 2026-11-24: migrating a brand-new database crashed with
+    # "UndefinedColumn: company_normalized" at the merge step below.
+    # ai: claude-sonnet-5 | 2026-10-01
+    # jobs.company_normalized mirrors contacts.company_normalized's pattern
+    # (normalize_company_name(), kept in sync by PostgresJobRepository's
+    # insert()/update() going forward). get_by_company()/get_company_counts()
+    # used to SELECT * every job for the user and compare in Python -- at a
+    # few thousand jobs that became a multi-minute Company History dialog load
+    # (confirmed: 4399 rows / 500s on a real account). The one-time backfill
+    # below calls normalize_company_name() directly rather than carrying a
+    # second (SQL regex) implementation of the same corporate-suffix-stripping
+    # logic -- a prior version of this migration did exactly that, which is
+    # the "more than one of these is asking for trouble" mistake this comment
+    # is here to not repeat.
+    cur.execute(
+        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS company_normalized TEXT NOT NULL DEFAULT ''"
+    )
+    cur.execute(
+        "SELECT id, company FROM jobs"
+        " WHERE company_normalized = '' AND company IS NOT NULL AND TRIM(company) != ''"
+    )
+    stale_rows = cur.fetchall()
+    if stale_rows:
+        cur.executemany(
+            "UPDATE jobs SET company_normalized = %s WHERE id = %s",
+            [(normalize_company_name(row["company"]), row["id"]) for row in stale_rows],
+        )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_jobs_user_company_normalized"
+        " ON jobs (user_id, company_normalized)"
+    )
+    conn.commit()
+
     # jobs.url partial unique index: same per-user rework as dedup_key above,
     # via drop-and-recreate under a new name (JOBS_URL_UNIQUE_INDEX, see
     # backend/db/repositories/jobs.py) rather than an ALTER, since Postgres
@@ -1725,37 +1764,6 @@ def migrate_schema(conn: Any) -> None:
         (migrated_at, migrated_at),
     )
     cur.execute("DELETE FROM user_settings WHERE key = 'linkedin_outreach_template'")
-    conn.commit()
-
-    # ai: claude-sonnet-5 | 2026-10-01
-    # jobs.company_normalized mirrors contacts.company_normalized's pattern
-    # (normalize_company_name(), kept in sync by PostgresJobRepository's
-    # insert()/update() going forward). get_by_company()/get_company_counts()
-    # used to SELECT * every job for the user and compare in Python -- at a
-    # few thousand jobs that became a multi-minute Company History dialog load
-    # (confirmed: 4399 rows / 500s on a real account). The one-time backfill
-    # below calls normalize_company_name() directly rather than carrying a
-    # second (SQL regex) implementation of the same corporate-suffix-stripping
-    # logic -- a prior version of this migration did exactly that, which is
-    # the "more than one of these is asking for trouble" mistake this comment
-    # is here to not repeat.
-    cur.execute(
-        "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS company_normalized TEXT NOT NULL DEFAULT ''"
-    )
-    cur.execute(
-        "SELECT id, company FROM jobs"
-        " WHERE company_normalized = '' AND company IS NOT NULL AND TRIM(company) != ''"
-    )
-    stale_rows = cur.fetchall()
-    if stale_rows:
-        cur.executemany(
-            "UPDATE jobs SET company_normalized = %s WHERE id = %s",
-            [(normalize_company_name(row["company"]), row["id"]) for row in stale_rows],
-        )
-    cur.execute(
-        "CREATE INDEX IF NOT EXISTS idx_jobs_user_company_normalized"
-        " ON jobs (user_id, company_normalized)"
-    )
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-10-09
