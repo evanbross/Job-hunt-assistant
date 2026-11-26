@@ -110,6 +110,28 @@ sponsorship") is "none". So is a security-clearance requirement that doesn't
 also state citizenship. Do not change "score" for this; the caller handles it.
 """
 
+# ai: claude-sonnet-5 | 2026-11-26
+# Appended in code for the same reason as the citizenship section above: the
+# template is copied to a user-editable file on first run, so a bullet added to
+# the default template would never reach an existing install's prompt. Unlike
+# citizenship, this needs no separate JSON field or per-user bonus math -- the
+# model folds it straight into "score", the same way the template's own
+# interview-process-signal bullet already does.
+_AI_ASSISTED_WORK_SECTION = """
+
+AI-ASSISTED DEVELOPMENT SIGNAL (folded into "score", not a separate field):
+If the posting explicitly welcomes or encourages working with AI coding tools as
+part of how the role is done (e.g. "AI-assisted development encouraged", "we pair
+with Copilot/Cursor/Claude Code", "comfortable working AI-assisted", "AI-first
+engineering culture"), treat this as a positive signal and apply a small-to-moderate
+bonus (a few points) on top of the skills-based score -- the same kind of bonus as
+the interview-process signal above. Do NOT penalize postings that are simply silent
+on this; it is a bonus for an explicit statement, not a default assumption. A
+posting that merely lists an AI tool as a tech-stack skill (e.g. "experience with
+GitHub Copilot") without framing it as a way of working is a skills-match signal,
+not this bonus -- do not double-count it.
+"""
+
 
 # ai: claude-opus-5-5 | 2026-11-20
 @dataclass(frozen=True)
@@ -347,6 +369,7 @@ class FitScorer:
             .replace("{{PENALTY_LIST}}", penalty_list)
             .replace("{{FEEDBACK_SECTION}}", feedback_section)
             + _CITIZENSHIP_REQUIREMENT_SECTION  # ai: claude-opus-5-5 | 2026-11-20
+            + _AI_ASSISTED_WORK_SECTION  # ai: claude-sonnet-5 | 2026-11-26
         )
 
     @staticmethod
