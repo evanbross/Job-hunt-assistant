@@ -67,6 +67,15 @@ The app writes to the **first tab** of the spreadsheet, named exactly **"Job Hun
 
 ### Backend
 
+`uv sync` below resolves `zt-common` (shared Caddy-registration/SMTP code) as an
+editable path dependency at `../infra/zt-common` — i.e. a sibling checkout of
+[shared-infra](https://gitlab.com/EvanRoss/shared-infra), not a package `uv` can fetch on
+its own. Clone it next to this repo first:
+
+```bash
+git clone https://gitlab.com/EvanRoss/shared-infra.git ../infra
+```
+
 ```bash
 cd job-hunt-assistant
 
