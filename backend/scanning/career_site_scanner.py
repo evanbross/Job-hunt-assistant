@@ -2078,6 +2078,22 @@ class CareerSiteScanner:
                 logger.debug("Skipping unreachable job URL %s: %s", job_url, exc)
                 continue
 
+            # ai: claude-sonnet-5 | 2026-11-25
+            # A JobPosting JSON-LD block carries the real employer name
+            # (hiringOrganization.name) -- essential on VC-portfolio boards
+            # like jobs.scalevp.com and jobs.insightpartners.com, where every
+            # listing reachable from this one site_name belongs to a
+            # different portfolio company (e.g. job 8547: site_name "Scale
+            # Venture Partners", actual employer "Cortex"). Without this, the
+            # generic per-link loop below has no company field at all and
+            # every job from such a board silently inherited the VC firm's
+            # own name downstream. scan_single_job_url already prefers this
+            # same JSON-LD helper over the generic parser for this reason.
+            ld_job = self._job_from_job_posting_ld(site_name, job_url, job_html)
+            if ld_job is not None:
+                results.append(ld_job)
+                continue
+
             details = _TextParser()
             details.feed(job_html)
 
