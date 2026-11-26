@@ -17,8 +17,6 @@ import type { ContactEmail, ContactEmailInput, EmailType } from "../../types/con
 import { EMAIL_TYPE_LABELS } from "../../types/contacts.ts";
 
 const EMAIL_TYPE_OPTIONS: EmailType[] = ["home", "work", "linkedin", "other", "custom"];
-// Mirrors backend/contacts/contact_emails.py's MAX_EMAILS_PER_REQUEST.
-const MAX_EMAILS = 10;
 
 interface Draft {
   address: string;
@@ -178,11 +176,9 @@ export default function ContactEmailsEditor({ emails, onAdd, onReplace, onDelete
           </button>
         </div>
       ) : (
-        emails.length < MAX_EMAILS && (
-          <button type="button" className="link-button" onClick={() => setAdding(true)}>
-            + Add email
-          </button>
-        )
+        <button type="button" className="link-button" onClick={() => setAdding(true)}>
+          + Add email
+        </button>
       )}
     </div>
   );
