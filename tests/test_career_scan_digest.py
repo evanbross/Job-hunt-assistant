@@ -157,14 +157,19 @@ class FakeConnection:
 
 
 # ai: claude-sonnet-5 | 2026-10-05
+# ai: claude-sonnet-5 | 2026-11-26 -- added mark_delivered() to match the real
+# repository's claim()/mark_delivered() split (2026-11-26 full review, Medium
+# finding: claim() alone used to mark a date "sent" before send_email() ran).
 class FakeDigestLogRepository:
-    """Models career_scan_digest_log.claim()'s real behavior: the first
-    claim for a given (user_id, report_date) wins, every later one loses --
-    exactly what the UNIQUE(user_id, report_date) constraint enforces for
-    real in Postgres."""
+    """Models career_scan_digest_log's real claim()/mark_delivered() split:
+    the first claim for a given (user_id, report_date) wins, every later one
+    loses -- these tests don't exercise the real repository's bounded retry
+    after a failed send, only that a date already claimed or delivered is
+    never claimed again."""
 
     def __init__(self) -> None:
         self.claimed: set[tuple[int, str]] = set()
+        self.delivered: set[tuple[int, str]] = set()
 
     def claim(self, user_id: int, report_date: str) -> bool:
         key = (user_id, report_date)
@@ -172,6 +177,9 @@ class FakeDigestLogRepository:
             return False
         self.claimed.add(key)
         return True
+
+    def mark_delivered(self, user_id: int, report_date: str) -> None:
+        self.delivered.add((user_id, report_date))
 
 
 # ai: claude-sonnet-5 | 2026-10-05

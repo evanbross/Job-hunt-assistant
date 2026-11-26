@@ -438,6 +438,98 @@ def test_career_scan_digest_log_claim_is_atomic_and_single_winner(pg_dsn: str) -
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-11-26
+# 2026-11-26 full review, Medium finding: claim() used to write sent_at before
+# send_email() ran, so a crash or SMTP failure between the commit and the send
+# left the day permanently marked "sent" with nothing delivered. These cover
+# the fix: claim()/mark_delivered() are now separate, a stale undelivered
+# claim is retryable, retries are bounded, and delivery is final.
+def test_career_scan_digest_log_claim_refuses_a_retry_within_the_cooldown(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "digest-retry-cooldown@example.com", "seed-digest-retry-cooldown@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+        repos["conn"].commit()
+
+        log = repos["career_scan_digest_log"]
+        assert log.claim(user_id, "2026-11-26") is True
+        # The first attempt hasn't had a chance to fail or succeed yet -- a
+        # second call moments later must not be treated as a retry.
+        assert log.claim(user_id, "2026-11-26") is False
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+
+
+def test_career_scan_digest_log_allows_a_retry_once_the_prior_attempt_is_stale(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "digest-retry-stale@example.com", "seed-digest-retry-stale@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+        repos["conn"].commit()
+
+        log = repos["career_scan_digest_log"]
+        assert log.claim(user_id, "2026-11-26") is True  # attempt 1; send_email then raises
+        repos["conn"].commit()
+
+        # Simulate enough time passing (well past RETRY_COOLDOWN_SECONDS)
+        # without a mark_delivered() ever happening -- the attempt is dead.
+        stale = (datetime.now(UTC) - timedelta(seconds=log.RETRY_COOLDOWN_SECONDS + 1)).isoformat(timespec="seconds")
+        repos["conn"].cursor().execute(
+            "UPDATE career_scan_digest_log SET sent_at = %s WHERE user_id = %s AND report_date = %s",
+            (stale, user_id, "2026-11-26"),
+        )
+        repos["conn"].commit()
+
+        assert log.claim(user_id, "2026-11-26") is True  # attempt 2 allowed
+        log.mark_delivered(user_id, "2026-11-26")
+        repos["conn"].commit()
+
+        # Delivered -- no further attempt is ever allowed, however stale.
+        repos["conn"].cursor().execute(
+            "UPDATE career_scan_digest_log SET sent_at = %s WHERE user_id = %s AND report_date = %s",
+            (stale, user_id, "2026-11-26"),
+        )
+        repos["conn"].commit()
+        assert log.claim(user_id, "2026-11-26") is False
+    finally:
+        repos["conn"].close()
+
+
+def test_career_scan_digest_log_gives_up_after_max_delivery_attempts(pg_dsn: str) -> None:
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "digest-exhausted@example.com", "seed-digest-exhausted@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+        repos["conn"].commit()
+
+        log = repos["career_scan_digest_log"]
+        stale = (datetime.now(UTC) - timedelta(seconds=log.RETRY_COOLDOWN_SECONDS + 1)).isoformat(timespec="seconds")
+        for attempt in range(1, log.MAX_DELIVERY_ATTEMPTS + 1):
+            assert log.claim(user_id, "2026-11-26") is True, f"attempt {attempt} should be allowed"
+            repos["conn"].commit()
+            repos["conn"].cursor().execute(
+                "UPDATE career_scan_digest_log SET sent_at = %s WHERE user_id = %s AND report_date = %s",
+                (stale, user_id, "2026-11-26"),
+            )
+            repos["conn"].commit()
+
+        # Every attempt failed (none ever called mark_delivered) and the
+        # budget is spent -- no further retry, even though it's stale again.
+        assert log.claim(user_id, "2026-11-26") is False
+    finally:
+        repos["conn"].close()
+
+
 def test_scanned_email_history_includes_all_child_jobs(pg_dsn: str) -> None:
     repos = open_repositories(pg_dsn)
     try:

@@ -14,7 +14,7 @@ follow-up email -- end to end against the real schema."""
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -24,6 +24,7 @@ import config
 from backend.celery_app import LEAD_FOLLOW_UP_DIGEST_TICK, celery_app
 from backend.db import (
     PostgresApplicationStageRepository,
+    PostgresLeadFollowUpDigestLogRepository,
     PostgresUserAccountRepository,
     PostgresUserSettingsRepository,
     get_connection,
@@ -90,6 +91,24 @@ def _close(pg_dsn: str, user_id: int, job_id: int) -> None:
         set_current_user(conn.cursor(), user_id)
         PostgresApplicationStageRepository(conn).insert(
             user_id, {"job_id": job_id, "status": "withdrew", "date": "2026-11-17"}
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _backdate_digest_claim(pg_dsn: str, user_id: int, digest_date: str, seconds_ago: int) -> None:
+    """Simulate enough time passing since the last claim attempt that
+    PostgresLeadFollowUpDigestLogRepository.RETRY_COOLDOWN_SECONDS has
+    elapsed, without ever calling mark_delivered() -- i.e. the prior attempt
+    is stale/dead, not merely in flight."""
+    conn = get_connection(pg_dsn)
+    try:
+        stale = (datetime.now(UTC) - timedelta(seconds=seconds_ago)).isoformat(timespec="seconds")
+        set_current_user(conn.cursor(), user_id)
+        conn.cursor().execute(
+            "UPDATE lead_follow_up_digest_log SET sent_at = %s WHERE user_id = %s AND digest_date = %s",
+            (stale, user_id, digest_date),
         )
         conn.commit()
     finally:
@@ -242,6 +261,49 @@ def test_no_email_to_a_localhost_placeholder(
 
     assert send_lead_follow_up_digest(user_id, _NOW) is False
     assert sent == []
+
+
+# ai: claude-sonnet-5 | 2026-11-26
+# 2026-11-26 full review, Medium finding: claim() wrote sent_at before
+# send_email() ran, so an SMTP failure between the commit and the send left
+# the day permanently marked "sent" with nothing delivered. This exercises
+# the real failure-then-retry path end to end against the real schema.
+def test_a_failed_send_does_not_claim_the_day_and_is_retried_once_stale(
+    client_and_user: tuple[Any, int], pg_dsn: str, sent: list[dict[str, str]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, user_id = client_and_user
+    _lead(client, "Due Co", follow_up="2026-11-18")
+    _set(pg_dsn, user_id, "lead_follow_up_digest_enabled", "true")
+
+    def raise_smtp_error(**kwargs: str) -> None:
+        raise ConnectionRefusedError("SMTP relay unreachable")
+
+    monkeypatch.setattr(follow_up_digest, "send_email", raise_smtp_error)
+    with pytest.raises(ConnectionRefusedError):
+        send_lead_follow_up_digest(user_id, _NOW)
+    assert sent == []
+
+    # Moments later (still within the cooldown): the failed attempt might
+    # still be in flight, so this must not be treated as a fresh retry.
+    assert send_lead_follow_up_digest(user_id, _NOW) is False
+    assert sent == []
+
+    # Once the failed attempt is stale, the next tick must retry -- and this
+    # time delivery succeeds, which must finally claim the day for good.
+    _backdate_digest_claim(
+        pg_dsn, user_id, "2026-11-18", PostgresLeadFollowUpDigestLogRepository.RETRY_COOLDOWN_SECONDS + 1
+    )
+    monkeypatch.setattr(follow_up_digest, "send_email", lambda **kwargs: sent.append(kwargs))
+    assert send_lead_follow_up_digest(user_id, _NOW) is True
+    [email] = sent
+    assert email["subject"] == "1 lead to follow up — 2026-11-18"
+
+    # And now that it delivered, no amount of staleness reopens that day.
+    _backdate_digest_claim(
+        pg_dsn, user_id, "2026-11-18", PostgresLeadFollowUpDigestLogRepository.RETRY_COOLDOWN_SECONDS + 1
+    )
+    assert send_lead_follow_up_digest(user_id, _NOW) is False
+    assert len(sent) == 1
 
 
 def test_digest_text_separates_due_from_gone_quiet() -> None:

@@ -128,7 +128,11 @@ def send_lead_follow_up_digest(user_id: int, now: datetime) -> bool:
         if account_now.time() < send_time(get_setting("lead_follow_up_digest_time", user_id, repos)):
             return False
         rules = attention_rules(user_id, repos, now)
-        if not repos["lead_follow_up_digest_log"].claim(user_id, rules.today.isoformat()):
+        digest_date = rules.today.isoformat()
+        # ai: claude-sonnet-5 | 2026-11-26 — claiming an attempt is not the same as
+        # delivering: mark_delivered() below is the only thing that may ever mark
+        # this day done. See PostgresLeadFollowUpDigestLogRepository.claim().
+        if not repos["lead_follow_up_digest_log"].claim(user_id, digest_date):
             return False
         leads = LeadService(repos).leads_needing_attention(user_id, rules)
         recipient = notification_recipient(
@@ -139,14 +143,27 @@ def send_lead_follow_up_digest(user_id: int, now: datetime) -> bool:
         repos["conn"].commit()
 
     if not leads:
+        _mark_delivered(user_id, digest_date)
         return False
     if not recipient or recipient.endswith("@localhost"):
         logger.warning("Lead follow-up email not sent for user %s: no deliverable email address", user_id)
+        _mark_delivered(user_id, digest_date)
         return False
     subject, body = format_follow_up_digest(leads, rules.today, rules.stale_after_days, stage_labels, app_url)
-    send_email(to=recipient, subject=subject, body_text=body)
+    send_email(to=recipient, subject=subject, body_text=body)  # may raise -- leave undelivered, let the next tick retry
+    _mark_delivered(user_id, digest_date)
     logger.info("Sent lead follow-up email for user %s (%d leads)", user_id, len(leads))
     return True
+
+
+def _mark_delivered(user_id: int, digest_date: str) -> None:
+    """Record that *digest_date* is done -- either sent, or a day this account
+    never needed an email for. Only called after send_email() has already
+    returned (or wasn't needed), in its own short connection: see
+    PYTHON_STANDARDS.md's rule against holding a connection across slow I/O."""
+    with get_repos(user_id) as repos:
+        repos["lead_follow_up_digest_log"].mark_delivered(user_id, digest_date)
+        repos["conn"].commit()
 
 
 @celery_app.task

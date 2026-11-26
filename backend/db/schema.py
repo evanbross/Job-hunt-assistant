@@ -1081,6 +1081,25 @@ def migrate_schema(conn: Any) -> None:
         )
     conn.commit()
 
+    # ai: claude-sonnet-5 | 2026-11-26 -- 2026-11-26 full review, Medium finding:
+    # claim() wrote sent_at *before* send_email() ran in both digest senders, so an
+    # SMTP failure (or the process dying) between the claim commit and the send left
+    # the row claiming a day as "sent" when nothing went out, with no way to ever
+    # retry it. attempts bounds how many ticks may retry before giving up;
+    # delivered_at is only set after send_email() actually returns, so sent_at keeps
+    # its original meaning (when the day was claimed) and a crash before
+    # delivered_at is written is now visible and retryable instead of silent. Only
+    # backfill delivered_at for rows that predate this column -- on every later
+    # migrate run, a still-NULL delivered_at is a real pending retry, not a legacy
+    # row to approximate.
+    for table in ("lead_follow_up_digest_log", "career_scan_digest_log"):
+        is_new_column = not _has_column(cur, table, "delivered_at")
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 1")
+        cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS delivered_at TEXT")
+        if is_new_column:
+            cur.execute(f"UPDATE {table} SET delivered_at = sent_at WHERE delivered_at IS NULL")
+    conn.commit()
+
     # ai: claude-sonnet-5 | 2026-08-20
     # application_profile, user_settings, and scanned_emails each have a
     # natural-key PRIMARY KEY (not a surrogate id) — a bare user_id column

@@ -108,6 +108,9 @@ def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
         recipient = notification_recipient(
             user_id, "career_scan_digest_notify_email", repos, fall_back_to_account=True
         )
+        # ai: claude-sonnet-5 | 2026-11-26 — claiming an attempt is not the same as
+        # delivering: _mark_delivered() below is the only thing that may ever mark
+        # this date done. See PostgresCareerScanDigestLogRepository.claim().
         claimed = repos["career_scan_digest_log"].claim(user_id, report_date)
         repos["conn"].commit()
     if not claimed:
@@ -118,11 +121,23 @@ def send_career_scan_digest(user_id: int, state: dict[str, Any]) -> None:
             "Career scan digest not sent for user %s: no deliverable email address",
             user_id,
         )
+        _mark_delivered(user_id, report_date)
         return
 
     send_email(
         to=recipient,
         subject=f"Job-board scan report — {report_date}",
         body_text=format_career_scan_digest(state),
-    )
+    )  # may raise -- leave undelivered, let the next tick retry
+    _mark_delivered(user_id, report_date)
     logger.info("Sent career scan digest for user %s to %s", user_id, recipient)
+
+
+def _mark_delivered(user_id: int, report_date: str) -> None:
+    """Record that *report_date* is done -- either sent, or a date this account
+    never had a deliverable address for. Only called after send_email() has
+    already returned (or wasn't needed), in its own short connection: see
+    PYTHON_STANDARDS.md's rule against holding a connection across slow I/O."""
+    with get_repos(user_id) as repos:
+        repos["career_scan_digest_log"].mark_delivered(user_id, report_date)
+        repos["conn"].commit()
