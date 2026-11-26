@@ -5,7 +5,9 @@ description = "AI-powered job hunt assistant with Gmail integration and Google S
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
-    "certifi>=2026.6.17",
+    # GHSA-6q48-6c7w-9gw2 (Critical): a locked CA bundle below this includes a root
+    # affected by an intermediate key compromise.
+    "certifi>=2026.10.19",
     "flask>=3.0.0",
     "flask-cors>=4.0.0",
     "flasgger>=0.9.7.1",
@@ -25,8 +27,6 @@ dependencies = [
     "pydantic>=2.0.0",
     "pyyaml>=6.0.3",
     "httpx>=0.27.0",
-    "celery-types>=0.26.0",
-    "black>=26.5.1",
     "websockets>=12.0",
     "sqlglot>=25.0.0",
     "cryptography>=42.0.0",
@@ -54,6 +54,11 @@ dev = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.5.0",
+    # Formatter and type-stubs-only tooling -- never imported at runtime, so the
+    # --no-dev production install must not carry them (COMMON_CODING_STANDARDS.md
+    # § Dependency Tracking).
+    "black>=26.10.1",
+    "celery-types>=0.26.0",
 ]
 [tool.uv.sources]
 zt-common = { path = "../infra/zt-common", editable = true }
