@@ -15,12 +15,12 @@ import {
   localInputToUtcIso,
   toLocalDateTimeInputValue,
 } from "../utils/dateTimeUtils.ts";
-import type { Contact, ContactOutreach, OutreachChannel } from "../types/contacts.ts";
+import type { Contact, ContactEmailInput, ContactOutreach, OutreachChannel } from "../types/contacts.ts";
+import ContactEmailsEditor from "./common/ContactEmailsEditor.tsx";
 import ContactLeadsSection from "./leads/ContactLeadsSection.tsx";
 
 interface ContactDetailProps {
   contact: Contact;
-  onSaveEmailAddress: (contactId: number, address: string) => Promise<boolean>;
   onSaveNotes: (contactId: number, notes: string) => Promise<boolean>;
   // ai: claude-opus-5-5 | 2026-10-14 -- were onLogEmail/onDeleteEmail; logging takes a channel
   onLogOutreach: (contactId: number, sentAtUtc: string, channel: OutreachChannel) => Promise<void>;
@@ -29,7 +29,10 @@ interface ContactDetailProps {
   // ai: claude-opus-5-5 | 2026-11-11 -- recruiter lead tracking
   onSavePhone: (contactId: number, phone: string) => Promise<boolean>;
   onSetKeepInformed: (contactId: number, keepInformed: boolean) => Promise<boolean>;
-  onSavePersonalEmail: (contactId: number, address: string) => Promise<boolean>; // ai: claude-opus-5-5 | 2026-11-22
+  // ai: claude-sonnet-5 | 2026-11-26 -- was onSaveEmailAddress/onSavePersonalEmail
+  onAddEmail: (contactId: number, input: ContactEmailInput) => Promise<boolean>;
+  onReplaceEmail: (emailId: number, input: ContactEmailInput) => Promise<boolean>;
+  onDeleteEmail: (emailId: number) => Promise<boolean>;
   /** Every contact, for the lead pickers in the leads section. */
   allContacts: Contact[];
 }
@@ -48,18 +51,17 @@ const CHANNEL_OPTIONS: { value: OutreachChannel; label: string }[] = [
  */
 export default function ContactDetail({
   contact,
-  onSaveEmailAddress,
   onSaveNotes,
   onLogOutreach,
   onSetResponse,
   onDeleteOutreach,
   onSavePhone,
   onSetKeepInformed,
-  onSavePersonalEmail,
+  onAddEmail,
+  onReplaceEmail,
+  onDeleteEmail,
   allContacts,
 }: ContactDetailProps) {
-  const [addressDraft, setAddressDraft] = useState(contact.email_address || "");
-  const [personalDraft, setPersonalDraft] = useState(contact.personal_email || ""); // ai: claude-opus-5-5 | 2026-11-22
   const [phoneDraft, setPhoneDraft] = useState(contact.phone || ""); // ai: claude-opus-5-5 | 2026-11-11
   const [notesDraft, setNotesDraft] = useState(contact.notes || "");
   const [sentAtInput, setSentAtInput] = useState(toLocalDateTimeInputValue());
@@ -73,25 +75,6 @@ export default function ContactDetail({
     } finally {
       setPending(false);
     }
-  };
-
-  const commitAddress = () => {
-    const trimmed = addressDraft.trim();
-    if (trimmed === (contact.email_address || "")) return;
-    run(async () => {
-      const saved = await onSaveEmailAddress(contact.id, trimmed);
-      if (!saved) setAddressDraft(contact.email_address || "");
-    });
-  };
-
-  // ai: claude-opus-5-5 | 2026-11-22
-  const commitPersonalEmail = () => {
-    const trimmed = personalDraft.trim();
-    if (trimmed === (contact.personal_email || "")) return;
-    run(async () => {
-      const saved = await onSavePersonalEmail(contact.id, trimmed);
-      if (!saved) setPersonalDraft(contact.personal_email || "");
-    });
   };
 
   // ai: claude-opus-5-5 | 2026-11-11
@@ -129,36 +112,19 @@ export default function ContactDetail({
 
   return (
     <div style={detailBox}>
-      {/* ai: claude-opus-5-5 | 2026-11-22 -- personal email first; the LinkedIn one is
-          whatever LinkedIn's export carried (refreshed by every import). */}
-      <div style={fieldRow}>
-        <label htmlFor={`contact-personal-email-${contact.id}`} style={fieldLabel}>
-          Personal email
-        </label>
-        <input
-          id={`contact-personal-email-${contact.id}`}
-          type="email"
-          value={personalDraft}
-          placeholder="An address you know for them"
-          onChange={(e) => setPersonalDraft(e.target.value)}
-          onBlur={commitPersonalEmail}
-          style={{ flex: 1, maxWidth: "320px" }}
-        />
-      </div>
-
-      <div style={{ ...fieldRow, marginTop: "12px" }}>
-        <label htmlFor={`contact-email-${contact.id}`} style={fieldLabel}>
-          LinkedIn email
-        </label>
-        <input
-          id={`contact-email-${contact.id}`}
-          type="email"
-          value={addressDraft}
-          placeholder="Not provided (LinkedIn hides most)"
-          onChange={(e) => setAddressDraft(e.target.value)}
-          onBlur={commitAddress}
-          style={{ flex: 1, maxWidth: "320px" }}
-        />
+      {/* ai: claude-sonnet-5 | 2026-11-26 -- was two fixed fields (personal/LinkedIn); a
+          contact can now hold several typed addresses. */}
+      <div style={{ ...fieldRow, alignItems: "flex-start" }}>
+        <div style={fieldLabel}>Emails</div>
+        <div style={{ flex: 1, maxWidth: "420px" }}>
+          <ContactEmailsEditor
+            emails={contact.emails ?? []}
+            idPrefix={`contact-${contact.id}`}
+            onAdd={(input) => onAddEmail(contact.id, input)}
+            onReplace={onReplaceEmail}
+            onDelete={onDeleteEmail}
+          />
+        </div>
       </div>
 
       {/* ai: claude-opus-5-5 | 2026-11-11 */}

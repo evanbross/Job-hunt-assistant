@@ -11,10 +11,14 @@
 // Choosing the person behind a lead: someone already in Contacts, or a new contact
 // typed in (a recruiter who called or emailed and isn't a LinkedIn connection).
 import { useMemo, useState } from "react";
-import type { Contact } from "../../types/contacts.ts";
+import type { Contact, EmailType } from "../../types/contacts.ts";
+import { EMAIL_TYPE_LABELS } from "../../types/contacts.ts";
 import type { NewContactDraft } from "./leadsShared.ts";
 
 const MAX_MATCHES = 8;
+// ai: claude-sonnet-5 | 2026-11-26 -- "custom" needs a label, which this quick-add form
+// doesn't collect; pick one of these at creation, change it later if needed.
+const NEW_CONTACT_EMAIL_TYPES: EmailType[] = ["home", "work", "linkedin", "other"];
 
 interface NewContactFieldsProps {
   value: NewContactDraft;
@@ -22,7 +26,12 @@ interface NewContactFieldsProps {
 }
 
 export function NewContactFields({ value, onChange }: NewContactFieldsProps) {
-  const field = (key: keyof NewContactDraft, label: string, type = "text", placeholder = "") => (
+  const field = (
+    key: Exclude<keyof NewContactDraft, "email_type">,
+    label: string,
+    type = "text",
+    placeholder = "",
+  ) => (
     <label>
       {label}
       <input
@@ -39,9 +48,21 @@ export function NewContactFields({ value, onChange }: NewContactFieldsProps) {
       {field("company", "Their company (agency)")}
       {field("position", "Title", "text", "Technical Recruiter")}
       {field("phone", "Phone", "tel")}
-      {/* ai: claude-opus-5-5 | 2026-11-22 -- email_address is the one a LinkedIn import fills in */}
-      {field("personal_email", "Personal email", "email")}
-      {field("email_address", "LinkedIn email", "email")}
+      {field("email", "Email", "email")}
+      {/* ai: claude-sonnet-5 | 2026-11-26 -- was two fixed personal/LinkedIn fields */}
+      <label>
+        Email type
+        <select
+          value={value.email_type}
+          onChange={(event) => onChange({ ...value, email_type: event.target.value as EmailType })}
+        >
+          {NEW_CONTACT_EMAIL_TYPES.map((type) => (
+            <option key={type} value={type}>
+              {EMAIL_TYPE_LABELS[type]}
+            </option>
+          ))}
+        </select>
+      </label>
       {field("profile_url", "LinkedIn profile", "url", "https://www.linkedin.com/in/…")}
     </div>
   );

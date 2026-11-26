@@ -17,10 +17,16 @@ import AddContactModal from "./leads/AddContactModal.tsx";
 import OutreachQueue from "./OutreachQueue.tsx";
 import OutreachTemplateManager from "./OutreachTemplateManager.tsx";
 import TitlesReport from "./TitlesReport.tsx";
-import { DISCARD_TEMPLATE_CHANGES_PROMPT, contactsMatchKey, safeHttpUrl, sendJson } from "../utils/contactsUtils.ts";
+import {
+  DISCARD_TEMPLATE_CHANGES_PROMPT,
+  contactsMatchKey,
+  responseErrorText,
+  safeHttpUrl,
+  sendJson,
+} from "../utils/contactsUtils.ts";
 import { formatLocalDate } from "../utils/dateTimeUtils.ts";
 import { readStoredPref, writeStoredPref } from "../utils/storedPreference.ts";
-import type { Contact, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
+import type { Contact, ContactEmailInput, ContactsListResponse, OutreachChannel } from "../types/contacts.ts";
 import type { RecruiterType } from "../types/contacts.ts";
 import type { ApplicationProfile } from "../types/applicationProfile.ts";
 
@@ -326,12 +332,9 @@ function matchesFilters(
 }
 
 // ai: claude-opus-5-5 | 2026-11-11 -- phone and keep_informed added
-type ContactPatchFields = Partial<
-  Pick<
-    Contact,
-    "email_address" | "personal_email" | "notes" | "interested" | "recruiter_type" | "phone" | "keep_informed"
-  > // ai: claude-opus-5-5 | 2026-11-22 -- personal_email added
->;
+// ai: claude-sonnet-5 | 2026-11-26 -- email_address/personal_email moved to their own
+// endpoints (addContactEmail/replaceContactEmail/deleteContactEmail below)
+type ContactPatchFields = Partial<Pick<Contact, "notes" | "interested" | "recruiter_type" | "phone" | "keep_informed">>;
 
 // ai: claude-opus-5-5 | 2026-10-26
 interface ContactsPanelProps {
@@ -631,16 +634,47 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
     }
   };
 
-  const saveEmailAddress = (contactId: number, value: string) =>
-    patchContact(contactId, { email_address: value === "" ? null : value });
-
   const saveNotes = (contactId: number, value: string) =>
     patchContact(contactId, { notes: value === "" ? null : value });
 
-  // ai: claude-opus-5-5 | 2026-11-11
-  // ai: claude-opus-5-5 | 2026-11-22
-  const savePersonalEmail = (contactId: number, value: string) =>
-    patchContact(contactId, { personal_email: value === "" ? null : value });
+  // ai: claude-sonnet-5 | 2026-11-26 -- were saveEmailAddress/savePersonalEmail; a
+  // contact's addresses are their own rows now, each with its own endpoint, rather than
+  // contact columns patchContact() can touch.
+  const addContactEmail = async (contactId: number, input: ContactEmailInput): Promise<boolean> => {
+    try {
+      const res = await sendJson(`/api/contacts/${contactId}/emails`, "POST", input);
+      if (!res.ok) throw new Error(await responseErrorText(res));
+      await loadContacts();
+      return true;
+    } catch (e) {
+      window.alert(`Could not add the email: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+
+  const replaceContactEmail = async (emailId: number, input: ContactEmailInput): Promise<boolean> => {
+    try {
+      const res = await sendJson(`/api/contact-emails/${emailId}`, "PUT", input);
+      if (!res.ok) throw new Error(await responseErrorText(res));
+      await loadContacts();
+      return true;
+    } catch (e) {
+      window.alert(`Could not save the email: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
+
+  const deleteContactEmail = async (emailId: number): Promise<boolean> => {
+    try {
+      const res = await sendJson(`/api/contact-emails/${emailId}`, "DELETE");
+      if (!res.ok) throw new Error(await responseErrorText(res));
+      await loadContacts();
+      return true;
+    } catch (e) {
+      window.alert(`Could not remove the email: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  };
 
   const savePhone = (contactId: number, value: string) =>
     patchContact(contactId, { phone: value === "" ? null : value });
@@ -1111,13 +1145,14 @@ export default function ContactsPanel({ onUnsavedChangesChange }: ContactsPanelP
                         {expanded && (
                           <ContactDetail
                             contact={contact}
-                            onSaveEmailAddress={saveEmailAddress}
                             onSaveNotes={saveNotes}
                             onLogOutreach={logOutreach}
                             onSetResponse={setResponse}
                             onDeleteOutreach={deleteOutreach}
                             onSavePhone={savePhone}
-                            onSavePersonalEmail={savePersonalEmail}
+                            onAddEmail={addContactEmail}
+                            onReplaceEmail={replaceContactEmail}
+                            onDeleteEmail={deleteContactEmail}
                             onSetKeepInformed={setKeepInformed}
                             allContacts={contacts}
                           />
