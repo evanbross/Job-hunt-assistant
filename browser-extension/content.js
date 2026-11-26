@@ -441,7 +441,7 @@
       // path instead of the wrong, unfiltered total.
       const visibleTotal = phenomVisibleTotal();
       if (visibleTotal != null && visibleTotal !== total) {
-        const smartCount = visibleTotal || countSmartGenericJobs();
+        const smartCount = visibleTotal || await countSmartGenericJobs();
         return {
           site: company,
           type: 'smartGeneric',
@@ -583,7 +583,7 @@
     }
 
     // Generic fallback: scan for job-shaped links before giving up on counting.
-    const smartCount = countSmartGenericJobs();
+    const smartCount = await countSmartGenericJobs();
     if (smartCount >= 2) {
       return { site: location.hostname, type: 'smartGeneric', jobCount: smartCount, description: `${smartCount} jobs detected` };
     }
@@ -653,9 +653,19 @@
     return visible.length > 0 ? visible : matches;
   }
 
-  function countSmartGenericJobs() {
+  // ai: claude-sonnet-5 | 2026-11-26
+  // Walks the same click+scroll pagination buildSmartGenericPayload() uses,
+  // instead of only counting the first page's links, so the popup's "Send N
+  // Jobs" estimate reflects what a send will actually capture (see
+  // paginateSmartGeneric's comment) rather than a number that looks plausible
+  // but silently undercounts a site needing more than one page/scroll.
+  async function countSmartGenericJobs() {
     const seen = new Set();
-    collectJobLinkAnchors().forEach(({ u }) => seen.add(u.origin + u.pathname));
+    function collectOnce() {
+      collectJobLinkAnchors().forEach(({ u }) => seen.add(u.origin + u.pathname));
+    }
+    collectOnce();
+    await paginateSmartGeneric(() => document, collectOnce, () => seen.size);
     // The current page counts as a job too when it is one — see the matching
     // self-inclusion in buildSmartGenericPayload().
     try {
@@ -3485,6 +3495,44 @@
     }
   }
 
+  // ai: claude-sonnet-5 | 2026-11-26
+  // Click through additional pages until a click produces no new results, no
+  // Next/Load-more control is found, or the page cap is hit -- falling back to
+  // a Greenhouse-style scroll-stall (3 consecutive no-growth scrolls) once the
+  // click-based control disappears (Getro-powered boards, e.g.
+  // jobs.insightpartners.com: one explicit "Load more" click, then the button
+  // is gone for good and the rest loads on scroll). Shared by the cheap
+  // preview count and the real capture so a site needing this to see every
+  // page is counted accurately by both -- otherwise the popup's "Send N Jobs"
+  // promise and what actually gets sent can diverge wildly, and a detection
+  // failure on a new site hides behind a plausible-looking small number
+  // instead of surfacing immediately.
+  async function paginateSmartGeneric(getLinkRoot, collectOnce, currentCount) {
+    let scrollStallCount = 0;
+    for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
+      const nextControl = findNextPageControl();
+      const prevCount = currentCount();
+
+      if (nextControl) {
+        scrollStallCount = 0;
+        const prevLinks = linkSignature(getLinkRoot());
+        sendProgress(`Loading more jobs... (${prevCount} found)`, undefined);
+        nextControl.click();
+        await waitForLinksToChange(getLinkRoot, prevLinks); // ai: claude-opus-5-5 | 2026-10-29 -- was a fixed sleep(1200)
+        collectOnce();
+        if (currentCount() === prevCount) break;
+        continue;
+      }
+
+      sendProgress(`Loading more jobs... (${prevCount} found)`, undefined);
+      window.scrollTo(0, document.body.scrollHeight);
+      await sleep(900);
+      collectOnce();
+      scrollStallCount = currentCount() === prevCount ? scrollStallCount + 1 : 0;
+      if (scrollStallCount >= 3) break;
+    }
+  }
+
   // Generic job-link harvester — works on Phenom People (Cisco), Workday, Lever,
   // and any other career-site structure the specialised builders don't cover.
   // ai: claude-opus-5-5 | 2026-10-29
@@ -3535,23 +3583,7 @@
     }
 
     collectJobLinks();
-
-    // ai: claude-sonnet-5 | 2026-09-29
-    // Click through additional pages until a click produces no new jobs
-    // (mirrors buildGreenhouseSearchPayload's scroll-stall pattern), no
-    // Next control is found, or the page cap is hit.
-    for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
-      const nextControl = findNextPageControl();
-      if (!nextControl) break;
-
-      const prevCount = jobs.length;
-      const prevLinks = linkSignature(getLinkRoot());
-      sendProgress(`Loading more jobs... (${jobs.length} found)`, undefined);
-      nextControl.click();
-      await waitForLinksToChange(getLinkRoot, prevLinks); // ai: claude-opus-5-5 | 2026-10-29 -- was a fixed sleep(1200)
-      collectJobLinks();
-      if (jobs.length === prevCount) break;
-    }
+    await paginateSmartGeneric(getLinkRoot, collectJobLinks, () => jobs.length);
 
     // ai: claude-sonnet-4-6 | 2026-07-09
     // The currently-open page can itself be a job posting (e.g. a job detail
