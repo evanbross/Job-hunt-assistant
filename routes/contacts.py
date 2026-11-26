@@ -51,6 +51,7 @@ from pydantic import (
 )
 
 from backend.ai_provider import AIProviderError
+from backend.contacts.contact_emails import ContactEmailInput, ContactEmailList
 from backend.contacts.contact_identity import contact_identity_columns
 from backend.contacts.contacts_import_service import ContactImportService
 from backend.contacts.outreach_drafts import (
@@ -63,9 +64,9 @@ from backend.contacts.title_suggestion_service import (
     finish_title_suggestions,
     prepare_title_suggestions,
 )
-from backend.db import DuplicateOutreachTemplateTitleError
+from backend.db import DuplicateContactEmailError, DuplicateOutreachTemplateTitleError
 from backend.leads.lead_service import LeadService, NewContact
-from backend.utils.request_fields import OptionalEmailAddress, UtcTimestamp
+from backend.utils.request_fields import UtcTimestamp
 from backend.utils.utils import (
     ACTIVE_JOB_STATUSES,
     CandidateProfileMissingError,
@@ -141,8 +142,6 @@ class ContactUpdate(BaseModel):
     # ai: claude-sonnet-5 | 2026-10-13 -- tri-state: True/False/None = yes/no/undecided.
     interested: StrictBool | None = None
     recruiter_type: RecruiterType | None = None
-    email_address: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-11 -- shared validator
-    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
     notes: str | None = None
     # ai: claude-opus-5-5 | 2026-11-11 -- lead tracking
     phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
@@ -175,8 +174,7 @@ class ContactCreate(BaseModel):
     position: Annotated[str, Field(max_length=_MAX_IDENTITY_FIELD_LENGTH)] = ""
     profile_url: Annotated[str, Field(max_length=_MAX_PROFILE_URL_LENGTH)] | None = None
     phone: Annotated[str, Field(max_length=_MAX_PHONE_LENGTH)] | None = None
-    email_address: OptionalEmailAddress = None
-    personal_email: OptionalEmailAddress = None  # ai: claude-opus-5-5 | 2026-11-22
+    emails: ContactEmailList = []  # ai: claude-opus-5-5 | 2026-11-22
     keep_informed: StrictBool = False
 
     @field_validator("profile_url")
@@ -433,8 +431,7 @@ def create_contact() -> ResponseReturnValue:
         position=body.position,
         profile_url=body.profile_url,
         phone=body.phone or None,
-        email_address=body.email_address,
-        personal_email=body.personal_email,  # ai: claude-opus-5-5 | 2026-11-22
+        emails=tuple(body.emails),  # ai: claude-opus-5-5 | 2026-11-22
     )
     now_iso = datetime.now(UTC).isoformat(timespec="seconds")
     with get_repos() as repos:
@@ -766,6 +763,75 @@ def delete_contact_employment_history(entry_id: int) -> ResponseReturnValue:
     with get_repos() as repos:
         if not repos["contact_employment_history"].delete(current_user_id(), entry_id):
             return jsonify({"error": "Employment history entry not found"}), 404
+        repos["conn"].commit()
+    return jsonify({"ok": True})
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+_DUPLICATE_EMAIL_MESSAGES = {
+    "address": "This contact already has that email address.",
+    "linkedin": "This contact already has a LinkedIn email; change that one instead.",
+}
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+@contacts_bp.route("/contacts/<int:contact_id>/emails", methods=["POST"])
+def add_contact_email(contact_id: int) -> ResponseReturnValue:
+    try:
+        body = ContactEmailInput.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    now_iso = datetime.now(UTC).isoformat(timespec="seconds")
+    with get_repos() as repos:
+        try:
+            email = repos["contact_emails"].add(
+                current_user_id(),
+                contact_id,
+                address=body.address,
+                email_type=body.email_type,
+                custom_label=body.custom_label,
+                created_at=now_iso,
+            )
+        except DuplicateContactEmailError as exc:
+            return jsonify({"error": _DUPLICATE_EMAIL_MESSAGES[exc.reason]}), 409
+        if email is None:
+            return jsonify({"error": "Contact not found"}), 404
+        repos["conn"].commit()
+    return jsonify(email), 201
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+@contacts_bp.route("/contact-emails/<int:email_id>", methods=["PUT"])
+def replace_contact_email(email_id: int) -> ResponseReturnValue:
+    """Rewrite one address in full (address, type and label together), since a
+    custom label only makes sense alongside its type."""
+    try:
+        body = ContactEmailInput.model_validate(request.get_json(silent=True) or {})
+    except ValidationError as exc:
+        return invalid_request_response(exc)
+    with get_repos() as repos:
+        try:
+            email = repos["contact_emails"].replace(
+                current_user_id(),
+                email_id,
+                address=body.address,
+                email_type=body.email_type,
+                custom_label=body.custom_label,
+            )
+        except DuplicateContactEmailError as exc:
+            return jsonify({"error": _DUPLICATE_EMAIL_MESSAGES[exc.reason]}), 409
+        if email is None:
+            return jsonify({"error": "Email not found"}), 404
+        repos["conn"].commit()
+    return jsonify(email)
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+@contacts_bp.route("/contact-emails/<int:email_id>", methods=["DELETE"])
+def delete_contact_email(email_id: int) -> ResponseReturnValue:
+    with get_repos() as repos:
+        if not repos["contact_emails"].delete(current_user_id(), email_id):
+            return jsonify({"error": "Email not found"}), 404
         repos["conn"].commit()
     return jsonify({"ok": True})
 

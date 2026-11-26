@@ -7,6 +7,7 @@
  * Licensing inquiries: license@zombietech.biz
  */
 
+import type { ContactEmail, EmailType } from "./contacts.ts";
 import type { JobSighting } from "./jobs.ts";
 
 // ai: claude-opus-5-5 | 2026-11-11
@@ -61,7 +62,11 @@ export interface LeadSummary {
   primary_contact_id: number | null;
   primary_contact_name: string | null;
   primary_contact_company: string | null;
-  primary_contact_personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
+  // ai: claude-sonnet-5 | 2026-11-26 -- was primary_contact_personal_email; the address
+  // shown is now the first by EMAIL_TYPE_PREFERENCE, of any type.
+  primary_contact_email: string | null;
+  primary_contact_email_type: EmailType | null;
+  primary_contact_email_label: string | null;
   last_interaction_at: string | null;
   contact_count: number;
   stage: string;
@@ -83,7 +88,10 @@ export interface OpenConversation {
   position: string;
   recruiter_type: string | null;
   keep_informed: boolean;
-  personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
+  // ai: claude-sonnet-5 | 2026-11-26 -- was personal_email; see LeadSummary above.
+  email: string | null;
+  email_type: EmailType | null;
+  email_label: string | null;
   last_interaction_at: string;
   last_channel: InteractionChannel;
   last_summary: string | null;
@@ -103,8 +111,7 @@ export interface LeadPerson {
   company_raw: string;
   position: string;
   phone: string | null;
-  email_address: string | null;
-  personal_email: string | null; // ai: claude-opus-5-5 | 2026-11-22
+  emails: ContactEmail[]; // ai: claude-sonnet-5 | 2026-11-26 -- was email_address/personal_email
   profile_url: string | null;
   recruiter_type: string | null;
   keep_informed: boolean;

@@ -70,6 +70,7 @@ from .interfaces import (
     ICareerSiteSourceRepository,
     ICompanyAliasRepository,
     ICompanyRepository,
+    IContactEmailRepository,  # ai: claude-opus-5-5 | 2026-11-22
     IContactEmploymentHistoryRepository,
     IContactRepository,
     ICoverLetterPhraseRepository,
@@ -119,6 +120,10 @@ from .repositories.career_scan_results import PostgresCareerScanResultRepository
 from .repositories.career_site_sources import PostgresCareerSiteSourceRepository
 from .repositories.companies import PostgresCompanyRepository
 from .repositories.company_aliases import PostgresCompanyAliasRepository
+from .repositories.contact_emails import (  # ai: claude-opus-5-5 | 2026-11-22
+    DuplicateContactEmailError,
+    PostgresContactEmailRepository,
+)
 from .repositories.contact_employment_history import (
     PostgresContactEmploymentHistoryRepository,
 )
@@ -185,6 +190,7 @@ __all__ = [
     "ICareerSiteSourceRepository",
     "ICompanyAliasRepository",
     "ICompanyRepository",
+    "IContactEmailRepository",
     "IContactEmploymentHistoryRepository",
     "IInteractionRepository",
     "IJobContactRepository",
@@ -228,6 +234,8 @@ __all__ = [
     "PostgresCareerSiteSourceRepository",
     "PostgresCompanyAliasRepository",
     "PostgresCompanyRepository",
+    "DuplicateContactEmailError",
+    "PostgresContactEmailRepository",
     "PostgresContactEmploymentHistoryRepository",
     "PostgresInteractionRepository",
     "PostgresJobContactRepository",
@@ -464,6 +472,7 @@ def open_repositories(dsn: str) -> dict[str, Any]:
         "lead_follow_up_digest_log": PostgresLeadFollowUpDigestLogRepository(conn),  # ai: claude-opus-5-5 | 2026-11-18
         "job_sightings": PostgresJobSightingRepository(conn),  # ai: claude-opus-5-5 | 2026-11-15
         "contact_employment_history": PostgresContactEmploymentHistoryRepository(conn),
+        "contact_emails": PostgresContactEmailRepository(conn),  # ai: claude-opus-5-5 | 2026-11-22
         "outreach_templates": PostgresOutreachTemplateRepository(conn),
         "extension_tokens": PostgresExtensionTokenRepository(conn),
         "registration_invites": PostgresRegistrationInviteRepository(conn),  # ai: claude-opus-5-5 | 2026-11-07

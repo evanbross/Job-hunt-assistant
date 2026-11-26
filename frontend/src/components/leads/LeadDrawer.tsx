@@ -12,13 +12,14 @@
 // (with a note in the user's own words), the people on it, the call/message/note
 // timeline, a rich-text running summary, and the job description.
 import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import ContactEmailsEditor from "../common/ContactEmailsEditor.tsx";
 import JobSightings from "../common/JobSightings.tsx";
 import Modal from "../common/Modal.tsx";
 import RichTextEditor from "../common/RichTextEditor.tsx";
 import RichTextView from "../common/RichTextView.tsx";
 import { isRichTextEmpty } from "../../utils/richText.ts";
 import type { ApplicationStageStatus } from "../../types/applications.ts";
-import type { Contact, ContactsListResponse } from "../../types/contacts.ts";
+import type { Contact, ContactEmailInput, ContactsListResponse } from "../../types/contacts.ts";
 import type { ContactRole, Interaction, LeadDetail, LeadPerson } from "../../types/leads.ts";
 import { CHANNEL_LABELS, KIND_LABELS, ORIGIN_LABELS, ROLE_LABELS } from "../../types/leads.ts";
 import { responseErrorText, safeHttpUrl, sendJson } from "../../utils/contactsUtils.ts";
@@ -71,8 +72,6 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
   const [busy, setBusy] = useState(false);
   const [importingNotes, setImportingNotes] = useState(false); // ai: claude-opus-5-5 | 2026-11-11
   const [loadedContacts, setLoadedContacts] = useState<Contact[]>([]);
-  // ai: claude-opus-5-5 | 2026-11-22 -- the person whose personal email is being typed in
-  const [emailEdit, setEmailEdit] = useState<{ contactId: number; draft: string } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -262,16 +261,14 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
     if (!window.confirm(`Remove ${person.full_name} from this lead? Their logged calls and messages stay.`)) return;
     void write(() => sendJson(`/api/leads/${jobId}/contacts/${person.id}`, "DELETE"), "Could not remove them");
   };
-  // ai: claude-opus-5-5 | 2026-11-22
-  const savePersonalEmail = async () => {
-    if (!emailEdit) return;
-    const trimmed = emailEdit.draft.trim();
-    const saved = await write(
-      () => sendJson(`/api/contacts/${emailEdit.contactId}`, "PATCH", { personal_email: trimmed === "" ? null : trimmed }),
-      "Could not save the personal email",
-    );
-    if (saved) setEmailEdit(null);
-  };
+  // ai: claude-sonnet-5 | 2026-11-26 -- was savePersonalEmail, a single PATCH field;
+  // addresses are their own rows now, each with its own endpoint.
+  const addPersonEmail = (contactId: number, input: ContactEmailInput) =>
+    write(() => sendJson(`/api/contacts/${contactId}/emails`, "POST", input), "Could not add the email");
+  const replacePersonEmail = (emailId: number, input: ContactEmailInput) =>
+    write(() => sendJson(`/api/contact-emails/${emailId}`, "PUT", input), "Could not save the email");
+  const deletePersonEmail = (emailId: number) =>
+    write(() => sendJson(`/api/contact-emails/${emailId}`, "DELETE"), "Could not remove the email");
   const deleteInteraction = (interaction: Interaction) => {
     if (!window.confirm("Delete this entry?")) return;
     void write(() => sendJson(`/api/interactions/${interaction.id}`, "DELETE"), "Could not delete it");
@@ -353,41 +350,16 @@ export default function LeadDrawer({ jobId, catalog, contacts, onChanged, onClos
                   {[person.position, person.company_raw, person.phone].filter(Boolean).join(" · ")}
                 </span>
                 {profile && <a href={profile} target="_blank" rel="noopener noreferrer">LinkedIn</a>}
-                {/* ai: claude-opus-5-5 | 2026-11-22 -- personal email, added or changed in place */}
-                {emailEdit?.contactId === person.id ? (
-                  <>
-                    <input
-                      type="email"
-                      value={emailEdit.draft}
-                      placeholder="Personal email"
-                      aria-label={`Personal email for ${person.full_name}`}
-                      autoFocus
-                      onChange={(e) => setEmailEdit({ contactId: person.id, draft: e.target.value })}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void savePersonalEmail();
-                        if (e.key === "Escape") setEmailEdit(null);
-                      }}
-                    />
-                    <button type="button" className="btn-primary" onClick={() => void savePersonalEmail()} disabled={busy}>
-                      Save
-                    </button>
-                    <button type="button" className="btn-secondary" onClick={() => setEmailEdit(null)}>
-                      Cancel
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    {person.personal_email && <a href={`mailto:${person.personal_email}`}>{person.personal_email}</a>}
-                    <button
-                      type="button"
-                      className="link-button"
-                      onClick={() => setEmailEdit({ contactId: person.id, draft: person.personal_email || "" })}
-                    >
-                      {person.personal_email ? "Edit" : "Add personal email"}
-                    </button>
-                  </>
-                )}
-                {person.email_address && <span className="lead-sub">LinkedIn email: {person.email_address}</span>}
+                {/* ai: claude-sonnet-5 | 2026-11-26 -- was a single personal-email field */}
+                <div style={{ flexBasis: "100%" }}>
+                  <ContactEmailsEditor
+                    emails={person.emails}
+                    idPrefix={`lead-person-${person.id}`}
+                    onAdd={(input) => addPersonEmail(person.id, input)}
+                    onReplace={replacePersonEmail}
+                    onDelete={deletePersonEmail}
+                  />
+                </div>
                 {!person.is_primary && (
                   <button type="button" className="btn-secondary" onClick={() => makePrimary(person)} disabled={busy}>
                     Make primary

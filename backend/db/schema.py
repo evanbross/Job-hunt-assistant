@@ -44,6 +44,7 @@ from psycopg2 import sql
 from werkzeug.security import check_password_hash, generate_password_hash
 
 import config
+from backend.contacts.contact_emails import EMAIL_TYPES
 from backend.crypto import (
     SettingsEncryptionKeyMissingError,
     encrypt_bytes,
@@ -52,6 +53,7 @@ from backend.crypto import (
 from backend.db.job_columns import JobColumns
 from backend.db.lead_message_ref_rekey import rekey_linkedin_message_refs
 from backend.db.lead_suggestion_person_merge import merge_lead_suggestions_by_person
+from backend.db.repositories.contact_emails import ONE_LINKEDIN_INDEX
 from backend.db.repositories.jobs import JOBS_URL_UNIQUE_INDEX
 from backend.db.repositories.user_accounts import (
     BOOTSTRAP_ADMIN_PASSWORD_ENV,
@@ -68,6 +70,9 @@ from backend.settings_registry import SETTINGS
 from backend.utils.stage_status_normalization import normalize_stage_status
 
 logger = logging.getLogger(__name__)
+
+# ai: claude-opus-5-5 | 2026-11-22 -- contact_email_addresses' CHECK list, from the one Literal
+_EMAIL_TYPES_SQL = ", ".join(f"'{name}'" for name in EMAIL_TYPES)
 
 # ─── Seed data ────────────────────────────────────────────────────────────────
 
@@ -1193,13 +1198,15 @@ def migrate_schema(conn: Any) -> None:
     conn.commit()
 
     # ai: claude-sonnet-5 | 2026-09-25
-    # Contacts tab: per-contact user state (interested / is_recruiter / notes /
-    # email address) plus a dedup_key so a re-import can upsert in place instead
+    # Contacts tab: per-contact user state (interested / is_recruiter / notes)
+    # plus a dedup_key so a re-import can upsert in place instead
     # of the old delete-everything-and-reinsert, which would wipe that state.
     # dedup_key is the LinkedIn profile URL when present, else
     # "<lowercased full name>|<company_normalized>" -- keep in sync with
     # ContactImportService.
-    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS email_address TEXT")
+    # ai: claude-opus-5-5 | 2026-11-22 -- the email_address column this block added
+    # moved into contact_email_addresses (see _migrate_contact_email_columns); not re-added
+    # here, since re-adding and dropping it on every startup would leak attnums.
     cur.execute(
         "ALTER TABLE contacts ADD COLUMN IF NOT EXISTS interested BOOLEAN NOT NULL DEFAULT FALSE"
     )
@@ -1616,12 +1623,6 @@ def migrate_schema(conn: Any) -> None:
             "ALTER TABLE contacts ADD CONSTRAINT contacts_source_check"
             " CHECK (source IN ('linkedin_import', 'manual'))"
         )
-    # ai: claude-opus-5-5 | 2026-11-22
-    # personal_email is an address the user knows for the person themselves.
-    # email_address is LinkedIn's Connections.csv "Email Address" (whatever the
-    # person signed up to LinkedIn with, when they share it) and is refreshed by
-    # every import; personal_email is never in _IMPORT_COLUMNS, so no import touches it.
-    cur.execute("ALTER TABLE contacts ADD COLUMN IF NOT EXISTS personal_email TEXT")
     # ai: claude-opus-5-5 | 2026-11-17
     # Answer-bank usage: how many applications the extension filled a saved answer
     # into, and when it last did. Kept apart from updated_at, which is the last edit.
@@ -1635,6 +1636,45 @@ def migrate_schema(conn: Any) -> None:
     merge_lead_suggestions_by_person(conn)
     # ai: claude-opus-5-5 | 2026-11-18 -- message refs no longer hash the sender's profile slug
     rekey_linkedin_message_refs(conn)
+    _migrate_contact_email_columns(conn)  # ai: claude-opus-5-5 | 2026-11-22
+
+
+# ai: claude-opus-5-5 | 2026-11-22
+def _migrate_contact_email_columns(conn: Any) -> None:
+    """Move contacts.personal_email and contacts.email_address into contact_email_addresses,
+    then drop both columns. personal_email becomes 'home'. email_address becomes
+    'linkedin' on an imported contact (it is Connections.csv's "Email Address"),
+    and 'other' on a hand-added one, where it was typed into a plain "Email" box
+    and could be any kind. personal_email goes first, so an address in both
+    columns is kept once, as home. A no-op once the columns are gone."""
+    cur = conn.cursor()
+    moved = 0
+    if _has_column(cur, "contacts", "personal_email"):
+        cur.execute(
+            "INSERT INTO contact_email_addresses (user_id, contact_id, address, email_type, created_at)"
+            " SELECT user_id, id, btrim(personal_email), 'home', imported_at FROM contacts"
+            " WHERE btrim(COALESCE(personal_email, '')) <> ''"
+        )
+        moved += cur.rowcount
+    if _has_column(cur, "contacts", "email_address"):
+        cur.execute(
+            """
+            INSERT INTO contact_email_addresses (user_id, contact_id, address, email_type, created_at)
+            SELECT c.user_id, c.id, btrim(c.email_address),
+                   CASE WHEN c.source = 'manual' THEN 'other' ELSE 'linkedin' END, c.imported_at
+            FROM contacts c
+            WHERE btrim(COALESCE(c.email_address, '')) <> ''
+              AND NOT EXISTS (SELECT 1 FROM contact_email_addresses e
+                              WHERE e.contact_id = c.id
+                                AND lower(e.address) = lower(btrim(c.email_address)))
+            """
+        )
+        moved += cur.rowcount
+    cur.execute("ALTER TABLE contacts DROP COLUMN IF EXISTS personal_email")
+    cur.execute("ALTER TABLE contacts DROP COLUMN IF EXISTS email_address")
+    conn.commit()
+    if moved:
+        logger.info("Moved %d contact email address(es) into contact_email_addresses.", moved)
 
 
 # ai: claude-opus-5-5 | 2026-11-19
@@ -2387,6 +2427,35 @@ def create_tables(conn: Any) -> None:
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_job_contacts_one_primary
             ON job_contacts (job_id) WHERE is_primary
+        """,
+        # ai: claude-opus-5-5 | 2026-11-22
+        # A contact's email addresses, each flagged by type. Not named contact_emails:
+        # that is a legacy outreach table _migrate_legacy_outreach_to_interactions drops.
+        # Each flagged by type
+        # (backend/contacts/contact_emails.py, which owns the type list this CHECK
+        # is built from). custom_label is set exactly when the type is 'custom'.
+        # One row per address per contact, ignoring case; at most one 'linkedin'
+        # row, the one a LinkedIn import keeps up to date.
+        f"""
+        CREATE TABLE IF NOT EXISTS contact_email_addresses (
+            id            SERIAL PRIMARY KEY,
+            user_id       INTEGER NOT NULL REFERENCES user_accounts(id) ON DELETE CASCADE,
+            contact_id    INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+            address       TEXT NOT NULL,
+            email_type    TEXT NOT NULL CHECK (email_type IN ({_EMAIL_TYPES_SQL})),
+            custom_label  TEXT,
+            created_at    TEXT NOT NULL,
+            CONSTRAINT contact_email_addresses_custom_label_check
+                CHECK ((email_type = 'custom') = (custom_label IS NOT NULL))
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_email_addresses_contact_address
+            ON contact_email_addresses (contact_id, lower(address))
+        """,
+        f"""
+        CREATE UNIQUE INDEX IF NOT EXISTS {ONE_LINKEDIN_INDEX}
+            ON contact_email_addresses (contact_id) WHERE email_type = 'linkedin'
         """,
         # ai: claude-opus-5-5 | 2026-11-11
         # Recruiter lead tracking, phase 2: conversations from an imported LinkedIn

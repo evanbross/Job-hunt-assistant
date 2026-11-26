@@ -168,7 +168,7 @@ export default function LeadsPanel({ onAttentionCountChange }: LeadsPanelProps =
             <tr>
               <th>Company / role</th>
               <th>Recruiter</th>
-              <th>Personal email</th>{/* ai: claude-opus-5-5 | 2026-11-22 */}
+              <th>Email</th>{/* ai: claude-sonnet-5 | 2026-11-26 -- was "Personal email"; now the best address of any type */}
               <th>Stage</th>
               <th>Last activity</th>
               <th>Follow up</th>
@@ -199,13 +199,13 @@ export default function LeadsPanel({ onAttentionCountChange }: LeadsPanelProps =
                 </td>
                 {/* ai: claude-opus-5-5 | 2026-11-22 -- the click opens the mail app, not the drawer */}
                 <td>
-                  {lead.primary_contact_personal_email ? (
+                  {lead.primary_contact_email ? (
                     <a
-                      href={`mailto:${lead.primary_contact_personal_email}`}
+                      href={`mailto:${lead.primary_contact_email}`}
                       onClick={(e) => e.stopPropagation()}
                       onKeyDown={(e) => e.stopPropagation()}
                     >
-                      {lead.primary_contact_personal_email}
+                      {lead.primary_contact_email}
                     </a>
                   ) : (
                     "—"
@@ -260,7 +260,7 @@ export default function LeadsPanel({ onAttentionCountChange }: LeadsPanelProps =
           <thead>
             <tr>
               <th>Who</th>
-              <th>Personal email</th>{/* ai: claude-opus-5-5 | 2026-11-22 */}
+              <th>Email</th>{/* ai: claude-sonnet-5 | 2026-11-26 -- was "Personal email"; now the best address of any type */}
               <th>Last contact</th>
               <th>Summary</th>
               <th aria-label="Actions" />
@@ -276,8 +276,8 @@ export default function LeadsPanel({ onAttentionCountChange }: LeadsPanelProps =
                   </span>
                 </td>
                 <td>
-                  {conversation.personal_email ? (
-                    <a href={`mailto:${conversation.personal_email}`}>{conversation.personal_email}</a>
+                  {conversation.email ? (
+                    <a href={`mailto:${conversation.email}`}>{conversation.email}</a>
                   ) : (
                     "—"
                   )}

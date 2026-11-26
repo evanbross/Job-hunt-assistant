@@ -42,6 +42,34 @@ export interface ContactOutreach {
   channel: OutreachChannel;
 }
 
+// ai: claude-sonnet-5 | 2026-11-26
+// Mirrors backend/contacts/contact_emails.py's EmailType -- the contact_email_addresses
+// table's CHECK.
+export type EmailType = "home" | "work" | "linkedin" | "other" | "custom";
+
+export const EMAIL_TYPE_LABELS: Record<EmailType, string> = {
+  home: "Home",
+  work: "Work",
+  linkedin: "LinkedIn",
+  other: "Other",
+  custom: "Custom",
+};
+
+/** One row of contact_email_addresses, as emails_json_sql/best_email_join_sql return it. */
+export interface ContactEmail {
+  id: number;
+  address: string;
+  email_type: EmailType;
+  custom_label: string | null;
+}
+
+/** Body of POST /api/contacts/<id>/emails and PUT /api/contact-emails/<id>. */
+export interface ContactEmailInput {
+  address: string;
+  email_type: EmailType;
+  custom_label?: string | null;
+}
+
 export interface Contact {
   id: number;
   full_name: string;
@@ -51,8 +79,9 @@ export interface Contact {
   normalized_title?: string | null;
   profile_url?: string | null;
   connected_on?: string | null;
-  email_address?: string | null;
-  personal_email?: string | null; // ai: claude-opus-5-5 | 2026-11-22
+  // ai: claude-sonnet-5 | 2026-11-26 -- was email_address/personal_email; a contact can
+  // now have several addresses, each typed (backend/contacts/contact_emails.py).
+  emails?: ContactEmail[];
   interested?: boolean | null;
   recruiter_type?: string | null;
   decided_by?: string | null;

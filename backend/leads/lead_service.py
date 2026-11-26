@@ -28,6 +28,7 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import config
+from backend.contacts.contact_emails import ContactEmailInput
 from backend.contacts.contact_identity import contact_identity_columns
 from backend.settings_service import get_setting, get_setting_int
 from backend.utils.stage_status_normalization import effective_application_status
@@ -63,8 +64,7 @@ class NewContact:
     position: str
     profile_url: str | None
     phone: str | None
-    email_address: str | None
-    personal_email: str | None  # ai: claude-opus-5-5 | 2026-11-22
+    emails: tuple[ContactEmailInput, ...]  # ai: claude-opus-5-5 | 2026-11-22
 
 
 # ai: claude-opus-5-5 | 2026-11-11
@@ -236,11 +236,20 @@ class LeadService:
         details: dict[str, Any] = {"keep_informed": keep_informed}
         if contact.phone:
             details["phone"] = contact.phone
-        if contact.email_address:
-            details["email_address"] = contact.email_address
-        if contact.personal_email:  # ai: claude-opus-5-5 | 2026-11-22
-            details["personal_email"] = contact.personal_email
-        return self._repos["contacts"].create_manual(user_id, identity, details, now_iso)
+        contact_id, created = self._repos["contacts"].create_manual(user_id, identity, details, now_iso)
+        # ai: claude-opus-5-5 | 2026-11-22 -- like phone, the addresses are only
+        # written on a new contact; an existing one keeps what it has.
+        if created:
+            for email in contact.emails:
+                self._repos["contact_emails"].add(
+                    user_id,
+                    contact_id,
+                    address=email.address,
+                    email_type=email.email_type,
+                    custom_label=email.custom_label,
+                    created_at=now_iso,
+                )
+        return contact_id, created
 
     def create_lead(self, user_id: int, new: NewLead, now_iso: str) -> int:
         """Create a recruiter lead: the job (tracked, origin recruiter_contact), its

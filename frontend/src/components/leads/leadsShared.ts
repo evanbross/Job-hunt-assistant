@@ -10,6 +10,7 @@
 // ai: claude-opus-5-5 | 2026-11-11
 // Helpers shared by the Leads tab's components.
 import type { ApplicationStageStatus } from "../../types/applications.ts";
+import type { ContactEmailInput, EmailType } from "../../types/contacts.ts";
 import type { CallNotesProposal } from "../../types/leads.ts";
 import { apiFetch } from "../../utils/apiClient.ts";
 import { responseErrorText } from "../../utils/contactsUtils.ts";
@@ -41,22 +42,29 @@ export interface NewContactDraft {
   company: string;
   position: string;
   phone: string;
-  email_address: string;
-  personal_email: string; // ai: claude-opus-5-5 | 2026-11-22
+  // ai: claude-sonnet-5 | 2026-11-26 -- was email_address/personal_email; one typed
+  // address captured at creation time, more can be added afterward in the full editor
+  // (ContactDetail.tsx / LeadDrawer.tsx's ContactEmailsEditor).
+  email: string;
+  email_type: EmailType;
   profile_url: string;
 }
 
 export function emptyNewContact(): NewContactDraft {
-  return { full_name: "", company: "", position: "", phone: "", email_address: "", personal_email: "", profile_url: "" };
+  return { full_name: "", company: "", position: "", phone: "", email: "", email_type: "other", profile_url: "" };
 }
 
 /** The new-contact body routes/leads.py and routes/contacts.py accept: blanks dropped. */
-export function newContactBody(draft: NewContactDraft): Record<string, string> {
-  const body: Record<string, string> = { full_name: draft.full_name.trim() };
-  // ai: claude-opus-5-5 | 2026-11-22 -- personal_email added
-  for (const key of ["company", "position", "phone", "email_address", "personal_email", "profile_url"] as const) {
+export function newContactBody(draft: NewContactDraft): Record<string, unknown> {
+  const body: Record<string, unknown> = { full_name: draft.full_name.trim() };
+  for (const key of ["company", "position", "phone", "profile_url"] as const) {
     const value = draft[key].trim();
     if (value) body[key] = value;
+  }
+  const address = draft.email.trim();
+  if (address) {
+    const email: ContactEmailInput = { address, email_type: draft.email_type };
+    body.emails = [email];
   }
   return body;
 }
