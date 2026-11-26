@@ -51,6 +51,7 @@ ALLOWED_COLUMNS: frozenset[str] = frozenset(
         "skip_reason",
         "salary_min",
         "salary_max",
+        "industry_summary",
         # application_stages
         "job_id",
         "date",

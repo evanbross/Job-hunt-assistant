@@ -68,6 +68,9 @@ class JobColumns:
     DISMISSED_DUPLICATE_IDS = "dismissed_duplicate_ids"
     SALARY_MIN = "salary_min"
     SALARY_MAX = "salary_max"
+    # ai: claude-sonnet-5 | 2026-11-26 -- a short "what the company actually
+    # does" phrase extracted by the fit scorer, for the job card's one-liner.
+    INDUSTRY_SUMMARY = "industry_summary"
     UNREACHABLE_SINCE = "unreachable_since"
     # ai: claude-sonnet-5 | 2026-10-14 — LinkedIn's own "You'd be a top
     # applicant"-style AI match assessment, captured verbatim from the search

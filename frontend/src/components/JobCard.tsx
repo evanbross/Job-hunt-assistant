@@ -799,6 +799,11 @@ function JobCard({
               </span>
             )}
           </div>
+          {/* ai: claude-sonnet-5 | 2026-11-26 -- a short "what the company actually
+              does" phrase extracted by the fit scorer, for a quick-glance one-liner. */}
+          {job.industry_summary && (
+            <div style={sourceSummaryStyle}>{job.industry_summary}</div>
+          )}
           <div style={sourceSummaryStyle}>
             {/* ai: claude-sonnet-5 | 2026-07-30 — date moved here to match TriagePanel's meta line */}
             {job.date_found && <span style={{ marginRight: "8px" }}>{job.date_found}</span>}

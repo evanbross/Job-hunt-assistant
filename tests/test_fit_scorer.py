@@ -178,3 +178,12 @@ def test_score_defaults_salary_to_none_when_ai_omits_it() -> None:
         )
     assert result["salary_min"] is None
     assert result["salary_max"] is None
+
+
+# ai: claude-sonnet-5 | 2026-11-26
+def test_prompt_includes_the_ai_assisted_work_bonus_instruction() -> None:
+    with patch("backend.scoring.fit_scorer.AIProviderClient", return_value=MagicMock()):
+        prompt = FitScorer(1)._build_system_prompt(_NO_BONUS_CONTEXT, "resume", [], [])
+
+    assert "AI-ASSISTED DEVELOPMENT SIGNAL" in prompt
+    assert "do not double-count" in prompt.lower()

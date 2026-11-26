@@ -41,7 +41,7 @@ _STAGE_STATUS_KEYS = ", ".join(key for key, *_ in SEED_STAGE_STATUSES)
 _SCHEMA_SUMMARY = f"""
 Tables/views you may query (read-only):
 - jobs(id, status, company, job_title, fit_score, url, source, date_found, on_sheet,
-  duplicate_hint, duplicate_of_id, skip_reason, salary_min, salary_max)
+  duplicate_hint, duplicate_of_id, skip_reason, salary_min, salary_max, industry_summary)
   status is one of: pending_review (in the job queue awaiting review), triage,
   possible_duplicate, applied, skipped.
 - application_stages(id, job_id, status, date, notes, created_at) -- one row per

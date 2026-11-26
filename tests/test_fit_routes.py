@@ -144,6 +144,7 @@ class FakeFitScorer:
             "reasoning": "Strong platform engineering match.",
             "salary_min": None,
             "salary_max": None,
+            "industry_summary": None,
         }
 
 

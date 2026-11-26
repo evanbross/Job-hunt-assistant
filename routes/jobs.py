@@ -1267,6 +1267,7 @@ def approve_triage_job(job_id: int) -> ResponseReturnValue:
             updates["fit_reasoning"] = result["reasoning"]
             updates["salary_min"] = result["salary_min"]
             updates["salary_max"] = result["salary_max"]
+            updates["industry_summary"] = result["industry_summary"]
             # ai: claude-sonnet-5 | 2026-09-21
             updates["import_warnings"] = remove_import_warning(
                 job.get("import_warnings"), SCORING_FAILED_WARNING
@@ -2181,6 +2182,7 @@ def _run_rescan_broken_imports(user_id: int, progress: TaskProgress[RescanImport
                         updates["fit_reasoning"] = score_result["reasoning"]
                         updates["salary_min"] = score_result["salary_min"]
                         updates["salary_max"] = score_result["salary_max"]
+                        updates["industry_summary"] = score_result["industry_summary"]
                         if not jd_text:
                             updates["raw_jd_snippet"] = email_body[:RAW_JD_SNIPPET_MAX_CHARS]  # ai: claude-opus-5-5 | 2026-11-17
                         # ai: claude-opus-5-5 | 2026-11-17 -- start from the warnings

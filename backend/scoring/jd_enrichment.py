@@ -181,6 +181,7 @@ def rescore_description(
             "fit_reasoning": result["reasoning"],
             "salary_min": result["salary_min"],
             "salary_max": result["salary_max"],
+            JobColumns.INDUSTRY_SUMMARY: result["industry_summary"],
             # ai: claude-sonnet-5 | 2026-09-21 — update_fields may already hold the
             # tracking-link-cleaned value; job's copy is stale in that case.
             "import_warnings": remove_import_warning(
@@ -354,6 +355,7 @@ def refresh_job_description_from_url(user_id: int, job_id: int) -> dict[str, Any
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
                 "salary_max": score_result["salary_max"],
+                JobColumns.INDUSTRY_SUMMARY: score_result["industry_summary"],
                 JobColumns.IMPORT_WARNINGS: remove_import_warning(
                     new_fields[JobColumns.IMPORT_WARNINGS], SCORING_FAILED_WARNING
                 ),
@@ -411,6 +413,7 @@ def rescore_active_queue_jobs(user_id: int) -> dict[str, int]:
                         "fit_reasoning": result["reasoning"],
                         "salary_min": result["salary_min"],
                         "salary_max": result["salary_max"],
+                        JobColumns.INDUSTRY_SUMMARY: result["industry_summary"],
                         # ai: claude-sonnet-5 | 2026-09-21
                         "import_warnings": remove_import_warning(
                             job.get("import_warnings"), SCORING_FAILED_WARNING

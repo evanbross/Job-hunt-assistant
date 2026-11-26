@@ -139,3 +139,24 @@ describe("JobCard lazy description/reasoning", () => {
     expect(screen.queryByText("Job A's description.")).not.toBeInTheDocument();
   });
 });
+
+// ai: claude-sonnet-5 | 2026-11-26
+describe("JobCard industry summary", () => {
+  it("shows the fit scorer's industry one-liner when present", () => {
+    render(
+      <JobCard
+        job={baseJob({ industry_summary: "personal health care" })}
+        defaultSnoozeDays={7}
+        {...noop}
+      />,
+    );
+
+    expect(screen.getByText("personal health care")).toBeInTheDocument();
+  });
+
+  it("renders nothing extra when the scorer found no industry signal", () => {
+    render(<JobCard job={baseJob({ industry_summary: null })} defaultSnoozeDays={7} {...noop} />);
+
+    expect(screen.queryByText("personal health care")).not.toBeInTheDocument();
+  });
+});

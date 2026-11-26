@@ -217,6 +217,7 @@ def run_re_evaluate_task(self, user_id: int) -> dict:
                 updates["fit_reasoning"] = result["reasoning"]
                 updates["salary_min"] = result["salary_min"]
                 updates["salary_max"] = result["salary_max"]
+                updates["industry_summary"] = result["industry_summary"]
                 # ai: claude-sonnet-5 | 2026-09-21
                 updates["import_warnings"] = remove_import_warning(
                     job.get("import_warnings"), SCORING_FAILED_WARNING
@@ -635,6 +636,7 @@ def re_evaluate_job_fit(job_id: int) -> ResponseReturnValue:
             "fit_reasoning": result["reasoning"],
             "salary_min": result["salary_min"],
             "salary_max": result["salary_max"],
+            "industry_summary": result["industry_summary"],
             "status": "pending_review" if score >= 70 else "triage",
             # ai: claude-sonnet-5 | 2026-09-21
             "import_warnings": remove_import_warning(
@@ -709,6 +711,7 @@ def save_job_description(job_id: int) -> ResponseReturnValue:
             "fit_reasoning": result["reasoning"],
             "salary_min": result["salary_min"],
             "salary_max": result["salary_max"],
+            "industry_summary": result["industry_summary"],
             "status": "pending_review" if score >= 70 else "triage",
             # ai: claude-sonnet-5 | 2026-09-21
             "import_warnings": remove_import_warning(

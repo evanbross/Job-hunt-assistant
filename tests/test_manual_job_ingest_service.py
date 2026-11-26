@@ -117,6 +117,7 @@ class StubScorer:
             "reasoning": f"{job_title} at {company}",
             "salary_min": None,
             "salary_max": None,
+            "industry_summary": None,
         }
 
 

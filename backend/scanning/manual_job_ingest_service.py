@@ -373,6 +373,7 @@ class ManualJobIngestService:
                 "fit_reasoning": score_result["reasoning"],
                 "salary_min": score_result["salary_min"],
                 "salary_max": score_result["salary_max"],
+                JobColumns.INDUSTRY_SUMMARY: score_result["industry_summary"],
                 JobColumns.CERTAINTY_LEVEL: parsed.get("certainty_level", "low"),
                 JobColumns.CERTAINTY_REASON: parsed.get("certainty_reason", ""),
                 "date_found": datetime.now(UTC).date().isoformat(),

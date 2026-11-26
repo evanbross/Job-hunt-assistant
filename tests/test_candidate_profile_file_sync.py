@@ -528,7 +528,13 @@ class _FakeFitScorer:
         self.user_id = user_id
 
     def score(self, **_kwargs: Any) -> dict[str, Any]:
-        return {"score": 77, "reasoning": "fake", "salary_min": None, "salary_max": None}
+        return {
+            "score": 77,
+            "reasoning": "fake",
+            "salary_min": None,
+            "salary_max": None,
+            "industry_summary": None,
+        }
 
 
 def test_rescore_writes_scores_without_a_caller_connection(

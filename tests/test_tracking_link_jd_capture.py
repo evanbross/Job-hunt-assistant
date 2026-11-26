@@ -79,7 +79,13 @@ class _Score:
         pass
 
     def score(self, **kwargs: Any) -> dict[str, Any]:
-        return {"score": 80, "reasoning": "fits", "salary_min": None, "salary_max": None}
+        return {
+            "score": 80,
+            "reasoning": "fits",
+            "salary_min": None,
+            "salary_max": None,
+            "industry_summary": None,
+        }
 
 
 class _FetchesJd:
