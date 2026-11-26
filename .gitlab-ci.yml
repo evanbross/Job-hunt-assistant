@@ -178,6 +178,11 @@ pip-audit:
   rules:
     - changes: ["pyproject.toml", "uv.lock", ".gitlab-ci.yml"]
   script:
+    # ai: claude-sonnet-5 | 2026-11-26 -- `extends` does not merge `script:` with the
+    # base job's, so without this clone zt-common's editable path dependency doesn't
+    # exist on this runner and `uv export` can't resolve it (2026-11-26 full review,
+    # Medium finding: this job silently audited a registry-only subset of the lock).
+    - git clone --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@gitlab.com/EvanRoss/shared-infra.git" ../infra
     - uv export --frozen --no-default-groups --no-emit-project -o requirements-audit.txt
     - uvx pip-audit -r requirements-audit.txt --no-deps --disable-pip
 
@@ -186,7 +191,17 @@ npm-audit:
   image: node:22-bookworm-slim
   allow_failure: true
   rules:
-    - changes: ["frontend/package.json", "frontend/package-lock.json", ".gitlab-ci.yml"]
+    # ai: claude-sonnet-5 | 2026-11-26 -- browser-extension has its own package.json/
+    # package-lock.json, separate from frontend's, and was entirely unaudited (same
+    # review finding as above).
+    - changes:
+        - "frontend/package.json"
+        - "frontend/package-lock.json"
+        - "browser-extension/package.json"
+        - "browser-extension/package-lock.json"
+        - ".gitlab-ci.yml"
   script:
     - cd frontend
+    - npm audit --audit-level=high
+    - cd ../browser-extension
     - npm audit --audit-level=high
