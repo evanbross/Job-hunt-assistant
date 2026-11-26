@@ -90,3 +90,7 @@ deploy/rehearsal/secrets/
 neon.db.*
 *.dump
 *.pgdump
+
+# IDE project files are per-machine (interpreter paths, module naming) and
+# drift between developers/computers -- never shared config, so untracked.
+.idea/
