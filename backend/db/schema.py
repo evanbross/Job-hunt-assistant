@@ -516,6 +516,10 @@ def migrate_schema(conn: Any) -> None:
         # compensation range is stated; NULL when none was found.
         ("salary_min", "INTEGER"),
         ("salary_max", "INTEGER"),
+        # ai: claude-sonnet-5 | 2026-11-26 -- short "what the company actually
+        # does" phrase (e.g. "personal health care"), extracted by the fit
+        # scorer; NULL when the posting gives no real signal of it.
+        ("industry_summary", "TEXT"),
         # ai: claude-sonnet-5 | 2026-08-09
         # First date the closed-req scan found this job's URL unreachable (fetch
         # failure or exhausted browser-extension retries), independent of the job's

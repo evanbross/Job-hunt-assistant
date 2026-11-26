@@ -119,6 +119,7 @@ class _CountingFitScorer:
             "reasoning": "Strong match.",
             "salary_min": None,
             "salary_max": None,
+            "industry_summary": None,
         }
 
 

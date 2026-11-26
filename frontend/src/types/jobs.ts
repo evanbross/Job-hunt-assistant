@@ -68,6 +68,10 @@ export interface Job {
   dismissed_duplicate_ids?: string | null;
   salary_min?: number | null;
   salary_max?: number | null;
+  // ai: claude-sonnet-5 | 2026-11-26 -- short "what the company actually
+  // does" phrase for the card (e.g. "personal health care"), extracted by
+  // the fit scorer; null when the posting gave no real signal of it.
+  industry_summary?: string | null;
   unreachable_since?: string | null;
   linkedin_ai_insight?: string | null;
   // ai: claude-opus-5-5 | 2026-11-11 — recruiter lead tracking columns. summary_html

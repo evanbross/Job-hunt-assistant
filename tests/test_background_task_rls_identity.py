@@ -331,7 +331,13 @@ class _FakeFitScorer:
 
     def score(self, *, job_title: str, company: str, **kwargs: object) -> dict:
         type(self).scored_calls.append((company, job_title))
-        return {"score": 80, "reasoning": "ok", "salary_min": None, "salary_max": None}
+        return {
+            "score": 80,
+            "reasoning": "ok",
+            "salary_min": None,
+            "salary_max": None,
+            "industry_summary": None,
+        }
 
 
 def test_run_re_evaluate_task_only_rescoresthe_calling_users_jobs(

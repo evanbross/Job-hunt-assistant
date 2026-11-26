@@ -60,6 +60,10 @@ class ScoreResult(TypedDict):
     reasoning: str
     salary_min: int | None  # annual USD, extracted from job_description if stated
     salary_max: int | None
+    # ai: claude-sonnet-5 | 2026-11-26 -- short "what the company actually
+    # does" phrase for the job card (e.g. "personal health care"); None when
+    # the posting gives no real signal of it.
+    industry_summary: str | None
 
 
 # ai: claude-opus-5-5 | 2026-11-19
@@ -130,6 +134,23 @@ on this; it is a bonus for an explicit statement, not a default assumption. A
 posting that merely lists an AI tool as a tech-stack skill (e.g. "experience with
 GitHub Copilot") without framing it as a way of working is a skills-match signal,
 not this bonus -- do not double-count it.
+"""
+
+# ai: claude-sonnet-5 | 2026-11-26
+# Appended in code for the same reason as the sections above: a response field
+# added to the base template would never reach an existing install's
+# already-materialized prompt file.
+_INDUSTRY_SUMMARY_SECTION = """
+
+INDUSTRY SUMMARY (one more response field; include it in the JSON):
+"industry_summary": a short, concrete phrase (2-5 words) naming the company's
+actual industry or what it makes/does -- the kind of label you'd put on a job
+board card, e.g. "personal health care", "pharmaceutical development", "energy
+management", "fintech payments infrastructure". Base it on the company
+description and the role's domain in the posting, not the job title or tech
+stack. If the posting gives no real signal of what the company/product
+actually does, use null rather than guessing or restating the job title. Do
+NOT change "score" for this; it is informational only.
 """
 
 
@@ -234,6 +255,7 @@ class FitScorer:
         reasoning: str = result.get("reasoning", "No reasoning provided.")
         salary_min = self._coerce_salary(result.get("salary_min"))
         salary_max = self._coerce_salary(result.get("salary_max"))
+        industry_summary = self._coerce_industry_summary(result.get("industry_summary"))
 
         # Apply penalty deductions for matching rules
         total_penalty = 0
@@ -277,7 +299,21 @@ class FitScorer:
             reasoning=reasoning,
             salary_min=salary_min,
             salary_max=salary_max,
+            industry_summary=industry_summary,
         )
+
+    # Defensive cap -- the prompt asks for 2-5 words; this just bounds a
+    # model that ignores that and rambles instead of truncating mid-word.
+    _MAX_INDUSTRY_SUMMARY_CHARS = 80
+
+    @staticmethod
+    def _coerce_industry_summary(value: object) -> str | None:
+        """None for a missing/blank/non-string value; otherwise the trimmed text,
+        capped to _MAX_INDUSTRY_SUMMARY_CHARS."""
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip()
+        return cleaned[: FitScorer._MAX_INDUSTRY_SUMMARY_CHARS] or None
 
     @staticmethod
     def _coerce_salary(value: object) -> int | None:
@@ -370,6 +406,7 @@ class FitScorer:
             .replace("{{FEEDBACK_SECTION}}", feedback_section)
             + _CITIZENSHIP_REQUIREMENT_SECTION  # ai: claude-opus-5-5 | 2026-11-20
             + _AI_ASSISTED_WORK_SECTION  # ai: claude-sonnet-5 | 2026-11-26
+            + _INDUSTRY_SUMMARY_SECTION  # ai: claude-sonnet-5 | 2026-11-26
         )
 
     @staticmethod

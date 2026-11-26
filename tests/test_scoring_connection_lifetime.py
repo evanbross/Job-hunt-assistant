@@ -204,7 +204,9 @@ def test_a_richer_possible_duplicate_enriches_the_original_and_is_never_saved(
 def _fake_score(monkeypatch: pytest.MonkeyPatch, seen: list[int], depth: list[int]) -> None:
     def score(self: FitScorer, **_kwargs: Any) -> ScoreResult:
         seen.append(depth[0])
-        return ScoreResult(score=77, reasoning="Good fit.", salary_min=None, salary_max=None)
+        return ScoreResult(
+            score=77, reasoning="Good fit.", salary_min=None, salary_max=None, industry_summary=None
+        )
 
     monkeypatch.setattr(FitScorer, "score", score)
 

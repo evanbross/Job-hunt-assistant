@@ -84,7 +84,13 @@ def _fake_score(monkeypatch: pytest.MonkeyPatch, score: int, during: Any = None)
         seen.append(kwargs["email_body"])
         if during is not None:
             during()
-        return ScoreResult(score=score, reasoning="fits", salary_min=150_000, salary_max=200_000)
+        return ScoreResult(
+            score=score,
+            reasoning="fits",
+            salary_min=150_000,
+            salary_max=200_000,
+            industry_summary=None,
+        )
 
     monkeypatch.setattr(jd_enrichment.FitScorer, "score", fake)
     return seen
