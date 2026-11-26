@@ -88,11 +88,15 @@ export function useLazyJobDetail(jobId: number, revision: number | null = null) 
           fit_reasoning: job.fit_reasoning ?? null,
           certainty_reason: job.certainty_reason ?? null,
         };
-        setCache({ detail: loaded, revision: requestedRevision });
+        // ai: claude-sonnet-5 | 2026-11-26 — a request a newer one has already
+        // superseded must not win the race just because it happened to resolve
+        // last (a revision bump re-fetching while this older fetch was still
+        // pending). Only the still-current request may write cache/error state.
+        if (inFlightRef.current?.request === request) setCache({ detail: loaded, revision: requestedRevision });
         return loaded;
       })
       .catch(() => {
-        setError(true);
+        if (inFlightRef.current?.request === request) setError(true);
         return null;
       })
       .finally(() => {

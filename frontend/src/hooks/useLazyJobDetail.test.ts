@@ -308,5 +308,81 @@ describe("useLazyJobDetail", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(result.current.detail).toBeNull();
     });
+
+    // ai: claude-sonnet-5 | 2026-11-26 — 2026-11-26 full review, Medium finding:
+    // success/error writes only checked request identity in the loading-flag
+    // `finally`, so a stale response settling after a newer one could still
+    // overwrite cache/error state. These settle newest-first, oldest-last.
+    it("ignores a stale success that resolves after a newer revision's fetch already succeeded", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      let resolveOld!: (value: unknown) => void;
+      let resolveNew!: (value: unknown) => void;
+      fetchMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveOld = resolve;
+        })
+      );
+      fetchMock.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveNew = resolve;
+        })
+      );
+      const { result, rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+
+      act(() => {
+        void result.current.ensureLoaded(); // starts the revision-0 fetch, left pending
+      });
+      rerender({ revision: 1 });
+      act(() => {
+        void result.current.ensureLoaded(); // supersedes it before the old one resolves
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        resolveNew(okResponse(jobResponse({ fit_reasoning: "After re-score" })));
+        await Promise.resolve();
+      });
+      expect(result.current.detail?.fit_reasoning).toBe("After re-score");
+
+      await act(async () => {
+        resolveOld(okResponse(jobResponse({ fit_reasoning: "Before re-score" })));
+        await Promise.resolve();
+      });
+      expect(result.current.detail?.fit_reasoning).toBe("After re-score");
+    });
+
+    it("ignores a stale rejection that resolves after a newer revision's fetch already succeeded", async () => {
+      const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+      let rejectOld!: (reason: unknown) => void;
+      fetchMock.mockReturnValueOnce(
+        new Promise((_resolve, reject) => {
+          rejectOld = reject;
+        })
+      );
+      fetchMock.mockResolvedValueOnce(okResponse(jobResponse({ fit_reasoning: "After re-score" })));
+      const { result, rerender } = renderHook(({ revision }) => useLazyJobDetail(1, revision), {
+        initialProps: { revision: 0 },
+      });
+
+      act(() => {
+        void result.current.ensureLoaded();
+      });
+      rerender({ revision: 1 });
+      await act(async () => {
+        await result.current.ensureLoaded();
+      });
+      expect(result.current.detail?.fit_reasoning).toBe("After re-score");
+      expect(result.current.error).toBe(false);
+
+      await act(async () => {
+        rejectOld(new TypeError("Failed to fetch"));
+        await Promise.resolve();
+      });
+
+      expect(result.current.error).toBe(false);
+      expect(result.current.detail?.fit_reasoning).toBe("After re-score");
+    });
   });
 });
