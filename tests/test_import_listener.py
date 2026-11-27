@@ -225,6 +225,7 @@ class _Recorder:
         self.claimed_for: list[int] = []
         self.outreach_claims: list[tuple[int, str]] = []
         self.conversations: list[tuple[int, CapturedConversation]] = []  # ai: claude-opus-5-5 | 2026-11-18
+        self.added_career_sites: list[tuple[int, str, str]] = []  # ai: claude-sonnet-5 | 2026-11-27
         self.auth_calls: list[str] = []
         self.auth_failure: Exception | None = None
 
@@ -281,6 +282,15 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         recorder.claimed_for.append(user_id)
         return [{"url": f"https://example.com/for-user-{user_id}"}]
 
+    # ai: claude-sonnet-5 | 2026-11-27
+    def fake_add_career_site(user_id: int, name: str, url: str) -> dict[str, Any]:
+        recorder.added_career_sites.append((user_id, name, url))
+        already_added = "-existing" in url
+        return {
+            "source": {"id": 42, "name": name, "url": url, "user_id": user_id},
+            "already_added": already_added,
+        }
+
     listener = JobImportListener(
         host="127.0.0.1",
         port=0,
@@ -298,6 +308,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         record_answer_use=lambda user_id, ids: recorder.answer_uses.append((user_id, ids)) or len(ids),
         claim_outreach_draft=fake_claim_outreach_draft,
         capture_conversation=fake_capture_conversation,
+        add_career_site=fake_add_career_site,
         ws_tickets=tickets,
     )
     listener.start()
@@ -387,6 +398,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/ws-ticket"),
     ("POST", "/linkedin-outreach/claim"),
     ("POST", "/linkedin-messages/capture"),  # ai: claude-opus-5-5 | 2026-11-18
+    ("POST", "/career-sites"),  # ai: claude-sonnet-5 | 2026-11-27
 ]
 
 
@@ -403,6 +415,7 @@ def test_every_protected_route_rejects_a_missing_token(
     assert headers["WWW-Authenticate"] == "Bearer"
     assert recorder.captured == [] and recorder.learned == [] and recorder.claimed_for == []
     assert recorder.outreach_claims == []
+    assert recorder.added_career_sites == []
 
 
 @pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
@@ -691,6 +704,73 @@ def test_capture_is_submitted_for_the_authenticated_user(running_listener: Any) 
     assert status == HTTPStatus.OK
     assert json.loads(body)["received"]["content"] == "hi"
     assert recorder.captured[0][0] == USER_B
+
+
+# ai: claude-sonnet-5 | 2026-11-27 -- the extension's "Add this job board" button.
+# monkeypatched the same way test_career_sites_routes.py does: validate_outbound_url
+# does a real DNS lookup, which a sandboxed test run has no network path for.
+def test_a_career_site_is_added_for_the_authenticated_user(
+    running_listener: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(import_listener, "validate_outbound_url", lambda url: None)
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener,
+        "/career-sites",
+        {"name": "Acme Careers (Remote, Senior)", "url": "https://acme.example/careers?remote=true"},
+        token=USER_B_TOKEN,
+    )
+    assert status == HTTPStatus.CREATED
+    data = json.loads(body)
+    assert data["already_added"] is False
+    assert data["source"]["name"] == "Acme Careers (Remote, Senior)"
+    assert recorder.added_career_sites == [
+        (USER_B, "Acme Careers (Remote, Senior)", "https://acme.example/careers?remote=true")
+    ]
+
+
+def test_adding_an_already_added_career_site_reports_ok_not_created(
+    running_listener: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(import_listener, "validate_outbound_url", lambda url: None)
+    listener, _, _ = running_listener
+    status, body, _ = _post_json(
+        listener, "/career-sites", {"name": "Dup Co", "url": "https://dup.example/jobs-existing"}
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body)["already_added"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "", "url": "https://example.com/jobs"},
+        {"name": "Acme", "url": ""},
+        {"name": "Acme"},
+        {"url": "https://example.com/jobs"},
+        {"name": "Internal", "url": "http://127.0.0.1:8000/jobs"},
+        {"name": "Metadata", "url": "http://169.254.169.254/latest/meta-data/"},
+    ],
+)
+def test_adding_a_career_site_rejects_bad_bodies(running_listener: Any, payload: dict[str, Any]) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(listener, "/career-sites", payload)
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.added_career_sites == []
+
+
+def test_adding_a_career_site_unavailable_without_a_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(import_listener, "validate_outbound_url", lambda url: None)
+    listener = JobImportListener(
+        host="127.0.0.1", port=0, max_bytes=1000,
+        authenticate=lambda token: 1, submit_capture=lambda user_id, body: ({}, 200),
+    )
+    listener.start()
+    try:
+        status, _, _ = _post_json(listener, "/career-sites", {"name": "Acme", "url": "https://acme.example"})
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+    finally:
+        listener.stop()
 
 
 def test_ws_ticket_is_issued_for_the_caller_and_is_single_use(running_listener: Any) -> None:

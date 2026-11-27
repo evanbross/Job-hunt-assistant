@@ -860,7 +860,59 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     captureLinkedInConversation(message.tabId).then(sendResponse);
     return true;
   }
+
+  // ai: claude-sonnet-5 | 2026-11-27 -- the popup's "Add as Job Board to Scan".
+  if (message.action === 'addCareerSite') {
+    addCareerSite(message.tabId).then(sendResponse);
+    return true;
+  }
 });
+
+// ─── Add this page as a job board to scan ──────────────────────────────────
+// ai: claude-sonnet-5 | 2026-11-27
+// Registers the tab's current URL (whatever search filters the user applied
+// are already baked into it) as a new automatic career-site scan source.
+async function addCareerSite(tabId) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return { ok: false, error: 'Could not read this tab.' };
+  }
+  const url = tab.url || '';
+  if (!/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'This page cannot be added as a job board.' };
+  }
+  let name = (tab.title || '').trim();
+  if (!name) {
+    try {
+      name = new URL(url).hostname;
+    } catch {
+      name = url;
+    }
+  }
+
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/career-sites`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ name, url }),
+    });
+    jhaReportAuth(res);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.status === 401 ? JHA_AUTH_ERROR_MESSAGE : data.error || `Error ${res.status}`,
+      };
+    }
+    return { ok: true, ...data };
+  } catch (err) {
+    console.error('[JHA] adding this job board failed:', err?.message || err);
+    return { ok: false, error: 'Could not reach Job Hunt App. Is it running?' };
+  }
+}
 
 // ─── Capture a LinkedIn conversation ───────────────────────────────────────
 // ai: claude-opus-5-5 | 2026-11-18

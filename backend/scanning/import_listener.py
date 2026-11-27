@@ -68,6 +68,7 @@ from backend.security.rate_limiter import (
     hash_identifier,
 )
 from backend.settings_service import get_setting, get_setting_bool, get_setting_int
+from backend.utils.url_safety import UnsafeUrlError, validate_outbound_url
 from backend.utils.utils import get_repos
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,9 @@ ClaimOutreachDraft = Callable[[int, str], dict[str, Any] | None]
 # ai: claude-opus-5-5 | 2026-11-18 -- (user_id, conversation) -> what was stored
 # (lead_suggestions.CaptureOutcome as a dict): "Capture this conversation".
 CaptureConversation = Callable[[int, CapturedConversation], dict[str, Any]]
+# ai: claude-sonnet-5 | 2026-11-27 -- (user_id, name, url) -> {"source": row,
+# "already_added": bool}: "Add this job board" on a search-results page.
+AddCareerSite = Callable[[int, str, str], dict[str, Any]]
 
 # ai: claude-opus-5-5 | 2026-11-18
 class CapturedMessageIn(BaseModel):
@@ -211,6 +215,36 @@ class SuggestAnswersRequest(BaseModel):
 
     questions: list[SuggestQuestion] = Field(min_length=1, max_length=40)
     page_title: str | None = Field(default=None, max_length=500)
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+class AddCareerSiteRequest(BaseModel):
+    """POST /career-sites body: the search-results page open in the tab, with
+    whatever filters the user applied already baked into its URL -- added as
+    a new automatic scan source, the same way Settings > Job Boards would."""
+
+    name: str = Field(max_length=200)
+    url: str = Field(max_length=2000)
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("url")
+    @classmethod
+    def _safe_url(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        try:
+            validate_outbound_url(stripped)
+        except UnsafeUrlError as exc:
+            raise ValueError(str(exc)) from exc
+        return stripped
 
 
 # A wrong or revoked token is not a guessing risk (tokens are 256-bit) but it is load and
@@ -411,6 +445,7 @@ class JobImportListener:
         record_answer_use: RecordAnswerUse | None = None,
         claim_outreach_draft: ClaimOutreachDraft | None = None,
         capture_conversation: CaptureConversation | None = None,
+        add_career_site: AddCareerSite | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
         rate_limiter: RateLimiter | None = None,
@@ -431,6 +466,7 @@ class JobImportListener:
         self._record_answer_use = record_answer_use
         self._claim_outreach_draft = claim_outreach_draft
         self._capture_conversation = capture_conversation
+        self._add_career_site = add_career_site
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -457,6 +493,7 @@ class JobImportListener:
         record_answer_use = self._record_answer_use
         claim_outreach_draft = self._claim_outreach_draft
         capture_conversation = self._capture_conversation
+        add_career_site = self._add_career_site
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
         limiter = self._rate_limiter or get_rate_limiter()
@@ -794,6 +831,38 @@ class JobImportListener:
                         )
                     return
 
+                # ai: claude-sonnet-5 | 2026-11-27 -- the extension's "Add this job
+                # board" button on a job-board search-results page.
+                if path == "/career-sites":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        add_request = AddCareerSiteRequest.model_validate(payload)
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "name and url are required, and url must point to a public web address."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if add_career_site is None:
+                        self._send_json(
+                            {"error": "Adding job boards is unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    try:
+                        result = add_career_site(user_id, add_request.name, add_request.url)
+                        status = HTTPStatus.OK if result.get("already_added") else HTTPStatus.CREATED
+                        self._send_json(result, status)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Adding a career site from the extension failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not add this job board."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
                 raw_body = self._read_body()
                 if raw_body is None:
                     return
@@ -997,6 +1066,7 @@ def start_job_import_listener(
     record_answer_use: RecordAnswerUse | None = None,
     claim_outreach_draft: ClaimOutreachDraft | None = None,
     capture_conversation: CaptureConversation | None = None,
+    add_career_site: AddCareerSite | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
@@ -1035,6 +1105,7 @@ def start_job_import_listener(
             record_answer_use=record_answer_use,
             claim_outreach_draft=claim_outreach_draft,
             capture_conversation=capture_conversation,
+            add_career_site=add_career_site,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
         )

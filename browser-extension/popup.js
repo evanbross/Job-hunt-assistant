@@ -98,6 +98,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
   document.getElementById('send-btn').addEventListener('click', handleSend);
   document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
+  document.getElementById('add-career-site-btn').addEventListener('click', handleAddCareerSite);
   document.getElementById('capture-mode-list').addEventListener('click', () => setCaptureMode('list'));
   document.getElementById('capture-mode-detail').addEventListener('click', () => setCaptureMode('detail'));
   renderStashedAnswers(); // ai: claude-opus-5-5 | 2026-11-17 -- before the page probes; shown on any page
@@ -442,6 +443,35 @@ async function handleFillApplication() {
   btn.textContent = 'Fill Application';
 }
 
+// ai: claude-sonnet-5 | 2026-11-27
+// "Add as Job Board to Scan": registers the tab's current URL (whatever
+// search filters the user applied are already baked into it) as a new
+// automatic scan source, the same way Settings > Job Boards would.
+async function handleAddCareerSite() {
+  const btn = document.getElementById('add-career-site-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div>Adding…';
+  hideStatus();
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({ action: 'addCareerSite', tabId: activeTabId });
+  } catch (err) {
+    result = { ok: false, error: String(err?.message || err) };
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add as Job Board to Scan';
+  if (result?.ok) {
+    showStatus(
+      result.already_added
+        ? 'Already tracked — nothing to add.'
+        : `✓ Added "${result.source?.name}" as a job board to scan.`,
+      'success'
+    );
+  } else {
+    showStatus(result?.error || 'Could not add this page as a job board.', 'error');
+  }
+}
+
 // ai: claude-opus-5-5 | 2026-11-17
 function autofillSummary(filledCount, suggestedCount, unresolvedCount, suggestionError) {
   if (filledCount + suggestedCount + unresolvedCount === 0) {
@@ -545,6 +575,7 @@ function showLinkedInConversationCapture() {
     'Saves the messages LinkedIn has loaded for this conversation to Leads › Suggested. ' +
     'Scroll up in the thread first to include older ones.';
   document.getElementById('send-btn').style.display = 'none';
+  document.getElementById('add-career-site-btn').style.display = 'none';
   const btn = document.getElementById('capture-conversation-btn');
   btn.style.display = 'flex';
   btn.addEventListener('click', handleCaptureConversation);
@@ -593,6 +624,10 @@ function showNoAccess() {
 // must be explicitly disabled here rather than relying on jobCount alone.
 function resetButton() {
   const btn = document.getElementById('send-btn');
+  // ai: claude-sonnet-5 | 2026-11-27 -- a blocked page (Gmail, Slack, etc.) is a
+  // known non-job site; adding it as a scan source makes no sense either.
+  document.getElementById('add-career-site-btn').style.display =
+    lastScanResult?.type === 'blocked' ? 'none' : 'flex';
   if (lastScanResult?.type === 'blocked') {
     btn.disabled = true;
     btn.innerHTML = 'Not a job page';

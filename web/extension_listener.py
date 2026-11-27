@@ -49,6 +49,7 @@ from backend.scanning.import_listener import (
     get_job_import_listener_config,
     start_job_import_listener,
 )
+from backend.scanning.platform_detection import platform_for_site_url
 from backend.security.client_ip import Network, parse_trusted_proxies
 from backend.user_events import UserEventTopic, get_user_events
 from backend.utils.utils import get_repos
@@ -174,6 +175,33 @@ def _capture_linkedin_conversation(user_id: int, capture: CapturedConversation) 
     return asdict(outcome)
 
 
+# ai: claude-sonnet-5 | 2026-11-27
+def _add_career_site_for_listener(user_id: int, name: str, url: str) -> dict[str, Any]:
+    """Called from the extension's "Add this job board" button on a search-results
+    page: the same insert Settings > Job Boards makes, but idempotent on url so a
+    repeat click (e.g. re-applying filters, a double click) doesn't create a
+    duplicate source."""
+    with get_repos(user_id) as repos:
+        existing = repos["career_sites"].get_by_url(user_id, url)
+        if existing is not None:
+            return {"source": existing, "already_added": True}
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": name,
+                "url": url,
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "detected_platform": platform_for_site_url(url),
+                "recapture_interval_days": 7,
+                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            },
+        )
+        row = repos["career_sites"].get_by_id(user_id, source_id)
+        repos["conn"].commit()
+    return {"source": row, "already_added": False}
+
+
 # ai: claude-opus-5-5 | 2026-11-05
 def start_extension_servers(
     trusted_proxies: tuple[Network, ...],
@@ -195,6 +223,7 @@ def start_extension_servers(
         record_answer_use=record_application_answer_use,
         claim_outreach_draft=_claim_linkedin_outreach_draft,
         capture_conversation=_capture_linkedin_conversation,
+        add_career_site=_add_career_site_for_listener,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,
     )
