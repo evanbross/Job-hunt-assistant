@@ -96,6 +96,19 @@ const _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS = 30000;
 // A rejected token won't fix itself, so retry rarely rather than every backoff step.
 const _QUEUE_SOCKET_AUTH_RETRY_MS = 5 * 60 * 1000;
 let _queueSocketConnecting = false;
+// ai: claude-sonnet-5 | 2026-11-27
+// _queueSocketConnecting only blocks a second attempt from *this* service-worker
+// instance. MV3 can kill and restart the worker mid-handshake (observed live: a
+// steady stream of 401s in backend/queue_websocket.py's rejected-connection log,
+// a few seconds apart, each with a distinct freshly-issued ticket -- consistent
+// with every restart resetting _queueSocketReconnectDelayMs back to 1000ms and
+// firing connectQueueSocket() again before the prior attempt's ticket/handshake
+// had settled, so backoff never actually escalated). chrome.storage.session
+// survives a worker restart within the same browser session (see
+// _setPendingCapture above), so the "don't attempt again before this time"
+// gate -- and the backoff delay that produced it -- is persisted there
+// instead of in a plain `let`, so a restart can't reset backoff to 1000ms.
+const _QUEUE_SOCKET_BACKOFF_KEY = 'queueSocketBackoff';
 
 // ─── Alarm setup ──────────────────────────────────────────────────────────
 // Alarms survive service-worker dormancy; re-register on each startup in case
@@ -193,6 +206,13 @@ async function connectQueueSocket() {
   // Fetching a ticket is async, so without this guard the alarm tick and a
   // pending reconnect timer could each pass the check above and open two sockets.
   if (_queueSocketConnecting) return;
+  // ai: claude-sonnet-5 | 2026-11-27
+  // Cross-restart guard (see _QUEUE_SOCKET_BACKOFF_KEY above): skip if a
+  // still-unexpired backoff was recorded before this worker instance started.
+  const stored = await chrome.storage.session.get(_QUEUE_SOCKET_BACKOFF_KEY);
+  const backoff = stored[_QUEUE_SOCKET_BACKOFF_KEY];
+  if (backoff && Date.now() < backoff.nextAttemptAt) return;
+  if (backoff) _queueSocketReconnectDelayMs = backoff.delayMs;
   _queueSocketConnecting = true;
   try {
     await openQueueSocket();
@@ -271,6 +291,7 @@ async function openQueueSocket() {
 
   _queueSocket.addEventListener('open', () => {
     _queueSocketReconnectDelayMs = 1000; // reset backoff on a successful connection
+    chrome.storage.session.remove(_QUEUE_SOCKET_BACKOFF_KEY).catch(() => {});
   });
   _queueSocket.addEventListener('message', (event) => {
     let data;
@@ -292,15 +313,28 @@ async function openQueueSocket() {
 // 'close' listener passes its Event instead, which falls through to the backoff.
 function scheduleQueueSocketReconnect(delayMs) {
   _queueSocket = null;
-  if (typeof delayMs === 'number') {
-    setTimeout(connectQueueSocket, delayMs);
-    return;
-  }
-  setTimeout(connectQueueSocket, _queueSocketReconnectDelayMs);
-  _queueSocketReconnectDelayMs = Math.min(
-    _queueSocketReconnectDelayMs * 2,
-    _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS
-  );
+  const effectiveDelayMs =
+    typeof delayMs === 'number' ? delayMs : _queueSocketReconnectDelayMs;
+  // ai: claude-sonnet-5 | 2026-11-27
+  // Persist the gate (see _QUEUE_SOCKET_BACKOFF_KEY above) so a worker restart
+  // before this setTimeout fires still honors the backoff instead of retrying
+  // immediately at the reset default. The next *successful* backoff step is
+  // still computed from the in-memory delay, which is best-effort across a
+  // restart -- worst case it under-escalates by one step, never over-retries.
+  const nextDelayMs =
+    typeof delayMs === 'number'
+      ? _queueSocketReconnectDelayMs
+      : Math.min(_queueSocketReconnectDelayMs * 2, _QUEUE_SOCKET_MAX_RECONNECT_DELAY_MS);
+  chrome.storage.session
+    .set({
+      [_QUEUE_SOCKET_BACKOFF_KEY]: {
+        nextAttemptAt: Date.now() + effectiveDelayMs,
+        delayMs: nextDelayMs,
+      },
+    })
+    .catch(() => {});
+  setTimeout(connectQueueSocket, effectiveDelayMs);
+  _queueSocketReconnectDelayMs = nextDelayMs;
 }
 
 // ─── Queue polling ─────────────────────────────────────────────────────────
