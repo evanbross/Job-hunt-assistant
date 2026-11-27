@@ -77,7 +77,6 @@ from backend.scoring.fit_scorer import FitScorer
 from backend.scoring.jd_limits import RAW_JD_SNIPPET_MAX_CHARS
 from backend.scoring.job_validator import (
     SCORING_FAILED_WARNING,
-    TRACKING_LINK_JD_WARNING,
     import_warnings_to_json,
     normalize_and_validate,
 )
@@ -911,24 +910,30 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                     ):
                         outcome = "import review needed"
 
-                # The email digest gave us only a tracking link, not real JD text
-                # (typical of WTTJ's client-rendered job pages). Queue the resolved
-                # URL for the browser extension to capture a fully-rendered copy —
-                # the import pipeline already knows how to match the capture back to
-                # this job by URL and patch job_description in place.
+                # The email digest gave us no real JD text. Queue the job's URL for
+                # the browser extension to capture a fully-rendered copy — the import
+                # pipeline already knows how to match the capture back to this job by
+                # URL and patch job_description in place.
                 capture_url = None
                 capture_source = None
                 # ai: claude-opus-5-5 | 2026-11-07 -- hosted Wellfound: see wellfound_fetcher
                 if capture_with_extension:
                     capture_url = job_url_str
                     capture_source = job_data.get("source") or "Wellfound"
-                elif TRACKING_LINK_JD_WARNING in import_warnings:
-                    _capture_url = str(job_data.get("url") or "").strip()
-                    if _capture_url:
-                        capture_url = _capture_url
-                        capture_source = (
-                            job_data.get("source") or "Welcome to the Jungle"
-                        )
+                # ai: claude-sonnet-5 | 2026-11-27 -- the direct fetch above
+                # (job_url_str, ~line 752) already tried and failed to get a usable
+                # JD -- not just when the stored snippet happens to itself be a bare
+                # tracking link (the old, narrower TRACKING_LINK_JD_WARNING check),
+                # but for any reason the server-side fetch came up short: a
+                # JS-rendered ATS page, a login wall, a fetch error, or (as reported
+                # live 2026-11-27) a digest sender whose click-tracking domain isn't
+                # in email_parser.py's resolution allowlist, so the email body text
+                # (newsletter boilerplate, not a JD) was all that was left to store.
+                # The real signal was always available right here: did the fetch
+                # that already ran get anything usable, regardless of why not.
+                elif job_url_str and not jd_text and status != "skipped":
+                    capture_url = job_url_str
+                    capture_source = job_data.get("source") or "Email digest link"
 
                 jobs_to_insert.append(
                     {

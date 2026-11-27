@@ -644,6 +644,12 @@ _TRACKING_DOMAIN_FRAGMENTS = frozenset(
         # every downstream consumer (browser-extension queue, direct re-fetch) open
         # the tracking hop instead of the real jobgether.com page.
         "awstrack.me",
+        # ai: claude-sonnet-5 | 2026-11-27 -- Getro-powered job-board digests
+        # (e.g. VC portfolio job boards) route every link through a numbered
+        # click-tracking subdomain (url<N>.getro.com/ls/click?upn=...). Same
+        # failure mode as the above: without this, job.url stayed the opaque
+        # tracking redirect instead of the real posting.
+        "getro.com",
     }
 )
 

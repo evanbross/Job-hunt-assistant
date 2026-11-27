@@ -285,6 +285,62 @@ def test_parser_resolves_awstrack_tracking_urls_for_jobgether_emails(
     assert jobs[0]["url"] == real_jobgether_url
 
 
+# ai: claude-sonnet-5 | 2026-11-27
+class GetroEchoingClient:
+    """Simulates an LLM response that echoes the [URL_N] token for a job link
+    that was itself a Getro click-tracking redirect (<N>.getro.com)."""
+
+    def complete(
+        self,
+        *,
+        messages: list[AIMessage],
+        system: str,
+        max_tokens: int,
+        json_response: bool,
+    ) -> str:
+        return json.dumps(
+            [
+                {
+                    "company": "Seeq",
+                    "job_title": "Senior Backend Engineer",
+                    "url": "[URL_0]",
+                    "source": "Getro",
+                    "certainty_level": "high",
+                    "certainty_score": 90,
+                    "certainty_reason": "test",
+                }
+            ]
+        )
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+def test_parser_resolves_getro_tracking_urls_for_portfolio_job_board_digests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Getro-powered VC portfolio job boards (e.g. Insight Partners') route every
+    job link in their digest emails through a numbered click-tracking subdomain.
+    Found live (job 8755, 2026-11-27): without getro.com in the tracking-domain
+    list, job.url stayed the opaque tracking link forever, and the separate
+    JD-capture fallback (routes/scan.py) never had a real posting URL to queue."""
+    real_job_url = "https://jobs.seeq.com/careers/senior-backend-engineer"
+    getro_url = "https://url3473.getro.com/ls/click?upn=u001.abc123"
+
+    monkeypatch.setattr(
+        email_parser_module,
+        "resolve_tracking_url",
+        lambda url, timeout=3.0: real_job_url if "getro.com" in url else url,
+    )
+
+    client = GetroEchoingClient()
+    parser = EmailParser(1, client=client)
+    body = f"Senior Backend Engineer at Seeq\n{getro_url}"
+
+    jobs = parser.parse("New jobs for you", "Insight Partners via Getro <hello@getro.com>", body)
+
+    assert len(jobs) == 1
+    assert jobs[0]["url"] == real_job_url
+
+
 # ai: claude-sonnet-5 | 2026-08-28
 def _jobgether_card_html(cdn_host: str, slug: str, href: str) -> str:
     return (
