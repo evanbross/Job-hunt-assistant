@@ -38,6 +38,7 @@ from backend.email.email_parser import (
     EmailParser,
     _jobgether_company_slug_map_from_html,
     _trim_company_tail,
+    discover_getro_board_url,
     looks_like_wttj_misparsed_title,  # ai: claude-fable-5 | 2026-07-17
     normalize_title_company,
 )
@@ -339,6 +340,65 @@ def test_parser_resolves_getro_tracking_urls_for_portfolio_job_board_digests(
 
     assert len(jobs) == 1
     assert jobs[0]["url"] == real_job_url
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+def test_discover_getro_board_url_picks_the_link_that_resolves_shallow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every link in a Getro digest -- a header logo, "view all jobs", and
+    each job -- is wrapped in the same tracking domain. The board's own root
+    is the one that resolves to a shallow path, not a job/company detail
+    page or an external ATS/LinkedIn posting."""
+    job_link = "https://url3473.getro.com/ls/click?upn=job"
+    board_link = "https://url3473.getro.com/ls/click?upn=board"
+    resolved = {
+        job_link: "https://jobs.insightpartners.com/companies/seeq/jobs/100910110-engineer",
+        board_link: "https://jobs.insightpartners.com/jobs",
+    }
+    monkeypatch.setattr(
+        email_parser_module, "resolve_tracking_url", lambda url, timeout=3.0: resolved.get(url, url)
+    )
+    body = f"Senior Backend Engineer at Seeq\n{job_link}\n\nView all jobs: {board_link}"
+
+    assert discover_getro_board_url("", body) == "https://jobs.insightpartners.com/jobs"
+
+
+def test_discover_getro_board_url_returns_none_when_nothing_resolves_shallow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_link = "https://url3473.getro.com/ls/click?upn=job"
+    monkeypatch.setattr(
+        email_parser_module,
+        "resolve_tracking_url",
+        lambda url, timeout=3.0: "https://jobs.insightpartners.com/companies/seeq/jobs/1-engineer",
+    )
+
+    assert discover_getro_board_url("", f"Apply here: {job_link}") is None
+
+
+def test_discover_getro_board_url_returns_none_when_links_never_resolve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(email_parser_module, "resolve_tracking_url", lambda url, timeout=3.0: url)
+
+    assert discover_getro_board_url("", "https://url3473.getro.com/ls/click?upn=job") is None
+
+
+def test_discover_getro_board_url_tries_at_most_five_links(monkeypatch: pytest.MonkeyPatch) -> None:
+    links = [f"https://url3473.getro.com/ls/click?upn={i}" for i in range(6)]
+    # Only the 6th (beyond the cap) resolves to the board -- must not be reached.
+    resolved = {links[5]: "https://jobs.insightpartners.com/jobs"}
+    calls: list[str] = []
+
+    def fake_resolve(url: str, timeout: float = 3.0) -> str:
+        calls.append(url)
+        return resolved.get(url, url)
+
+    monkeypatch.setattr(email_parser_module, "resolve_tracking_url", fake_resolve)
+
+    assert discover_getro_board_url("", "\n".join(links)) is None
+    assert calls == links[:5]
 
 
 # ai: claude-sonnet-5 | 2026-08-28

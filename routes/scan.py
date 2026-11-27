@@ -50,6 +50,7 @@ from backend.email.email_parser import (
     NO_URL_JOB_SNIPPET_CHARS,
     URL_JOB_SNIPPET_CHARS,
     EmailParser,
+    discover_getro_board_url,
 )
 from backend.email.email_source_filters import email_matches_source_filters
 from backend.email.gmail_client import GmailClient, NotAuthenticatedError
@@ -60,6 +61,7 @@ from backend.scanning.job_sightings import (
     insert_or_record_sighting,
     record_sighting_from_job_data,
 )
+from backend.scanning.platform_detection import platform_for_site_url
 from backend.scanning.sources.wellfound_scraper import (  # ai: claude-fable-5 | 2026-07-14
     WellfoundJobFetcher,
     is_wellfound_job_url,
@@ -1012,6 +1014,44 @@ def run_scan_task(self, user_id: int, rescan_all: bool = False) -> dict:
                                 item["capture_url"],
                                 exc,
                             )
+
+                # ai: claude-sonnet-5 | 2026-11-27
+                # A Getro-sourced digest (e.g. jobs.insightpartners.com-style VC
+                # portfolio board) only ever teases a few jobs inline. Registering
+                # the board itself as a recurring automatic source lets the
+                # existing generic scanner -- already explicitly built to handle
+                # this kind of VC-portfolio board, see _scan_generic's company-name
+                # comment -- pick up the rest on its normal schedule, with real JD
+                # text per job, instead of the user being stuck with whatever the
+                # email happened to tease.
+                # Re-attempted on every future digest from this sender even after the
+                # board is registered (get_by_url below is the only short-circuit) --
+                # bounded to a handful of resolves per email, and Getro digests are
+                # infrequent per sender, so this is accepted rather than adding a
+                # second piece of state just to skip an already-cheap no-op.
+                if "getro.com" in sender.lower():
+                    try:
+                        board_url = discover_getro_board_url(email_raw_html, email_body)
+                    except Exception as exc:
+                        board_url = None
+                        logger.debug("Getro board discovery failed for %s: %s", msg_id, exc)
+                    if board_url and repos["career_sites"].get_by_url(user_id, board_url) is None:
+                        repos["career_sites"].insert(
+                            user_id,
+                            {
+                                "name": (parsed_jobs[0].get("source") if parsed_jobs else "") or "Getro job board",
+                                "url": board_url,
+                                "enabled": 1,
+                                "collection_mode": "automatic",
+                                "detected_platform": platform_for_site_url(board_url),
+                                "recapture_interval_days": 7,
+                                "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                            },
+                        )
+                        logger.info(
+                            "Registered Getro job board %s as a new automatic career-site source", board_url
+                        )
+
                 repos["scanned_emails"].mark_scanned(
                     user_id,
                     msg_id,

@@ -758,6 +758,40 @@ def _page_behind_sign_in(start: str, hops: list[str], final: str) -> str:
     return final
 
 
+# ai: claude-sonnet-5 | 2026-11-27
+_GETRO_LINK_RE = re.compile(r'https?://[^\s"\'<>]+\.getro\.com/[^\s"\'<>]*', re.IGNORECASE)
+# A board's own listing page ("view all jobs") resolves to a shallow path;
+# a specific job resolves to a deep one (a job/company detail page, or an
+# external ATS/LinkedIn posting) -- see discover_getro_board_url.
+_GETRO_BOARD_PATH_RE = re.compile(r"^/?(jobs/?)?$", re.IGNORECASE)
+# Bounds how many distinct tracking links one digest can make a scan follow.
+_MAX_GETRO_LINKS_TO_RESOLVE = 5
+
+
+def discover_getro_board_url(raw_html: str, body: str) -> str | None:
+    """Find the Getro-powered job board a digest email points at (e.g.
+    jobs.insightpartners.com), distinct from its own per-job tracking links.
+
+    Every outbound link in a Getro notification email -- a header logo, a
+    "view all jobs" button, and each individual job -- is wrapped in the same
+    url<N>.getro.com click-tracking redirect, so the tracking domain alone
+    can't tell them apart. What does: the board's own root resolves to a
+    shallow path (the listing page itself), while a specific job's link
+    resolves to a deep one. Tries at most _MAX_GETRO_LINKS_TO_RESOLVE distinct
+    links so one digest can't make a scan spend unbounded time following
+    redirects. Returns None if no link resolves to a plausible board root.
+    """
+    candidates = list(dict.fromkeys(_GETRO_LINK_RE.findall(f"{raw_html}\n{body}")))
+    for link in candidates[:_MAX_GETRO_LINKS_TO_RESOLVE]:
+        resolved = resolve_tracking_url(link)
+        if resolved == link:
+            continue  # didn't actually resolve to anything
+        parsed = urlparse(resolved)
+        if parsed.scheme and parsed.netloc and _GETRO_BOARD_PATH_RE.match(parsed.path):
+            return f"{parsed.scheme}://{parsed.netloc}/jobs"
+    return None
+
+
 # ai: claude-sonnet-4-6 | 2026-06-29
 def _wttj_company_map_from_html(raw_html: str) -> dict[str, str]:
     """Return {tracking_url: company_name} by parsing WTTJ job-card HTML.

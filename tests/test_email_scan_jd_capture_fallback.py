@@ -177,3 +177,102 @@ def test_a_digest_whose_direct_fetch_succeeds_queues_nothing(
     assert len(jobs) == 1
     assert jobs[0]["job_description"] == FetchesARealJd.text
     assert queue == []
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+# A Getro digest only ever teases a few jobs inline (the user's report: "the
+# Getro email also has a button to see more jobs than just the 3"). Registering
+# the board itself as a recurring automatic source lets the existing generic
+# scanner -- already built to handle VC-portfolio boards like this one, see
+# career_site_scanner.py's _scan_generic -- pick up the rest on its own schedule.
+_BOARD_URL = "https://jobs.insightpartners.com/jobs"
+
+
+def test_a_getro_digest_registers_its_board_as_an_automatic_source(
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
+) -> None:
+    user_id = _seed_account(pg_dsn)
+    monkeypatch.setattr(scan, "discover_getro_board_url", lambda raw_html, body: _BOARD_URL)
+
+    _run_scan(monkeypatch, pg_dsn, user_id, FetchesTooLittle)
+
+    repos = open_repositories(pg_dsn)
+    try:
+        set_current_user(repos["conn"].cursor(), user_id)
+        source = repos["career_sites"].get_by_url(user_id, _BOARD_URL)
+    finally:
+        repos["conn"].close()
+    assert source is not None
+    assert source["collection_mode"] == "automatic"
+    assert source["enabled"] == 1
+
+
+def test_a_getro_digest_does_not_duplicate_an_already_registered_board(
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
+) -> None:
+    user_id = _seed_account(pg_dsn)
+    repos = open_repositories(pg_dsn)
+    try:
+        set_current_user(repos["conn"].cursor(), user_id)
+        repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "Insight Partners",
+                "url": _BOARD_URL,
+                "enabled": 1,
+                "collection_mode": "automatic",
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+    finally:
+        repos["conn"].close()
+    monkeypatch.setattr(scan, "discover_getro_board_url", lambda raw_html, body: _BOARD_URL)
+
+    _run_scan(monkeypatch, pg_dsn, user_id, FetchesTooLittle)
+
+    repos = open_repositories(pg_dsn)
+    try:
+        set_current_user(repos["conn"].cursor(), user_id)
+        cur = repos["conn"].cursor()
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM career_site_sources WHERE user_id = %s AND url = %s",
+            (user_id, _BOARD_URL),
+        )
+        count = cur.fetchone()["n"]
+    finally:
+        repos["conn"].close()
+    assert count == 1
+
+
+def test_a_non_getro_digest_does_not_attempt_board_discovery(
+    monkeypatch: pytest.MonkeyPatch, pg_dsn: str
+) -> None:
+    user_id = _seed_account(pg_dsn)
+
+    class NonGetroEmailParser(FakeEmailParser):
+        def parse(self, subject: str, sender: str, body: str, raw_html: str = "") -> list[dict[str, object]]:
+            jobs = super().parse(subject, sender, body, raw_html)
+            for job in jobs:
+                job["source"] = "WellKnownBoard"
+            return jobs
+
+    class NonGetroGmailClient(FakeGmailClient):
+        def extract_text(self, full_msg: dict[str, str]) -> tuple[str, str, str]:
+            return _SUBJECT, "Well Known Board <alerts@wellknownboard.com>", _DIGEST_BODY
+
+    called = False
+
+    def fail_if_called(raw_html: str, body: str) -> str | None:
+        nonlocal called
+        called = True
+        return None
+
+    monkeypatch.setattr(config, "DATABASE_URL", runtime_database_url(pg_dsn))
+    monkeypatch.setattr(scan, "GmailClient", NonGetroGmailClient)
+    monkeypatch.setattr(scan, "EmailParser", NonGetroEmailParser)
+    monkeypatch.setattr(scan, "CareerSiteScanner", FetchesTooLittle)
+    monkeypatch.setattr(scan, "discover_getro_board_url", fail_if_called)
+    scan.run_scan_task.apply(args=(user_id,))
+
+    assert called is False
