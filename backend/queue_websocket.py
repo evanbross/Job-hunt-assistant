@@ -170,6 +170,16 @@ class QueueWebSocketServer:
         ticket = (query.get("ticket") or [""])[0].strip()
         user_id = self._redeem_ticket(ticket) if ticket else None
         if user_id is None:
+            # ai: claude-sonnet-5 | 2026-11-27 -- the websockets library's own
+            # "connection rejected (401 Unauthorized)" log line never names the
+            # request, which left no way to tell a stale/duplicate client from a
+            # genuine attack from the log alone. remote_address is (host, port);
+            # request.path is truncated since query strings carry the ticket.
+            logger.warning(
+                "Queue WebSocket connection rejected (401): path=%r from=%s",
+                request.path[:40],
+                connection.remote_address,
+            )
             return connection.respond(401, "Invalid or expired queue ticket.")
         self._handshake_users[connection] = user_id
         return None
