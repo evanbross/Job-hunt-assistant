@@ -101,10 +101,15 @@ CASES: list[Case] = [
     _c("POST", "/api/career-sites/<int:source_id>/dismiss-recapture", source_id="career_site"),
     _c_no_control("POST", "/api/career-sites/<int:source_id>/scan", source_id="career_site"),
     _c("DELETE", "/api/company-aliases/<int:alias_id>", alias_id="company_alias"),
+    # ai: claude-sonnet-5 | 2026-11-26 -- typed contact emails (2026-11-26 full review:
+    # these three routes were added without a matching CASES entry).
+    _c("DELETE", "/api/contact-emails/<int:email_id>", email_id="contact_email"),
+    _c("PUT", "/api/contact-emails/<int:email_id>", {"address": "x@example.com", "email_type": "home"}, email_id="contact_email"),
     _c("DELETE", "/api/contact-employment-history/<int:entry_id>", entry_id="contact_employment_history"),
     _c("PATCH", "/api/contact-employment-history/<int:entry_id>", {"company": "x"}, entry_id="contact_employment_history"),
     _c("PATCH", "/api/contacts/<int:contact_id>", {"interested": True}, contact_id="contact"),
     _c("GET", "/api/contacts/<int:contact_id>/activity", contact_id="contact"),  # ai: claude-opus-5-5 | 2026-11-11
+    _c("POST", "/api/contacts/<int:contact_id>/emails", {"address": "y@example.com", "email_type": "home"}, contact_id="contact"),
     _c("GET", "/api/contacts/<int:contact_id>/employment-history", contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/employment-history", {"company": "x"}, contact_id="contact"),
     _c("POST", "/api/contacts/<int:contact_id>/outreach", {"sent_at": _TS, "channel": "linkedin"}, contact_id="contact"),
@@ -358,6 +363,11 @@ class Tenants:
                     created_at=_TS,
                 ),
                 "contact": contact_id,
+                # ai: claude-sonnet-5 | 2026-11-26
+                "contact_email": ins(
+                    cur, "contact_email_addresses", contact_id=contact_id,
+                    address=f"{_MARKER.lower()}@example.com", email_type="home", created_at=_TS,
+                ),
                 # ai: claude-opus-5-5 | 2026-11-11 -- was contact_outreach
                 "interaction": ins(
                     cur, "interactions", contact_id=contact_id, occurred_at=_TS, channel="phone",
