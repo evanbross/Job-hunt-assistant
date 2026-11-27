@@ -173,6 +173,31 @@ def test_create_career_site_rejects_invalid_collection_mode(
     assert "collection_mode" in response.get_json()["error"]
 
 
+# ─── dismiss_recapture_reminder ────────────────────────────────────────────
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+def test_dismiss_recapture_reminder_clears_needs_attention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dismissing the reminder is also how the user says "I've logged back
+    in" after a login-wall flag (backend/db/repositories/career_site_sources.py's
+    flag_attention) -- it must resume the normal automatic schedule, not just
+    push the recapture clock out."""
+    sites_repo = FakeCareerSitesRepo()
+    sites_repo.rows[5]["needs_attention"] = 1
+    sites_repo.rows[5]["attention_reason"] = "Looks like a login wall"
+    app = _make_app(monkeypatch, {"career_sites": sites_repo, "conn": FakeConnection()})
+    client = app.test_client()
+
+    response = client.post("/api/career-sites/5/dismiss-recapture")
+
+    assert response.status_code == 200
+    assert sites_repo.rows[5]["needs_attention"] == 0
+    assert sites_repo.rows[5]["attention_reason"] is None
+    assert sites_repo.rows[5]["last_captured_at"]
+
+
 # ─── update_career_site ────────────────────────────────────────────────────
 
 

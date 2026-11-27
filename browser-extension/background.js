@@ -408,7 +408,27 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   try { expectedHost = new URL(info.url).hostname; } catch { /* skip */ }
   try { actualHost = new URL(tab.url || '').hostname; } catch { /* skip */ }
   // ai: claude-sonnet-4-6 | 2026-06-21
-  if (expectedHost && actualHost && _registeredDomain(expectedHost) !== _registeredDomain(actualHost)) return;
+  if (expectedHost && actualHost && _registeredDomain(expectedHost) !== _registeredDomain(actualHost)) {
+    // ai: claude-sonnet-5 | 2026-11-27 -- an automatic_browser career-site capture
+    // (source_id set) is fully unattended -- a background tab nobody is watching
+    // (see pollQueue's isBackground). Leaving it open hoping the user notices and
+    // logs in just leaves an invisible tab open forever while the scheduler keeps
+    // re-queuing the same doomed capture every tick. Report it and stop retrying
+    // until the user resolves it (the app's "Career Sites Ready to Scan" banner).
+    // A manual/email-triggered capture (no source_id) is something the user is
+    // likely watching right now -- keep the original behavior of leaving its tab
+    // open so they can sign in immediately.
+    if (info.sourceId != null) {
+      reportCaptureFailure(
+        info.url,
+        'The page redirected to a different site while loading — looks like a login or verification wall.',
+        true,
+      );
+      _queueTabs.delete(tabId);
+      chrome.tabs.remove(tabId).catch(() => {});
+    }
+    return;
+  }
 
   // ai: claude-sonnet-5 | 2026-10-15
   // Save queue_url/purpose/jobId/sourceId into chrome.storage.session (not a
@@ -496,11 +516,68 @@ function scheduleQueueCapture(tabId, delayMs) {
 const _CAPTURE_TIMEOUT_ALARM_PREFIX = 'jha-capture-timeout-';
 const _CAPTURE_RESPONSE_TIMEOUT_MINUTES = 1.5;
 
+// ai: claude-sonnet-5 | 2026-11-27
+// Tells the app's /capture-failed listener route why a queued capture never
+// completed, instead of leaving the row for claim_pending's slower staleness
+// sweep to rediscover with no real reason attached. Best-effort: nothing here
+// should block the tab cleanup that follows it.
+async function reportCaptureFailure(queueUrl, reason, needsLogin) {
+  if (!queueUrl) return;
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/capture-failed`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ queue_url: queueUrl, reason, needs_login: !!needsLogin }),
+    });
+    jhaReportAuth(res);
+  } catch (err) {
+    console.error('[JHA] reporting a capture failure failed:', err?.message || err);
+  }
+}
+
+// ai: claude-sonnet-5 | 2026-11-27
+// Whether giving up on originalUrl, having last seen currentUrl, looks like a
+// login/verification wall rather than some other stall. Registered-domain
+// comparison matches the redirect check above it; the path check catches a
+// same-domain sign-in page (e.g. linkedin.com/login) that a foreign-domain
+// check alone would miss.
+function looksLikeLoginWall(originalUrl, currentUrl) {
+  if (!currentUrl || currentUrl === originalUrl) return false;
+  try {
+    const originalHost = _registeredDomain(new URL(originalUrl).hostname);
+    const currentHost = _registeredDomain(new URL(currentUrl).hostname);
+    if (originalHost !== currentHost) return true;
+  } catch {
+    /* fall through to the path-based check */
+  }
+  return /\/(login|signin|sign-in|authwall|checkpoint)\b/i.test(currentUrl);
+}
+
 // Shared cleanup for a queue-capture tab that is being given up on, whether
 // because triggering it failed outright or because it never answered in time.
 async function _abandonQueueTab(tabId) {
   chrome.alarms.clear(`${_CAPTURE_TIMEOUT_ALARM_PREFIX}${tabId}`);
   _pendingCaptureTabs.delete(tabId);
+  // ai: claude-sonnet-5 | 2026-11-27 -- read before deleting, so the report below
+  // still has the original queue URL to match back to a queue row/source.
+  const pending = await _getPendingCapture(tabId);
+  if (pending?.queueUrl) {
+    let currentUrl = pending.queueUrl;
+    try {
+      currentUrl = (await chrome.tabs.get(tabId)).url || currentUrl;
+    } catch {
+      /* the tab may already be gone */
+    }
+    const needsLogin = looksLikeLoginWall(pending.queueUrl, currentUrl);
+    reportCaptureFailure(
+      pending.queueUrl,
+      needsLogin
+        ? 'The page redirected away while loading — looks like a login or verification wall.'
+        : 'The extension gave up waiting for a response from this page.',
+      needsLogin,
+    );
+  }
   await _deletePendingCapture(tabId);
   const previousTabId = _previousTabs.get(tabId);
   _previousTabs.delete(tabId);

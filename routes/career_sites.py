@@ -1363,7 +1363,14 @@ def dismiss_recapture_reminder(source_id: int) -> ResponseReturnValue:
         repos["career_sites"].update(
             user_id,
             source_id,
-            {"last_captured_at": datetime.now(UTC).isoformat(timespec="seconds")},
+            {
+                "last_captured_at": datetime.now(UTC).isoformat(timespec="seconds"),
+                # ai: claude-sonnet-5 | 2026-11-27 -- dismissing this reminder is also
+                # how the user says "I've logged back in" after a needs_attention
+                # flag (see flag_attention): resume the normal automatic schedule.
+                "needs_attention": 0,
+                "attention_reason": None,
+            },
         )
         repos["conn"].commit()
     return jsonify({"status": "ok"})

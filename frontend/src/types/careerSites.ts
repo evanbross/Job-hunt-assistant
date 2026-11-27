@@ -45,6 +45,12 @@ export interface CareerSite {
   created_at?: string | null;
   /** Only present on GET /api/career-sites/recapture-due rows (computed column). */
   next_capture_due_at?: string | null;
+  /** Set by the browser extension's /capture-failed report (backend/db/repositories/
+   * career_site_sources.py's flag_attention) when a capture looks like it hit a login
+   * or verification wall -- the scheduler stops re-queuing it until dismiss-recapture
+   * clears this. */
+  needs_attention?: number | boolean;
+  attention_reason?: string | null;
 }
 
 export interface CareerScanStatus {

@@ -202,6 +202,23 @@ def _add_career_site_for_listener(user_id: int, name: str, url: str) -> dict[str
     return {"source": row, "already_added": False}
 
 
+# ai: claude-sonnet-5 | 2026-11-27
+def _report_capture_failed(user_id: int, queue_url: str, reason: str, needs_login: bool) -> None:
+    """Called when the extension gives up on a queued capture. Marks the
+    matching queue row failed with the real reason (instead of leaving it to
+    claim_pending's slower staleness sweep) and, when it looks like a login
+    wall, flags the career-site source so the scheduler stops re-queuing a
+    capture that cannot succeed until the user signs back in."""
+    with get_repos(user_id) as repos:
+        queue_row = repos["browser_capture_queue"].find_latest_for_url(user_id, queue_url)
+        if queue_row is not None:
+            repos["browser_capture_queue"].mark_failed(user_id, queue_row["id"], reason)
+            source_id = queue_row.get("source_id")
+            if needs_login and source_id is not None:
+                repos["career_sites"].flag_attention(user_id, source_id, reason)
+        repos["conn"].commit()
+
+
 # ai: claude-opus-5-5 | 2026-11-05
 def start_extension_servers(
     trusted_proxies: tuple[Network, ...],
@@ -224,6 +241,7 @@ def start_extension_servers(
         claim_outreach_draft=_claim_linkedin_outreach_draft,
         capture_conversation=_capture_linkedin_conversation,
         add_career_site=_add_career_site_for_listener,
+        report_capture_failed=_report_capture_failed,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,
     )

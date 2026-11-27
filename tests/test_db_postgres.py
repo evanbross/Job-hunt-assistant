@@ -305,6 +305,46 @@ def test_get_due_automatic_filters_enabled_automatic_and_overdue(pg_dsn: str) ->
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-11-27
+def test_flag_attention_excludes_a_source_from_automatic_scheduling(pg_dsn: str) -> None:
+    """A source stuck behind a login wall (browser_capture_queue's
+    /capture-failed report) must stop being re-queued every scheduler tick --
+    it cannot succeed until the user signs back in by hand."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "flag-attention@example.com", "seed-flag-attention@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+
+        source_id = repos["career_sites"].insert(
+            user_id,
+            {
+                "name": "LinkedIn Search",
+                "url": "https://www.linkedin.com/jobs/search-results/",
+                "enabled": 1,
+                "collection_mode": "automatic_browser",
+                "last_captured_at": (datetime.now(UTC) - timedelta(days=8)).isoformat(
+                    timespec="seconds"
+                ),
+                "recapture_interval_days": 7,
+            },
+        )
+        repos["conn"].commit()
+        assert source_id in {s["id"] for s in repos["career_sites"].get_due_automatic(user_id)}
+
+        repos["career_sites"].flag_attention(user_id, source_id, "Looks like a login wall")
+        repos["conn"].commit()
+
+        assert repos["career_sites"].get_due_automatic(user_id) == []
+        flagged = repos["career_sites"].get_by_id(user_id, source_id)
+        assert flagged["needs_attention"] == 1
+        assert flagged["attention_reason"] == "Looks like a login wall"
+    finally:
+        repos["conn"].close()
+
+
 # ai: claude-sonnet-5 | 2026-10-05
 def test_claim_for_scan_is_atomic_and_single_winner(pg_dsn: str) -> None:
     """claim_for_scan() is the cross-process guard against the same site

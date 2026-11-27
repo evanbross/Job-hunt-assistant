@@ -586,6 +586,14 @@ def migrate_schema(conn: Any) -> None:
         ("last_captured_at", "TEXT"),
         # ai: claude-sonnet-5 | 2026-10-05 -- weekly, not every-4-days, default
         ("recapture_interval_days", "INTEGER DEFAULT 7"),
+        # ai: claude-sonnet-5 | 2026-11-27 -- an automatic_browser capture that
+        # looks like a login/verification wall (browser_capture_queue's
+        # /capture-failed report) sets this instead of letting the scheduler
+        # keep re-queuing a capture that cannot succeed without the user
+        # signing back in by hand. get_due_automatic skips it until dismissed
+        # (routes/career_sites.py's dismiss_recapture_reminder clears it).
+        ("needs_attention", "INTEGER NOT NULL DEFAULT 0"),
+        ("attention_reason", "TEXT"),
     ]:
         cur.execute(
             f"ALTER TABLE career_site_sources ADD COLUMN IF NOT EXISTS {col} {defn}"

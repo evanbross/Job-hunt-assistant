@@ -222,36 +222,47 @@ export default function CareerSiteScanBanner() {
             </div>
             {!collapsed && (
               <div style={siteListStyle}>
-              {sortedDueSites.map((site) => (
-                <div key={site.id} style={siteRowStyle}>
-                  <span style={siteNameStyle}>{site.name || site.url}</span>
-                  <span style={siteAgeStyle}>{formatAge(site.last_captured_at)}</span>
-                  {isManualCollectionSite(site) ? (
+              {sortedDueSites.map((site) => {
+                const needsAttention = !!site.needs_attention;
+                return (
+                  <div key={site.id} style={siteRowStyle}>
+                    <div style={siteNameColumnStyle}>
+                      <span style={siteNameStyle}>{site.name || site.url}</span>
+                      {needsAttention && (
+                        <span style={attentionReasonStyle}>
+                          ⚠ {site.attention_reason || "Needs your attention"}
+                        </span>
+                      )}
+                    </div>
+                    {!needsAttention && <span style={siteAgeStyle}>{formatAge(site.last_captured_at)}</span>}
+                    {isManualCollectionSite(site) || needsAttention ? (
+                      <button
+                        className="btn-primary"
+                        style={scanBtnStyle}
+                        onClick={() => handleOpenSite(site)}
+                      >
+                        Open
+                      </button>
+                    ) : (
+                      <button
+                        className="btn-primary"
+                        style={scanBtnStyle}
+                        onClick={() => handleScan(site.id)}
+                      >
+                        Scan
+                      </button>
+                    )}
                     <button
-                      className="btn-primary"
+                      className="btn-secondary"
                       style={scanBtnStyle}
-                      onClick={() => handleOpenSite(site)}
+                      onClick={() => handleDismiss(site.id)}
+                      title={needsAttention ? "Resume automatic scanning once you've signed in" : undefined}
                     >
-                      Open
+                      {needsAttention ? "I've signed in" : "Dismiss"}
                     </button>
-                  ) : (
-                    <button
-                      className="btn-primary"
-                      style={scanBtnStyle}
-                      onClick={() => handleScan(site.id)}
-                    >
-                      Scan
-                    </button>
-                  )}
-                  <button
-                    className="btn-secondary"
-                    style={scanBtnStyle}
-                    onClick={() => handleDismiss(site.id)}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              ))}
+                  </div>
+                );
+              })}
               </div>
             )}
           </div>
@@ -334,12 +345,27 @@ const siteRowStyle: CSSProperties = {
   gap: "10px",
 };
 
+const siteNameColumnStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  flex: "1 1 auto",
+  minWidth: 0,
+  gap: "2px",
+};
+
 const siteNameStyle: CSSProperties = {
   fontSize: "13px",
   fontWeight: 600,
   color: "var(--text)",
-  flex: "1 1 auto",
-  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+};
+
+// ai: claude-sonnet-5 | 2026-11-27
+const attentionReasonStyle: CSSProperties = {
+  fontSize: "11px",
+  color: "var(--orange)",
   overflow: "hidden",
   textOverflow: "ellipsis",
   whiteSpace: "nowrap",

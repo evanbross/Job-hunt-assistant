@@ -50,6 +50,8 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             "recapture_interval_days",
             "next_scan_offset",
             "created_at",
+            "needs_attention",
+            "attention_reason",
         }
     )
 
@@ -82,6 +84,7 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             SELECT * FROM career_site_sources
             WHERE user_id = %s
               AND enabled = 1
+              AND needs_attention = 0
               AND COALESCE(collection_mode, 'automatic') IN ('automatic', 'automatic_browser')
               AND (
                   last_captured_at IS NULL
@@ -93,6 +96,17 @@ class PostgresCareerSiteSourceRepository(_BaseRepo):
             (user_id,),
         )
         return [_row_to_dict(r) for r in cur.fetchall()]
+
+    # ai: claude-sonnet-5 | 2026-11-27
+    def flag_attention(self, user_id: int, source_id: int, reason: str) -> None:
+        """Mark *source_id* as needing the user's attention (e.g. a login wall)
+        so get_due_automatic stops re-queuing a capture that cannot succeed
+        unattended. dismiss_recapture_reminder clears it once the user has."""
+        self._execute(
+            "UPDATE career_site_sources SET needs_attention = 1, attention_reason = %s"
+            " WHERE id = %s AND user_id = %s",
+            (reason[:500], source_id, user_id),
+        )
 
     # ai: claude-sonnet-5 | 2026-10-05
     # Atomic claim/dequeue pattern (PYTHON_STANDARDS.md "SELECT-then-Write Race

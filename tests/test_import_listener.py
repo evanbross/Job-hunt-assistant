@@ -226,6 +226,7 @@ class _Recorder:
         self.outreach_claims: list[tuple[int, str]] = []
         self.conversations: list[tuple[int, CapturedConversation]] = []  # ai: claude-opus-5-5 | 2026-11-18
         self.added_career_sites: list[tuple[int, str, str]] = []  # ai: claude-sonnet-5 | 2026-11-27
+        self.capture_failures: list[tuple[int, str, str, bool]] = []  # ai: claude-sonnet-5 | 2026-11-27
         self.auth_calls: list[str] = []
         self.auth_failure: Exception | None = None
 
@@ -291,6 +292,10 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
             "already_added": already_added,
         }
 
+    # ai: claude-sonnet-5 | 2026-11-27
+    def fake_report_capture_failed(user_id: int, queue_url: str, reason: str, needs_login: bool) -> None:
+        recorder.capture_failures.append((user_id, queue_url, reason, needs_login))
+
     listener = JobImportListener(
         host="127.0.0.1",
         port=0,
@@ -309,6 +314,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         claim_outreach_draft=fake_claim_outreach_draft,
         capture_conversation=fake_capture_conversation,
         add_career_site=fake_add_career_site,
+        report_capture_failed=fake_report_capture_failed,
         ws_tickets=tickets,
     )
     listener.start()
@@ -399,6 +405,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/linkedin-outreach/claim"),
     ("POST", "/linkedin-messages/capture"),  # ai: claude-opus-5-5 | 2026-11-18
     ("POST", "/career-sites"),  # ai: claude-sonnet-5 | 2026-11-27
+    ("POST", "/capture-failed"),  # ai: claude-sonnet-5 | 2026-11-27
 ]
 
 
@@ -416,6 +423,7 @@ def test_every_protected_route_rejects_a_missing_token(
     assert recorder.captured == [] and recorder.learned == [] and recorder.claimed_for == []
     assert recorder.outreach_claims == []
     assert recorder.added_career_sites == []
+    assert recorder.capture_failures == []
 
 
 @pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
@@ -769,6 +777,68 @@ def test_adding_a_career_site_unavailable_without_a_callback(monkeypatch: pytest
     try:
         status, _, _ = _post_json(listener, "/career-sites", {"name": "Acme", "url": "https://acme.example"})
         assert status == HTTPStatus.SERVICE_UNAVAILABLE
+    finally:
+        listener.stop()
+
+
+# ai: claude-sonnet-5 | 2026-11-27 -- the extension's give-up report, instead
+# of leaving a stuck queue row to claim_pending's slower staleness sweep.
+def test_a_capture_failure_is_reported_for_the_authenticated_user(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener,
+        "/capture-failed",
+        {"queue_url": "https://www.linkedin.com/jobs/search-results/", "reason": "Looks like a login wall", "needs_login": True},
+        token=USER_B_TOKEN,
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body) == {"ok": True}
+    assert recorder.capture_failures == [
+        (USER_B, "https://www.linkedin.com/jobs/search-results/", "Looks like a login wall", True)
+    ]
+
+
+def test_a_capture_failure_defaults_needs_login_to_false(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(
+        listener, "/capture-failed", {"queue_url": "https://example.com/jobs", "reason": "Timed out waiting for a response"}
+    )
+    assert status == HTTPStatus.OK
+    assert recorder.capture_failures == [
+        (USER_A, "https://example.com/jobs", "Timed out waiting for a response", False)
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"queue_url": "", "reason": "x"},
+        {"queue_url": "https://example.com", "reason": ""},
+        {"reason": "x"},
+        {"queue_url": "https://example.com"},
+    ],
+)
+def test_a_capture_failure_report_rejects_bad_bodies(running_listener: Any, payload: dict[str, Any]) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(listener, "/capture-failed", payload)
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.capture_failures == []
+
+
+def test_a_capture_failure_report_is_accepted_without_a_callback() -> None:
+    """Best-effort telemetry from the extension -- an older/disabled backend
+    should not make the extension treat this as a real error."""
+    listener = JobImportListener(
+        host="127.0.0.1", port=0, max_bytes=1000,
+        authenticate=lambda token: 1, submit_capture=lambda user_id, body: ({}, 200),
+    )
+    listener.start()
+    try:
+        status, body, _ = _post_json(
+            listener, "/capture-failed", {"queue_url": "https://example.com/jobs", "reason": "x"}
+        )
+        assert status == HTTPStatus.OK
+        assert json.loads(body) == {"ok": True}
     finally:
         listener.stop()
 

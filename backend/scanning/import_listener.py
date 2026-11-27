@@ -97,6 +97,11 @@ CaptureConversation = Callable[[int, CapturedConversation], dict[str, Any]]
 # ai: claude-sonnet-5 | 2026-11-27 -- (user_id, name, url) -> {"source": row,
 # "already_added": bool}: "Add this job board" on a search-results page.
 AddCareerSite = Callable[[int, str, str], dict[str, Any]]
+# ai: claude-sonnet-5 | 2026-11-27 -- (user_id, queue_url, reason, needs_login)
+# -> None: the extension gave up on a queued capture (timed out, or landed on
+# what looks like a login/verification wall) and is reporting why, instead of
+# leaving the queue row to be rediscovered by claim_pending's staleness sweep.
+ReportCaptureFailed = Callable[[int, str, str, bool], None]
 
 # ai: claude-opus-5-5 | 2026-11-18
 class CapturedMessageIn(BaseModel):
@@ -244,6 +249,26 @@ class AddCareerSiteRequest(BaseModel):
             validate_outbound_url(stripped)
         except UnsafeUrlError as exc:
             raise ValueError(str(exc)) from exc
+        return stripped
+
+
+# ai: claude-sonnet-5 | 2026-11-27
+class CaptureFailedRequest(BaseModel):
+    """POST /capture-failed body: the extension gave up on a queued capture
+    (timeout, or a redirect that looks like a login/verification wall) and is
+    reporting it instead of leaving the row to the server's own slower
+    staleness sweep."""
+
+    queue_url: str = Field(max_length=2000)
+    reason: str = Field(max_length=500)
+    needs_login: bool = False
+
+    @field_validator("queue_url", "reason")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
         return stripped
 
 
@@ -446,6 +471,7 @@ class JobImportListener:
         claim_outreach_draft: ClaimOutreachDraft | None = None,
         capture_conversation: CaptureConversation | None = None,
         add_career_site: AddCareerSite | None = None,
+        report_capture_failed: ReportCaptureFailed | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
         rate_limiter: RateLimiter | None = None,
@@ -467,6 +493,7 @@ class JobImportListener:
         self._claim_outreach_draft = claim_outreach_draft
         self._capture_conversation = capture_conversation
         self._add_career_site = add_career_site
+        self._report_capture_failed = report_capture_failed
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -494,6 +521,7 @@ class JobImportListener:
         claim_outreach_draft = self._claim_outreach_draft
         capture_conversation = self._capture_conversation
         add_career_site = self._add_career_site
+        report_capture_failed = self._report_capture_failed
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
         limiter = self._rate_limiter or get_rate_limiter()
@@ -863,6 +891,40 @@ class JobImportListener:
                         )
                     return
 
+                # ai: claude-sonnet-5 | 2026-11-27 -- the extension gave up on a
+                # queued capture (timeout, or a suspected login wall) and is
+                # reporting it instead of leaving the row to go stale.
+                if path == "/capture-failed":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        failed_request = CaptureFailedRequest.model_validate(payload)
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "queue_url and reason are required."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if report_capture_failed is None:
+                        self._send_json({"ok": True})  # nothing to report to; not an error
+                        return
+                    try:
+                        report_capture_failed(
+                            user_id,
+                            failed_request.queue_url,
+                            failed_request.reason,
+                            failed_request.needs_login,
+                        )
+                        self._send_json({"ok": True})
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Recording a capture failure failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not record the capture failure."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
                 raw_body = self._read_body()
                 if raw_body is None:
                     return
@@ -1067,6 +1129,7 @@ def start_job_import_listener(
     claim_outreach_draft: ClaimOutreachDraft | None = None,
     capture_conversation: CaptureConversation | None = None,
     add_career_site: AddCareerSite | None = None,
+    report_capture_failed: ReportCaptureFailed | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
@@ -1106,6 +1169,7 @@ def start_job_import_listener(
             claim_outreach_draft=claim_outreach_draft,
             capture_conversation=capture_conversation,
             add_career_site=add_career_site,
+            report_capture_failed=report_capture_failed,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
         )
