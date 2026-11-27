@@ -335,13 +335,21 @@ async function pollQueue() {
       // logged-in session — they don't need foreground interaction, so load them in a
       // background tab rather than stealing focus like the import/JD-capture queue does.
       const purpose = item.purpose || 'import';
+      // ai: claude-sonnet-5 | 2026-11-27 -- an automatic_browser career-site capture
+      // (source_id set — see enqueue_for_source) is just as unattended as a closed-req
+      // check: triggerQueueCapture() below auto-injects content.js and posts the
+      // result with no user action needed. Without this, a LinkedIn search source
+      // stuck retrying every scheduler tick (see browser_capture_queue.py's
+      // claim_pending comment) stole the user's foreground tab repeatedly.
+      const isAutomaticBrowserCapture = item.source_id != null;
       // ai: claude-sonnet-5 | 2026-07-12
       // Wellfound is the exception: confirmed via captured HTML that its job-detail
       // panel never renders in a background tab at all (not just slowly) — Chrome
       // pauses requestAnimationFrame and defers lazy-loaded chunks for hidden tabs,
       // and the panel's fetch-then-render depends on that pipeline. LinkedIn/WTTJ's
       // banners don't hit this, so only Wellfound needs the brief focus-steal.
-      const isBackground = purpose === 'closed_req' && !item.url.includes('wellfound.com');
+      const isBackground =
+        (purpose === 'closed_req' || isAutomaticBrowserCapture) && !item.url.includes('wellfound.com');
       // ai: claude-sonnet-4-6 | 2026-06-22
       // Capture the active tab before opening the queue tab so we can restore focus
       // to it (i.e. the JHA tab) after the capture is done.
