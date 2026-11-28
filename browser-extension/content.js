@@ -707,8 +707,10 @@
   // but silently undercounts a site needing more than one page/scroll.
   async function countSmartGenericJobs() {
     const seen = new Set();
-    function collectOnce() {
-      collectJobLinkAnchors().forEach(({ u }) => seen.add(u.origin + u.pathname));
+    // root overrides the default -- see buildSmartGenericPayload's matching
+    // collectJobLinks for why (paginateSmartGeneric's fetch-based path).
+    function collectOnce(root = document) {
+      collectJobLinkAnchors(root).forEach(({ u }) => seen.add(u.origin + u.pathname));
     }
     collectOnce();
     await paginateSmartGeneric(() => document, collectOnce, () => seen.size);
@@ -719,6 +721,16 @@
       if (isJobLink(selfUrl)) seen.add(selfUrl.origin + selfUrl.pathname);
     } catch { /* skip */ }
     return seen.size;
+  }
+
+  // ai: claude-sonnet-5 | 2026-11-28
+  // innerText is layout-dependent and always empty on a document fetched via
+  // fetch()+DOMParser (see parseJobListDocument below) -- it's never attached
+  // to a document with a real layout, unlike a live page. textContent has no
+  // such requirement, so it's the fallback wherever this file reads text that
+  // might come from either a live or a fetched page.
+  function visibleText(el) {
+    return el?.innerText || el?.textContent || '';
   }
 
   function collectWellfoundSlugs() {
@@ -3515,6 +3527,65 @@
     return null;
   }
 
+  // ai: claude-sonnet-5 | 2026-11-28
+  // findNextPageControl deliberately excludes a navigating <a> (see
+  // isNavigatingAnchor's comment) since clicking it would tear down this
+  // content script mid-scan -- confirmed live on builtin.com, whose
+  // numbered-pagination "Go to Next Page" link is exactly that: a plain
+  // <a href="...&page=2">, not an in-place AJAX control. That link's href is
+  // still perfectly fetchable directly, without ever touching the live tab,
+  // which paginateSmartGeneric does below once this finds one. Same
+  // rel="next" -> aria-label -> text priority as findNextPageControl, minus
+  // the visibility check (a page fetched via parseJobListDocument is never
+  // attached to a document with layout, so getBoundingClientRect is always
+  // zero there -- only the disabled/class checks still make sense for it).
+  function nextLinkHref(el, baseUrl) {
+    if (!el || el.tagName !== 'A' || !isNextControlEnabled(el)) return null;
+    const href = el.getAttribute('href');
+    if (!href) return null;
+    const trimmed = href.trim();
+    if (trimmed === '' || trimmed === '#' || /^javascript:/i.test(trimmed)) return null;
+    try {
+      return new URL(href, baseUrl).href;
+    } catch {
+      return null;
+    }
+  }
+
+  function findNextPageHref(doc, baseUrl) {
+    const relNext = nextLinkHref(doc.querySelector('a[rel="next"]'), baseUrl);
+    if (relNext) return relNext;
+
+    for (const el of doc.querySelectorAll('a[aria-label="Next"], a[aria-label*="next" i]')) {
+      const href = nextLinkHref(el, baseUrl);
+      if (href) return href;
+    }
+
+    for (const el of doc.querySelectorAll('a')) {
+      const text = visibleText(el).trim();
+      if (_NEXT_PAGE_TEXT_RE.test(text)) {
+        const href = nextLinkHref(el, baseUrl);
+        if (href) return href;
+      }
+    }
+    return null;
+  }
+
+  // ai: claude-sonnet-5 | 2026-11-28
+  // Gives a fetched page's HTML a base URL so relative hrefs (the
+  // overwhelming majority of job links and pagination links) resolve the
+  // way collectJobLinkAnchors/isJobLink already expect -- a DOMParser
+  // document's own URL is "about:blank" with no base, so an unqualified
+  // <a href="/job/..."> would otherwise resolve to "about:blank/job/..."
+  // instead of the real site.
+  function parseJobListDocument(html, baseUrl) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const base = doc.createElement('base');
+    base.href = baseUrl;
+    doc.head?.prepend(base);
+    return doc;
+  }
+
   const _SMART_GENERIC_MAX_PAGES = 20;
 
   // ai: claude-opus-5-5 | 2026-10-29
@@ -3555,10 +3626,40 @@
   // instead of surfacing immediately.
   async function paginateSmartGeneric(getLinkRoot, collectOnce, currentCount) {
     let scrollStallCount = 0;
-    for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
-      const nextControl = findNextPageControl();
-      const prevCount = currentCount();
+    // ai: claude-sonnet-5 | 2026-11-28
+    // Once a site's "next" turns out to be a fetchable (not clickable) link
+    // (see findNextPageHref above), stay on the fetch path for the rest of
+    // the loop -- fetchDoc/fetchBaseUrl track the last page fetched so the
+    // next iteration looks for ITS "next" link, not page 1's. A template
+    // quirk on some later page that momentarily has no next link found means
+    // we've reached the end, not a reason to fall back to clicking or
+    // scrolling the live tab, which is still sitting on page 1 throughout.
+    let fetchDoc = null;
+    let fetchBaseUrl = location.href;
 
+    for (let page = 1; page < _SMART_GENERIC_MAX_PAGES; page++) {
+      const prevCount = currentCount();
+      const nextHref = findNextPageHref(fetchDoc || document, fetchBaseUrl);
+
+      if (nextHref) {
+        sendProgress(`Loading more jobs... (${prevCount} found)`, undefined);
+        let html = null;
+        try {
+          const res = await fetch(nextHref);
+          if (res.ok) html = await res.text();
+        } catch {
+          html = null; // network error -- stop trying to fetch further pages
+        }
+        if (!html) break;
+        fetchDoc = parseJobListDocument(html, nextHref);
+        fetchBaseUrl = nextHref;
+        collectOnce(fetchDoc);
+        if (currentCount() === prevCount) break;
+        continue;
+      }
+      if (fetchDoc) break;
+
+      const nextControl = findNextPageControl();
       if (nextControl) {
         scrollStallCount = 0;
         const prevLinks = linkSignature(getLinkRoot());
@@ -3590,8 +3691,11 @@
     const seen = new Set();
     const jobs = [];
 
-    function collectJobLinks() {
-      const root = getLinkRoot();
+    // root overrides getLinkRoot() -- paginateSmartGeneric passes a page
+    // fetched and parsed via parseJobListDocument once it switches to
+    // fetch-based pagination (see findNextPageHref's comment); every other
+    // caller leaves it unset and keeps today's live-document behavior.
+    function collectJobLinks(root = getLinkRoot()) {
       if (!root) return;
       collectJobLinkAnchors(root).forEach(({ link, u }) => { // ai: claude-opus-5-5 | 2026-10-14
         const url = u.origin + u.pathname; // strip query/hash to deduplicate
@@ -3601,7 +3705,7 @@
         // Walk up to find a card-sized container (20–1500 chars of visible text).
         let container = link.parentElement;
         for (let d = 0; d < 8 && container && container !== document.body; d++) {
-          const len = (container.innerText || '').trim().length;
+          const len = visibleText(container).trim().length;
           if (len >= 20 && len <= 1500) break;
           container = container.parentElement;
         }
@@ -3611,14 +3715,14 @@
           container?.querySelector('[data-ph-at-id*="title"]') ||
           container?.querySelector('h1,h2,h3,h4') ||
           link;
-        const title = titleEl?.innerText?.split('\n')[0]?.trim() || '';
+        const title = (visibleText(titleEl).split('\n')[0] || '').trim();
 
         const locationEl = container?.querySelector(
           '[data-ph-at-id*="location"], [class*="location"], [data-automation-id*="location"]'
         );
-        const jobLocation = locationEl?.innerText?.split('\n')[0]?.trim() || '';
+        const jobLocation = (visibleText(locationEl).split('\n')[0] || '').trim();
 
-        const cardText = container ? (container.innerText || '').trim().slice(0, 500) : '';
+        const cardText = container ? visibleText(container).trim().slice(0, 500) : '';
         const lines = [title || url.split('/').filter(Boolean).pop()];
         if (jobLocation) lines.push('Location: ' + jobLocation);
         lines.push('URL: ' + link.href); // use original href so redirect params are preserved
