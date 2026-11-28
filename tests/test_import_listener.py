@@ -227,6 +227,7 @@ class _Recorder:
         self.conversations: list[tuple[int, CapturedConversation]] = []  # ai: claude-opus-5-5 | 2026-11-18
         self.added_career_sites: list[tuple[int, str, str]] = []  # ai: claude-sonnet-5 | 2026-11-27
         self.capture_failures: list[tuple[int, str, str, bool]] = []  # ai: claude-sonnet-5 | 2026-11-27
+        self.added_email_sources: list[tuple[int, str, str]] = []  # ai: claude-sonnet-5 | 2026-11-28
         self.auth_calls: list[str] = []
         self.auth_failure: Exception | None = None
 
@@ -296,6 +297,15 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
     def fake_report_capture_failed(user_id: int, queue_url: str, reason: str, needs_login: bool) -> None:
         recorder.capture_failures.append((user_id, queue_url, reason, needs_login))
 
+    # ai: claude-sonnet-5 | 2026-11-28
+    def fake_add_email_source(user_id: int, name: str, email: str) -> dict[str, Any]:
+        recorder.added_email_sources.append((user_id, name, email))
+        already_added = email.startswith("existing-")
+        return {
+            "source": {"id": 7, "name": name, "match_type": "sender_email", "match_value": email, "user_id": user_id},
+            "already_added": already_added,
+        }
+
     listener = JobImportListener(
         host="127.0.0.1",
         port=0,
@@ -315,6 +325,7 @@ def running_listener() -> Iterator[tuple[JobImportListener, _Recorder, WebSocket
         capture_conversation=fake_capture_conversation,
         add_career_site=fake_add_career_site,
         report_capture_failed=fake_report_capture_failed,
+        add_email_source=fake_add_email_source,
         ws_tickets=tickets,
     )
     listener.start()
@@ -406,6 +417,7 @@ _PROTECTED_REQUESTS = [
     ("POST", "/linkedin-messages/capture"),  # ai: claude-opus-5-5 | 2026-11-18
     ("POST", "/career-sites"),  # ai: claude-sonnet-5 | 2026-11-27
     ("POST", "/capture-failed"),  # ai: claude-sonnet-5 | 2026-11-27
+    ("POST", "/email-sources"),  # ai: claude-sonnet-5 | 2026-11-28
 ]
 
 
@@ -424,6 +436,7 @@ def test_every_protected_route_rejects_a_missing_token(
     assert recorder.outreach_claims == []
     assert recorder.added_career_sites == []
     assert recorder.capture_failures == []
+    assert recorder.added_email_sources == []
 
 
 @pytest.mark.parametrize(("method", "path"), _PROTECTED_REQUESTS)
@@ -796,6 +809,65 @@ def test_a_capture_failure_is_reported_for_the_authenticated_user(running_listen
     assert recorder.capture_failures == [
         (USER_B, "https://www.linkedin.com/jobs/search-results/", "Looks like a login wall", True)
     ]
+
+
+# ai: claude-sonnet-5 | 2026-11-28 -- the extension's "Add this sender" button
+# on an open Gmail message.
+def test_an_email_source_is_added_for_the_authenticated_user(running_listener: Any) -> None:
+    listener, recorder, _ = running_listener
+    status, body, _ = _post_json(
+        listener,
+        "/email-sources",
+        {"name": "Greenhouse Notifications", "email": "notifications@greenhouse.io"},
+        token=USER_B_TOKEN,
+    )
+    assert status == HTTPStatus.CREATED
+    data = json.loads(body)
+    assert data["already_added"] is False
+    assert data["source"]["name"] == "Greenhouse Notifications"
+    assert recorder.added_email_sources == [
+        (USER_B, "Greenhouse Notifications", "notifications@greenhouse.io")
+    ]
+
+
+def test_adding_an_already_added_email_source_reports_ok_not_created(running_listener: Any) -> None:
+    listener, _, _ = running_listener
+    status, body, _ = _post_json(
+        listener, "/email-sources", {"name": "Dup Co", "email": "existing-sender@dup.example"}
+    )
+    assert status == HTTPStatus.OK
+    assert json.loads(body)["already_added"] is True
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"name": "", "email": "jobs@example.com"},
+        {"name": "Acme", "email": ""},
+        {"name": "Acme"},
+        {"email": "jobs@example.com"},
+        {"name": "Acme", "email": "not-an-email"},
+        {"name": "Acme", "email": "missing-at-sign.example.com"},
+    ],
+)
+def test_adding_an_email_source_rejects_bad_bodies(running_listener: Any, payload: dict[str, Any]) -> None:
+    listener, recorder, _ = running_listener
+    status, _, _ = _post_json(listener, "/email-sources", payload)
+    assert status == HTTPStatus.BAD_REQUEST
+    assert recorder.added_email_sources == []
+
+
+def test_adding_an_email_source_unavailable_without_a_callback() -> None:
+    listener = JobImportListener(
+        host="127.0.0.1", port=0, max_bytes=1000,
+        authenticate=lambda token: 1, submit_capture=lambda user_id, body: ({}, 200),
+    )
+    listener.start()
+    try:
+        status, _, _ = _post_json(listener, "/email-sources", {"name": "Acme", "email": "jobs@acme.example"})
+        assert status == HTTPStatus.SERVICE_UNAVAILABLE
+    finally:
+        listener.stop()
 
 
 def test_a_capture_failure_defaults_needs_login_to_false(running_listener: Any) -> None:

@@ -99,6 +99,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   document.getElementById('send-btn').addEventListener('click', handleSend);
   document.getElementById('fill-app-btn').addEventListener('click', handleFillApplication);
   document.getElementById('add-career-site-btn').addEventListener('click', handleAddCareerSite);
+  document.getElementById('add-email-source-btn').addEventListener('click', handleAddEmailSource);
   document.getElementById('capture-mode-list').addEventListener('click', () => setCaptureMode('list'));
   document.getElementById('capture-mode-detail').addEventListener('click', () => setCaptureMode('detail'));
   renderStashedAnswers(); // ai: claude-opus-5-5 | 2026-11-17 -- before the page probes; shown on any page
@@ -472,6 +473,44 @@ async function handleAddCareerSite() {
   }
 }
 
+// ai: claude-sonnet-5 | 2026-11-28
+// "Add Sender as Email Scan Source": registers the address in the editable
+// input (pre-filled from content.js's gmailMessage detection, but the user
+// can correct it first) as a new sender_email scan source.
+async function handleAddEmailSource() {
+  const btn = document.getElementById('add-email-source-btn');
+  const email = document.getElementById('email-source-input').value.trim();
+  if (!email) {
+    showStatus('Enter a sender email address first.', 'error');
+    return;
+  }
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div>Adding…';
+  hideStatus();
+  let result;
+  try {
+    result = await chrome.runtime.sendMessage({
+      action: 'addEmailSource',
+      name: lastScanResult?.senderName || email,
+      email,
+    });
+  } catch (err) {
+    result = { ok: false, error: String(err?.message || err) };
+  }
+  btn.disabled = false;
+  btn.textContent = 'Add Sender as Email Scan Source';
+  if (result?.ok) {
+    showStatus(
+      result.already_added
+        ? 'Already tracked — nothing to add.'
+        : `✓ Added "${result.source?.name}" as an email scan source.`,
+      'success'
+    );
+  } else {
+    showStatus(result?.error || 'Could not add this sender.', 'error');
+  }
+}
+
 // ai: claude-opus-5-5 | 2026-11-17
 function autofillSummary(filledCount, suggestedCount, unresolvedCount, suggestionError) {
   if (filledCount + suggestedCount + unresolvedCount === 0) {
@@ -624,6 +663,24 @@ function showNoAccess() {
 // must be explicitly disabled here rather than relying on jobCount alone.
 function resetButton() {
   const btn = document.getElementById('send-btn');
+  const emailOptions = document.getElementById('email-source-options');
+  const emailBtn = document.getElementById('add-email-source-btn');
+
+  // ai: claude-sonnet-5 | 2026-11-28 -- an open Gmail message isn't a job page
+  // either, but offer to register its sender instead of just blocking it.
+  if (lastScanResult?.type === 'gmailMessage') {
+    document.getElementById('add-career-site-btn').style.display = 'none';
+    emailOptions.style.display = 'block';
+    emailBtn.style.display = 'flex';
+    document.getElementById('email-source-input').value = lastScanResult.senderEmail || '';
+    btn.disabled = true;
+    btn.innerHTML = 'Not a job page';
+    btn.onclick = null;
+    return;
+  }
+  emailOptions.style.display = 'none';
+  emailBtn.style.display = 'none';
+
   // ai: claude-sonnet-5 | 2026-11-27 -- a blocked page (Gmail, Slack, etc.) is a
   // known non-job site; adding it as a scan source makes no sense either.
   document.getElementById('add-career-site-btn').style.display =

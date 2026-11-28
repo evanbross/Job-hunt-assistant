@@ -345,6 +345,40 @@ def test_flag_attention_excludes_a_source_from_automatic_scheduling(pg_dsn: str)
         repos["conn"].close()
 
 
+# ai: claude-sonnet-5 | 2026-11-28
+def test_get_by_match_finds_an_existing_email_source_case_insensitively(pg_dsn: str) -> None:
+    """Backs the extension's "Add this sender" idempotency check (see
+    web/extension_listener.py's _add_email_source_for_listener) -- a repeat
+    click, or two senders that only differ by case, must not create a
+    duplicate source."""
+    repos = open_repositories(pg_dsn)
+    try:
+        account = repos["user_accounts"].create_pending(
+            "get-by-match@example.com", "seed-get-by-match@example.com", "2099-01-01"
+        )
+        user_id = account["id"]
+        set_current_user(repos["conn"].cursor(), user_id)
+
+        source_id = repos["sources"].insert(
+            user_id,
+            {
+                "name": "Greenhouse Notifications",
+                "match_type": "sender_email",
+                "match_value": "Notifications@Greenhouse.io",
+                "enabled": 1,
+            },
+        )
+        repos["conn"].commit()
+
+        found = repos["sources"].get_by_match(user_id, "sender_email", "notifications@greenhouse.io")
+        assert found is not None
+        assert found["id"] == source_id
+        assert repos["sources"].get_by_match(user_id, "sender_domain", "notifications@greenhouse.io") is None
+        assert repos["sources"].get_by_match(user_id, "sender_email", "someone-else@greenhouse.io") is None
+    finally:
+        repos["conn"].close()
+
+
 # ai: claude-sonnet-5 | 2026-10-05
 def test_claim_for_scan_is_atomic_and_single_winner(pg_dsn: str) -> None:
     """claim_for_scan() is the cross-process guard against the same site

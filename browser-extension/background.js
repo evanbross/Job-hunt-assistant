@@ -985,6 +985,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     addCareerSite(message.tabId).then(sendResponse);
     return true;
   }
+
+  // ai: claude-sonnet-5 | 2026-11-28 -- the popup's "Add Sender as Email Scan Source".
+  if (message.action === 'addEmailSource') {
+    addEmailSource(message.name, message.email).then(sendResponse);
+    return true;
+  }
 });
 
 // ─── Add this page as a job board to scan ──────────────────────────────────
@@ -1029,6 +1035,36 @@ async function addCareerSite(tabId) {
     return { ok: true, ...data };
   } catch (err) {
     console.error('[JHA] adding this job board failed:', err?.message || err);
+    return { ok: false, error: 'Could not reach Job Hunt App. Is it running?' };
+  }
+}
+
+// ─── Add this sender as an email scan source ───────────────────────────────
+// ai: claude-sonnet-5 | 2026-11-28
+// Registers the sender of the Gmail message open in the tab (content.js's
+// gmailMessage detection) as a new sender_email scan source. Unlike
+// addCareerSite above, the sender address lives in the DOM, not the tab's
+// url/title, so the popup passes it through explicitly (and lets the user
+// edit it first) rather than background.js re-deriving it from the tab.
+async function addEmailSource(name, email) {
+  try {
+    const settings = await loadSettings();
+    const res = await fetch(`${settings.listenerUrl}/email-sources`, {
+      method: 'POST',
+      headers: jhaAuthHeaders(settings.token, { 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ name, email }),
+    });
+    jhaReportAuth(res);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      return {
+        ok: false,
+        error: res.status === 401 ? JHA_AUTH_ERROR_MESSAGE : data.error || `Error ${res.status}`,
+      };
+    }
+    return { ok: true, ...data };
+  } catch (err) {
+    console.error('[JHA] adding this email source failed:', err?.message || err);
     return { ok: false, error: 'Could not reach Job Hunt App. Is it running?' };
   }
 }

@@ -202,6 +202,29 @@ def _add_career_site_for_listener(user_id: int, name: str, url: str) -> dict[str
     return {"source": row, "already_added": False}
 
 
+# ai: claude-sonnet-5 | 2026-11-28
+def _add_email_source_for_listener(user_id: int, name: str, email: str) -> dict[str, Any]:
+    """Called from the extension's "Add this sender" button on an open Gmail
+    message: the same insert Settings > Email Sources makes, but idempotent on
+    the sender address so a repeat click doesn't create a duplicate source."""
+    with get_repos(user_id) as repos:
+        existing = repos["sources"].get_by_match(user_id, "sender_email", email)
+        if existing is not None:
+            return {"source": existing, "already_added": True}
+        source_id = repos["sources"].insert(
+            user_id,
+            {
+                "name": name,
+                "match_type": "sender_email",
+                "match_value": email,
+                "enabled": 1,
+            },
+        )
+        source = repos["sources"].get_by_id(user_id, source_id)
+        repos["conn"].commit()
+    return {"source": source, "already_added": False}
+
+
 # ai: claude-sonnet-5 | 2026-11-27
 def _report_capture_failed(user_id: int, queue_url: str, reason: str, needs_login: bool) -> None:
     """Called when the extension gives up on a queued capture. Marks the
@@ -242,6 +265,7 @@ def start_extension_servers(
         capture_conversation=_capture_linkedin_conversation,
         add_career_site=_add_career_site_for_listener,
         report_capture_failed=_report_capture_failed,
+        add_email_source=_add_email_source_for_listener,
         ws_tickets=ws_tickets,
         trusted_proxies=trusted_proxies,
     )

@@ -87,6 +87,34 @@
     return _NON_JOB_HOSTS.some(blocked => host === blocked || host.endsWith(`.${blocked}`));
   }
 
+  // ai: claude-sonnet-5 | 2026-11-28
+  // Gmail is otherwise a blocked host (see _NON_JOB_HOSTS above) -- it's not a
+  // job page -- but an open message is still worth one special case: offer to
+  // register its sender as a new email-scan source instead of just refusing.
+  // `.gD[email]` and `h2.hP` are Gmail's long-standing (not officially
+  // documented, but stable for well over a decade) DOM markers for "the open
+  // message's sender" and "the open message's subject heading" respectively;
+  // `.gD` also appears on inbox-list rows, so this only looks for one once an
+  // `h2.hP` (which only renders for an actually-open message) confirms we're
+  // not just looking at the list.
+  function extractGmailOpenMessage() {
+    const subjectEl = document.querySelector('h2.hP');
+    if (!subjectEl) return null;
+    // Scope the sender lookup to the open message's own container so it can't
+    // pick up an unrelated row still sitting in the inbox list's DOM -- walk a
+    // bounded number of ancestors up from the subject heading first.
+    let scope = subjectEl;
+    for (let i = 0; i < 8 && scope.parentElement; i += 1) scope = scope.parentElement;
+    const senderEl = scope.querySelector('span.gD[email]') || document.querySelector('span.gD[email]');
+    const email = senderEl?.getAttribute('email') || '';
+    if (!email) return null;
+    return {
+      subject: subjectEl.textContent.trim(),
+      senderEmail: email,
+      senderName: senderEl.getAttribute('name') || senderEl.textContent.trim() || email,
+    };
+  }
+
   // ai: claude-sonnet-5 | 2026-10-05
   // Exact-or-subdomain host match, same shape as isBlockedHost's own check
   // above. A plain host.includes('jobgether.com') also matches
@@ -104,6 +132,24 @@
   async function detectPage() {
     const host = location.hostname;
     const path = location.pathname;
+
+    // ai: claude-sonnet-5 | 2026-11-28 -- checked ahead of the generic blocked-
+    // host list below so an open message gets the "add this sender" offer
+    // instead of the plain "Not a job page" block.
+    if (isHostOrSubdomain(host, 'mail.google.com')) {
+      const message = extractGmailOpenMessage();
+      if (message) {
+        return {
+          site: 'Gmail',
+          type: 'gmailMessage',
+          jobCount: 0,
+          description: `Email from ${message.senderName}`,
+          senderEmail: message.senderEmail,
+          senderName: message.senderName,
+          subject: message.subject,
+        };
+      }
+    }
 
     if (isBlockedHost(host)) {
       return { site: host, type: 'blocked', jobCount: 0, description: 'Not a job page — capture blocked' };

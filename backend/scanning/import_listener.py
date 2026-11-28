@@ -102,6 +102,9 @@ AddCareerSite = Callable[[int, str, str], dict[str, Any]]
 # what looks like a login/verification wall) and is reporting why, instead of
 # leaving the queue row to be rediscovered by claim_pending's staleness sweep.
 ReportCaptureFailed = Callable[[int, str, str, bool], None]
+# ai: claude-sonnet-5 | 2026-11-28 -- (user_id, name, email) -> {"source": row,
+# "already_added": bool}: "Add this sender" on an open Gmail message.
+AddEmailSource = Callable[[int, str, str], dict[str, Any]]
 
 # ai: claude-opus-5-5 | 2026-11-18
 class CapturedMessageIn(BaseModel):
@@ -249,6 +252,36 @@ class AddCareerSiteRequest(BaseModel):
             validate_outbound_url(stripped)
         except UnsafeUrlError as exc:
             raise ValueError(str(exc)) from exc
+        return stripped
+
+
+# ai: claude-sonnet-5 | 2026-11-28
+_SIMPLE_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+
+
+# ai: claude-sonnet-5 | 2026-11-28
+class AddEmailSourceRequest(BaseModel):
+    """POST /email-sources body: the sender of the message open in the Gmail
+    tab -- added as a new sender_email email-scan source, the same way
+    Settings > Email Sources would."""
+
+    name: str = Field(max_length=200)
+    email: str = Field(max_length=320)
+
+    @field_validator("name")
+    @classmethod
+    def _name_not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("must not be blank")
+        return stripped
+
+    @field_validator("email")
+    @classmethod
+    def _valid_email(cls, value: str) -> str:
+        stripped = value.strip()
+        if not _SIMPLE_EMAIL_RE.match(stripped):
+            raise ValueError("must be a valid email address")
         return stripped
 
 
@@ -472,6 +505,7 @@ class JobImportListener:
         capture_conversation: CaptureConversation | None = None,
         add_career_site: AddCareerSite | None = None,
         report_capture_failed: ReportCaptureFailed | None = None,
+        add_email_source: AddEmailSource | None = None,
         ws_tickets: WebSocketTicketStore | None = None,
         trusted_proxies: tuple[Network, ...] = (),
         rate_limiter: RateLimiter | None = None,
@@ -494,6 +528,7 @@ class JobImportListener:
         self._capture_conversation = capture_conversation
         self._add_career_site = add_career_site
         self._report_capture_failed = report_capture_failed
+        self._add_email_source = add_email_source
         self._ws_tickets = ws_tickets
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -522,6 +557,7 @@ class JobImportListener:
         capture_conversation = self._capture_conversation
         add_career_site = self._add_career_site
         report_capture_failed = self._report_capture_failed
+        add_email_source = self._add_email_source
         ws_tickets = self._ws_tickets
         trusted_proxies = self._trusted_proxies
         limiter = self._rate_limiter or get_rate_limiter()
@@ -925,6 +961,40 @@ class JobImportListener:
                         )
                     return
 
+                # ai: claude-sonnet-5 | 2026-11-28 -- the extension's "Add this
+                # sender" button on an open Gmail message.
+                if path == "/email-sources":
+                    payload = self._read_json_object()
+                    if payload is None:
+                        return
+                    try:
+                        add_email_request = AddEmailSourceRequest.model_validate(payload)
+                    except ValidationError:
+                        self._send_json(
+                            {"error": "name and email are required, and email must look like an email address."},
+                            HTTPStatus.BAD_REQUEST,
+                        )
+                        return
+                    if add_email_source is None:
+                        self._send_json(
+                            {"error": "Adding email sources is unavailable."},
+                            HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+                    try:
+                        result = add_email_source(
+                            user_id, add_email_request.name, add_email_request.email
+                        )
+                        status = HTTPStatus.OK if result.get("already_added") else HTTPStatus.CREATED
+                        self._send_json(result, status)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("Adding an email source from the extension failed: %s", exc)
+                        self._send_json(
+                            {"error": "Could not add this email source."},
+                            HTTPStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    return
+
                 raw_body = self._read_body()
                 if raw_body is None:
                     return
@@ -1130,6 +1200,7 @@ def start_job_import_listener(
     capture_conversation: CaptureConversation | None = None,
     add_career_site: AddCareerSite | None = None,
     report_capture_failed: ReportCaptureFailed | None = None,
+    add_email_source: AddEmailSource | None = None,
     ws_tickets: WebSocketTicketStore | None = None,
     trusted_proxies: tuple[Network, ...] = (),
 ) -> JobImportListener | None:
@@ -1170,6 +1241,7 @@ def start_job_import_listener(
             capture_conversation=capture_conversation,
             add_career_site=add_career_site,
             report_capture_failed=report_capture_failed,
+            add_email_source=add_email_source,
             ws_tickets=ws_tickets,
             trusted_proxies=trusted_proxies,
         )

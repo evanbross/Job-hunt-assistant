@@ -73,6 +73,16 @@ class PostgresEmailSourceRepository(_BaseRepo):
         row = cur.fetchone()
         return _row_to_dict(row) if row else None
 
+    # ai: claude-sonnet-5 | 2026-11-28
+    def get_by_match(self, user_id: int, match_type: str, match_value: str) -> dict[str, Any] | None:
+        cur = self._execute(
+            "SELECT * FROM email_sources"
+            " WHERE user_id = %s AND match_type = %s AND lower(match_value) = lower(%s) LIMIT 1",
+            (user_id, match_type, match_value),
+        )
+        row = cur.fetchone()
+        return _row_to_dict(row) if row else None
+
     def insert(self, user_id: int, source: dict[str, Any]) -> int:
         unknown = set(source.keys()) - self._ALLOWED_COLUMNS
         if unknown:

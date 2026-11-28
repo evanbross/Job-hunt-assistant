@@ -278,6 +278,12 @@
     <button class="btn secondary" id="add-career-site-btn">Add as Job Board to Scan</button>
     <!-- ai: claude-opus-5-5 | 2026-11-18 -- shown instead of the job capture on a LinkedIn thread -->
     <button class="btn" id="capture-conversation-btn" style="display:none;">Capture this conversation</button>
+    <!-- ai: claude-sonnet-5 | 2026-11-28 -- shown instead of the job capture on an open Gmail message -->
+    <div class="option-box" id="email-source-options" style="display:none;">
+      <label for="email-source-input" style="display:block; margin-bottom:4px; font-weight:600;">Sender to scan for</label>
+      <input type="text" id="email-source-input" style="width:100%; padding:5px 7px; border:1px solid #cbd5e1; border-radius:4px; font-size:13px;">
+    </div>
+    <button class="btn" id="add-email-source-btn" style="display:none;">Add Sender as Email Scan Source</button>
 
     <div class="status-row" id="status-row"></div>
 
