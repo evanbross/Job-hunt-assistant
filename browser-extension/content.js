@@ -448,6 +448,23 @@
       };
     }
 
+    // ai: claude-sonnet-5 | 2026-11-28
+    // Glassdoor Recruiter's "matches" page -- one job match at a time, no
+    // underlying card list and no per-job URL at all, just a "N of TOTAL"
+    // counter and Next/Previous buttons. See glassdoorMatchProgress.
+    if (host === 'www.glassdoor.com' && path === '/recruiter/matches') {
+      const progress = glassdoorMatchProgress();
+      if (progress) {
+        return {
+          site: 'Glassdoor',
+          type: 'glassdoorMatches',
+          jobCount: progress.total,
+          description: `${progress.total} job matches — steps through all of them`,
+          captureModes: ['detail', 'list'],
+        };
+      }
+    }
+
     // ai: claude-opus-5-5 | 2026-10-29
     // A search on jobs.elastic.co renders its filtered "Search Results" list
     // above the department's full, unfiltered job accordions, so the generic
@@ -2448,6 +2465,109 @@
       : buildHtmlPayload();
   }
 
+  // ─── Glassdoor Recruiter matches (glassdoor.com/recruiter/matches) ────────
+  // ai: claude-sonnet-5 | 2026-11-28
+  // Shows one job match at a time with a "N of TOTAL" counter and
+  // Next/Previous buttons that swap the detail pane's content in place --
+  // the same split/stepper shape as insightGlobalSplit above, just simpler:
+  // no underlying card list or pagination to click through first, and no
+  // per-job URL at all (Apply is a plain <button>, not a link), so captured
+  // jobs are keyed by a synthetic #match=<index> URL instead.
+
+  function glassdoorMatchProgress() {
+    const text = document.querySelector('[data-testid="match-navigation-progress"]')?.textContent || '';
+    const m = /^(\d+)\s+of\s+(\d+)$/.exec(text.trim());
+    return m ? { current: parseInt(m[1], 10), total: parseInt(m[2], 10) } : null;
+  }
+
+  function extractGlassdoorMatchDetail() {
+    const pick1 = sel => document.querySelector(sel)?.textContent.trim() || '';
+    return {
+      title: pick1('[data-testid="super-match-job-title"]'),
+      company: pick1('[data-testid="super-match-employer-name"]'),
+      jobLocation: pick1('[data-testid="job-location"]'),
+      salary: pick1('[data-testid="detailSalary"]'),
+      posted: pick1('[data-testid="super-match-listing-age"]'),
+      description: document.querySelector('[data-testid="job-description-content"]')?.innerText.trim() || '',
+    };
+  }
+
+  function glassdoorMatchListingLines({ title, company, jobLocation, salary, posted, description, url }) {
+    return [
+      title,
+      company && `Company: ${company}`,
+      `URL: ${url}`,
+      jobLocation && `Location: ${jobLocation}`,
+      salary && `Pay: ${salary}`,
+      posted,
+      description && `\n${description}`,
+    ].filter(Boolean).join('\n');
+  }
+
+  // No per-job URL exists on this page at all -- title+company+index is a
+  // good enough dedup key (same tradeoff insightGlobalSplit's #job= makes
+  // above), with the index included since two different matches have already
+  // been observed sharing an identical title and company is still unique per
+  // match-index even on the rare repeat.
+  function glassdoorMatchSyntheticUrl(index, title, company) {
+    return `${location.origin}${location.pathname}#match=${index}&job=${encodeURIComponent(`${title}-${company}`)}`;
+  }
+
+  function buildGlassdoorMatchDetailPayload() {
+    const progress = glassdoorMatchProgress();
+    const detail = extractGlassdoorMatchDetail();
+    const url = glassdoorMatchSyntheticUrl(progress?.current ?? 1, detail.title, detail.company);
+    return JSON.stringify({
+      jobs: [{ url, job_title: detail.title, company: detail.company, listing_text: glassdoorMatchListingLines({ ...detail, url }) }],
+      source: { url: location.href },
+    });
+  }
+
+  async function waitForGlassdoorMatchChange(prevTitle, timeoutMs = 6000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const title = document.querySelector('[data-testid="super-match-job-title"]')?.textContent.trim();
+      if (title && title !== prevTitle) return true;
+      await sleep(150);
+    }
+    return false;
+  }
+
+  // ai: claude-sonnet-5 | 2026-11-28
+  // Steps through every match via the Next-match button only -- never
+  // Pass/Apply/Save, which are consequential actions on the user's real
+  // recruiter queue, not navigation -- until the counter reaches its total
+  // or Next becomes disabled, capturing each job's full detail as it's shown.
+  async function buildGlassdoorMatchListPayload() {
+    const progress = glassdoorMatchProgress();
+    if (!progress) return buildHtmlPayload();
+
+    const jobs = [];
+    const total = progress.total;
+    for (let i = 1; i <= total; i++) {
+      const detail = extractGlassdoorMatchDetail();
+      const url = glassdoorMatchSyntheticUrl(i, detail.title, detail.company);
+      sendProgress(`Capturing match ${i} of ${total}…`, i / total);
+      jobs.push({
+        url,
+        job_title: detail.title,
+        company: detail.company,
+        listing_text: glassdoorMatchListingLines({ ...detail, url }),
+      });
+
+      if (i >= total) break;
+      const nextBtn = document.querySelector('[data-testid="match-navigation-next"]');
+      if (!nextBtn || nextBtn.disabled) break;
+      const prevTitle = detail.title;
+      nextBtn.click();
+      if (!(await waitForGlassdoorMatchChange(prevTitle))) break;
+    }
+
+    return jobs.length
+      ? JSON.stringify({ jobs, source: { url: location.href } })
+      : buildHtmlPayload();
+  }
+
   // ─── Kforce (kforce.com) ────────────────────────────────────────────────────
 
   // ai: claude-sonnet-5 | 2026-07-28
@@ -4321,6 +4441,14 @@
         } else {
           payload = await buildInsightGlobalSplitListPayload(options);
           warning = listCaptureWarning(payload, insightGlobalTotalHits());
+        }
+        break;
+      case 'glassdoorMatches':
+        if (options.captureMode === 'detail') {
+          payload = buildGlassdoorMatchDetailPayload();
+        } else {
+          payload = await buildGlassdoorMatchListPayload();
+          warning = listCaptureWarning(payload, glassdoorMatchProgress()?.total);
         }
         break;
       case 'kforceJob':        payload = buildKforceJobPayload(); break;
